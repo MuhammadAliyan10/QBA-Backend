@@ -357,6 +357,74 @@ func (x *TerminateJobResponse) GetSuccess() bool {
 	return false
 }
 
+type BrowserStepInput struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	NodeId        string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Action        string                 `protobuf:"bytes,3,opt,name=action,proto3" json:"action,omitempty"` // "GOTO", "CLICK", "TYPE"
+	Params        map[string]string      `protobuf:"bytes,4,rep,name=params,proto3" json:"params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BrowserStepInput) Reset() {
+	*x = BrowserStepInput{}
+	mi := &file_workflow_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BrowserStepInput) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BrowserStepInput) ProtoMessage() {}
+
+func (x *BrowserStepInput) ProtoReflect() protoreflect.Message {
+	mi := &file_workflow_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BrowserStepInput.ProtoReflect.Descriptor instead.
+func (*BrowserStepInput) Descriptor() ([]byte, []int) {
+	return file_workflow_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *BrowserStepInput) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *BrowserStepInput) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *BrowserStepInput) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *BrowserStepInput) GetParams() map[string]string {
+	if x != nil {
+		return x.Params
+	}
+	return nil
+}
+
 var File_workflow_proto protoreflect.FileDescriptor
 
 const file_workflow_proto_rawDesc = "" +
@@ -386,7 +454,15 @@ const file_workflow_proto_rawDesc = "" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\"0\n" +
 	"\x14TerminateJobResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess2\xe3\x01\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\"\xcf\x01\n" +
+	"\x10BrowserStepInput\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x17\n" +
+	"\anode_id\x18\x02 \x01(\tR\x06nodeId\x12\x16\n" +
+	"\x06action\x18\x03 \x01(\tR\x06action\x128\n" +
+	"\x06params\x18\x04 \x03(\v2 .v1.BrowserStepInput.ParamsEntryR\x06params\x1a9\n" +
+	"\vParamsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\xe3\x01\n" +
 	"\x0fWorkflowService\x12J\n" +
 	"\x0fExecuteWorkflow\x12\x1a.v1.ExecuteWorkflowRequest\x1a\x1b.v1.ExecuteWorkflowResponse\x12A\n" +
 	"\fGetJobStatus\x12\x17.v1.GetJobStatusRequest\x1a\x18.v1.GetJobStatusResponse\x12A\n" +
@@ -404,7 +480,7 @@ func file_workflow_proto_rawDescGZIP() []byte {
 	return file_workflow_proto_rawDescData
 }
 
-var file_workflow_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_workflow_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_workflow_proto_goTypes = []any{
 	(*ExecuteWorkflowRequest)(nil),  // 0: v1.ExecuteWorkflowRequest
 	(*ExecuteWorkflowResponse)(nil), // 1: v1.ExecuteWorkflowResponse
@@ -412,21 +488,24 @@ var file_workflow_proto_goTypes = []any{
 	(*GetJobStatusResponse)(nil),    // 3: v1.GetJobStatusResponse
 	(*TerminateJobRequest)(nil),     // 4: v1.TerminateJobRequest
 	(*TerminateJobResponse)(nil),    // 5: v1.TerminateJobResponse
-	nil,                             // 6: v1.ExecuteWorkflowRequest.InputsEntry
+	(*BrowserStepInput)(nil),        // 6: v1.BrowserStepInput
+	nil,                             // 7: v1.ExecuteWorkflowRequest.InputsEntry
+	nil,                             // 8: v1.BrowserStepInput.ParamsEntry
 }
 var file_workflow_proto_depIdxs = []int32{
-	6, // 0: v1.ExecuteWorkflowRequest.inputs:type_name -> v1.ExecuteWorkflowRequest.InputsEntry
-	0, // 1: v1.WorkflowService.ExecuteWorkflow:input_type -> v1.ExecuteWorkflowRequest
-	2, // 2: v1.WorkflowService.GetJobStatus:input_type -> v1.GetJobStatusRequest
-	4, // 3: v1.WorkflowService.TerminateJob:input_type -> v1.TerminateJobRequest
-	1, // 4: v1.WorkflowService.ExecuteWorkflow:output_type -> v1.ExecuteWorkflowResponse
-	3, // 5: v1.WorkflowService.GetJobStatus:output_type -> v1.GetJobStatusResponse
-	5, // 6: v1.WorkflowService.TerminateJob:output_type -> v1.TerminateJobResponse
-	4, // [4:7] is the sub-list for method output_type
-	1, // [1:4] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	7, // 0: v1.ExecuteWorkflowRequest.inputs:type_name -> v1.ExecuteWorkflowRequest.InputsEntry
+	8, // 1: v1.BrowserStepInput.params:type_name -> v1.BrowserStepInput.ParamsEntry
+	0, // 2: v1.WorkflowService.ExecuteWorkflow:input_type -> v1.ExecuteWorkflowRequest
+	2, // 3: v1.WorkflowService.GetJobStatus:input_type -> v1.GetJobStatusRequest
+	4, // 4: v1.WorkflowService.TerminateJob:input_type -> v1.TerminateJobRequest
+	1, // 5: v1.WorkflowService.ExecuteWorkflow:output_type -> v1.ExecuteWorkflowResponse
+	3, // 6: v1.WorkflowService.GetJobStatus:output_type -> v1.GetJobStatusResponse
+	5, // 7: v1.WorkflowService.TerminateJob:output_type -> v1.TerminateJobResponse
+	5, // [5:8] is the sub-list for method output_type
+	2, // [2:5] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_workflow_proto_init() }
@@ -440,7 +519,7 @@ func file_workflow_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_workflow_proto_rawDesc), len(file_workflow_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

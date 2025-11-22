@@ -54,3 +54,10 @@ message TerminateJobRequest {
 message TerminateJobResponse {
   bool success = 1;
 }
+
+message BrowserStepInput {
+  string job_id = 1;
+  string node_id = 2;
+  string action = 3;      // "GOTO", "CLICK", "TYPE"
+  map<string, string> params = 4;
+}

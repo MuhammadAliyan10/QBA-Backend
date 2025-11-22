@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0eworkflow.proto\x12\x02v1\"\xa5\x01\n\x16\x45xecuteWorkflowRequest\x12\x0f\n\x07user_id\x18\x01 \x01(\t\x12\x13\n\x0bworkflow_id\x18\x02 \x01(\t\x12\x36\n\x06inputs\x18\x03 \x03(\x0b\x32&.v1.ExecuteWorkflowRequest.InputsEntry\x1a-\n\x0bInputsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"Q\n\x17\x45xecuteWorkflowResponse\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x16\n\x0equeue_position\x18\x03 \x01(\x05\"%\n\x13GetJobStatusRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\"\x80\x01\n\x14GetJobStatusResponse\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x17\n\x0f\x63urrent_step_id\x18\x03 \x01(\t\x12\x18\n\x10percent_complete\x18\x04 \x01(\x05\x12\x15\n\rerror_message\x18\x05 \x01(\t\"5\n\x13TerminateJobRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06reason\x18\x02 \x01(\t\"\'\n\x14TerminateJobResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x32\xe3\x01\n\x0fWorkflowService\x12J\n\x0f\x45xecuteWorkflow\x12\x1a.v1.ExecuteWorkflowRequest\x1a\x1b.v1.ExecuteWorkflowResponse\x12\x41\n\x0cGetJobStatus\x12\x17.v1.GetJobStatusRequest\x1a\x18.v1.GetJobStatusResponse\x12\x41\n\x0cTerminateJob\x12\x17.v1.TerminateJobRequest\x1a\x18.v1.TerminateJobResponseB\x1cZ\x1a\x65\x32\x65-platform/api/gen/go/v1b\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0eworkflow.proto\x12\x02v1\"\xa5\x01\n\x16\x45xecuteWorkflowRequest\x12\x0f\n\x07user_id\x18\x01 \x01(\t\x12\x13\n\x0bworkflow_id\x18\x02 \x01(\t\x12\x36\n\x06inputs\x18\x03 \x03(\x0b\x32&.v1.ExecuteWorkflowRequest.InputsEntry\x1a-\n\x0bInputsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"Q\n\x17\x45xecuteWorkflowResponse\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x16\n\x0equeue_position\x18\x03 \x01(\x05\"%\n\x13GetJobStatusRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\"\x80\x01\n\x14GetJobStatusResponse\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x17\n\x0f\x63urrent_step_id\x18\x03 \x01(\t\x12\x18\n\x10percent_complete\x18\x04 \x01(\x05\x12\x15\n\rerror_message\x18\x05 \x01(\t\"5\n\x13TerminateJobRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06reason\x18\x02 \x01(\t\"\'\n\x14TerminateJobResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"\xa4\x01\n\x10\x42rowserStepInput\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0f\n\x07node_id\x18\x02 \x01(\t\x12\x0e\n\x06\x61\x63tion\x18\x03 \x01(\t\x12\x30\n\x06params\x18\x04 \x03(\x0b\x32 .v1.BrowserStepInput.ParamsEntry\x1a-\n\x0bParamsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x32\xe3\x01\n\x0fWorkflowService\x12J\n\x0f\x45xecuteWorkflow\x12\x1a.v1.ExecuteWorkflowRequest\x1a\x1b.v1.ExecuteWorkflowResponse\x12\x41\n\x0cGetJobStatus\x12\x17.v1.GetJobStatusRequest\x1a\x18.v1.GetJobStatusResponse\x12\x41\n\x0cTerminateJob\x12\x17.v1.TerminateJobRequest\x1a\x18.v1.TerminateJobResponseB\x1cZ\x1a\x65\x32\x65-platform/api/gen/go/v1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -34,6 +34,8 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._serialized_options = b'Z\032e2e-platform/api/gen/go/v1'
   _globals['_EXECUTEWORKFLOWREQUEST_INPUTSENTRY']._loaded_options = None
   _globals['_EXECUTEWORKFLOWREQUEST_INPUTSENTRY']._serialized_options = b'8\001'
+  _globals['_BROWSERSTEPINPUT_PARAMSENTRY']._loaded_options = None
+  _globals['_BROWSERSTEPINPUT_PARAMSENTRY']._serialized_options = b'8\001'
   _globals['_EXECUTEWORKFLOWREQUEST']._serialized_start=23
   _globals['_EXECUTEWORKFLOWREQUEST']._serialized_end=188
   _globals['_EXECUTEWORKFLOWREQUEST_INPUTSENTRY']._serialized_start=143
@@ -48,6 +50,10 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_TERMINATEJOBREQUEST']._serialized_end=496
   _globals['_TERMINATEJOBRESPONSE']._serialized_start=498
   _globals['_TERMINATEJOBRESPONSE']._serialized_end=537
-  _globals['_WORKFLOWSERVICE']._serialized_start=540
-  _globals['_WORKFLOWSERVICE']._serialized_end=767
+  _globals['_BROWSERSTEPINPUT']._serialized_start=540
+  _globals['_BROWSERSTEPINPUT']._serialized_end=704
+  _globals['_BROWSERSTEPINPUT_PARAMSENTRY']._serialized_start=659
+  _globals['_BROWSERSTEPINPUT_PARAMSENTRY']._serialized_end=704
+  _globals['_WORKFLOWSERVICE']._serialized_start=707
+  _globals['_WORKFLOWSERVICE']._serialized_end=934
 # @@protoc_insertion_point(module_scope)
