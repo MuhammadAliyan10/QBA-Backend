@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package v1;
+
+// This option tells the Go compiler where to generate the code
+option go_package = "e2e-platform/api/gen/go/v1";
+
+// --- THE SERVICE DEFINITION ---
+// This is like an Interface. It defines what methods the API exposes.
+service WorkflowService {
+  // Trigger a new automation job.
+  // Equivalent to: POST /api/v1/workflow/execute
+  rpc ExecuteWorkflow (ExecuteWorkflowRequest) returns (ExecuteWorkflowResponse);
+
+  // Get the live status of a specific job.
+  // Equivalent to: GET /api/v1/workflow/{job_id}
+  rpc GetJobStatus (GetJobStatusRequest) returns (GetJobStatusResponse);
+
+  // Emergency Kill Switch for a running job.
+  rpc TerminateJob (TerminateJobRequest) returns (TerminateJobResponse);
+}
+
+// --- THE MESSAGES (DATA TYPES) ---
+
+message ExecuteWorkflowRequest {
+  string user_id = 1;          // The Clerk User ID
+  string workflow_id = 2;      // The Recipe ID to run
+  map<string, string> inputs = 3; // Dynamic inputs (e.g. {"url": "canvas.com"})
+}
+
+message ExecuteWorkflowResponse {
+  string job_id = 1;           // The UUID for this specific run
+  string status = 2;           // "QUEUED", "RUNNING"
+  int32 queue_position = 3;    // "You are #5 in line"
+}
+
+message GetJobStatusRequest {
+  string job_id = 1;
+}
+
+message GetJobStatusResponse {
+  string job_id = 1;
+  string status = 2;           // "COMPLETED", "FAILED", "RUNNING"
+  string current_step_id = 3;  // Which node is currently active?
+  int32 percent_complete = 4;  // For the progress bar
+  string error_message = 5;    // Empty if success
+}
+
+message TerminateJobRequest {
+  string job_id = 1;
+  string reason = 2;
+}
+
+message TerminateJobResponse {
+  bool success = 1;
+}

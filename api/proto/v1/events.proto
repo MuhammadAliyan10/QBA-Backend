@@ -1,0 +1,52 @@
+syntax = "proto3";
+package v1;
+
+option go_package = "e2e-backend/api/gen/go/v1";
+
+// --- TOPIC: job.request ---
+// Published by: Go Gateway
+// Consumed by: Billing Service
+message JobRequestEvent {
+  string job_id = 1;
+  string user_id = 2;
+  string workflow_id = 3;
+  int32 estimated_credits = 4; // How much to freeze
+  int64 timestamp = 5;         // Unix timestamp
+}
+
+
+// --- TOPIC: job.approved ---
+// Published by: Billing Service
+// Consumed by: Temporal Orchestrator
+message JobApprovedEvent {
+  string job_id = 1;
+  bool approved = 2;
+  string denial_reason = 3;    // e.g. "Insufficient Funds"
+}
+
+// --- TOPIC: job.update ---
+// Published by: Python Worker
+// Consumed by: Go Gateway (to push to WebSocket)
+message StepUpdateEvent {
+  string job_id = 1;
+  string node_id = 2;          // The React Flow Node ID
+  string status = 3;           // "RUNNING", "SUCCESS", "FAILED"
+
+  // The "Live Feed" Data
+  string log_message = 4;      // "Found login button..."
+  string screenshot_url = 5;   // Thumbnail for the UI
+  map<string, string> output_data = 6; // Variables extracted
+}
+
+// --- TOPIC: job.audit ---
+// Published by: Python Worker
+// Consumed by: ClickHouse Ingestor
+message AuditLogEvent {
+  string job_id = 1;
+  string worker_id = 2;        // Which specific pod ran this?
+  string action_type = 3;      // "CLICK", "TYPE", "NAVIGATE"
+  string target_selector = 4;  // "#login-btn"
+  string url = 5;              // "https://canvas.instructure.com/login"
+  int64 duration_ms = 6;       // Performance tracking
+  int64 timestamp = 7;
+}

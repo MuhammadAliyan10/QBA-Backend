@@ -1,0 +1,61 @@
+# -----------------------------
+# PYTHON
+# -----------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+venv/
+.venv/
+.env
+.env.*
+
+# Bytecode / compiled
+*.so
+*.dll
+*.dylib
+
+# -----------------------------
+# GO
+# -----------------------------
+bin/
+dist/
+*.exe
+*.test
+
+# Go build cache
+*.out
+
+# -----------------------------
+# NODE / NEXT.JS
+# -----------------------------
+node_modules/
+.next/
+dist/
+build/
+
+# Local environment files
+*.local
+
+# Next.js output
+.next/
+out/
+
+# -----------------------------
+# IDE / EDITOR
+# -----------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+*.log
+
+# JetBrains
+*.iml
+
+# -----------------------------
+# SYSTEM / OS
+# -----------------------------
+Thumbs.db
+ehthumbs.db
