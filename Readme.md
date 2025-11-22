@@ -127,4 +127,36 @@ To stop it
 docker-compose stop
 ```
 
-`Once you confirm you can see the Temporal Dashboard, we are ready to write the Go Gateway code. This is where your "Brain" starts working.`
+### Phase 3: The Muscle
+
+We are now building the robot that actually does the work. This worker will:
+
+1. **Listen** to Temporal for tasks.
+
+2. **Launch** a Headless Browser (Playwright).
+
+3. **Use Math** (Levenshtein) to find buttons instantly.
+
+4. **Stream Logs** to NATS so the Frontend updates live.
+
+#### Step 1: Organize the Algorithms
+
+First, let's put the "Math" code we wrote earlier into its proper home.
+
+1.  The Math Engine
+
+#### Step 2: The Nervous System Client
+
+The Worker needs to shout "I found the button!" to the rest of the system. We use NATS for this.
+
+#### Step 3: The Activities (The "Doing" Part)
+
+This is where Playwright lives. It runs the browser, scrapes the DOM, and uses our Math class to find buttons.
+
+#### Step 4: The Workflow (The Logic)
+
+This tells Temporal how to run the activities.
+
+#### Step 5: The Worker Entrypoint
+
+his is the main function that connects everything.
