@@ -99,3 +99,32 @@ cd apps/execution-plane && poetry run python src/worker.py
 In a distributed system like this (Go + Python + NATS), you cannot just "send JSON strings" and hope the other side understands them. That leads to crashes when a Python worker expects `user_id` (string) but the Go server sends `userID` (int).
 
 Copyright © 2025 e2e Platform. Confidential.
+
+### Step 2: The Local Infrastructure.
+
+You need to spin up your "Virtual Data Center" on your laptop.
+We will use Docker Compose to spin up Temporal, NATS, CockroachDB, and Redis instantly. This allows you to develop offline without paying AWS a single cent.
+
+#### Generated Files
+
+1. **docker-compose.yml:** The blueprint for your local cloud.
+
+2. **config/nats.conf:** The configuration to enable JetStream (High-speed streaming) on NATS.
+
+3. **.env:** The environment variables for your local setup.
+
+### Run
+
+To run it
+
+```bash
+docker-compose up -d
+```
+
+To stop it
+
+```bash
+docker-compose stop
+```
+
+`Once you confirm you can see the Temporal Dashboard, we are ready to write the Go Gateway code. This is where your "Brain" starts working.`

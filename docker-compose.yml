@@ -1,0 +1,109 @@
+version: "3.8"
+
+services:
+  # --- 1. THE NERVOUS SYSTEM (NATS JETSTREAM) ---
+  nats:
+    image: nats:latest
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: "-c /etc/nats/nats-server.conf"
+    volumes:
+      - ./config/nats.conf:/etc/nats/nats-server.conf
+      - nats_data:/data
+    networks:
+      - e2e-net
+
+  # --- 2. THE ORCHESTRATOR (TEMPORAL SERVER) ---
+  temporal:
+    image: temporalio/auto-setup:latest
+    ports:
+      - "7233:7233" # gRPC Port ONLY
+    environment:
+      # FIX: Explicitly set the DB Driver
+      - DB=postgres12
+      # FIX: The auto-setup script needs SEEDS to find the DB
+      - POSTGRES_SEEDS=temporal-db
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_DB=temporal
+      - DB_PORT=5432
+      # Skip version check to prevent startup lag/errors
+      - SKIP_DEFAULT_VERSION_CHECK=true
+    depends_on:
+      - temporal-db
+    networks:
+      - e2e-net
+
+  # --- 2.5 TEMPORAL UI (THE DASHBOARD) ---
+  temporal-ui:
+    image: temporalio/ui:latest
+    ports:
+      - "8088:8080"
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    depends_on:
+      - temporal
+    networks:
+      - e2e-net
+
+  temporal-db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=temporal
+      - POSTGRES_PASSWORD=temporal
+      - POSTGRES_DB=temporal
+    volumes:
+      - temporal_db_data:/var/lib/postgresql/data
+    networks:
+      - e2e-net
+
+  # --- 3. THE TRANSACTIONAL DB (COCKROACHDB) ---
+  cockroach:
+    image: cockroachdb/cockroach:latest
+    command: start-single-node --insecure
+    ports:
+      - "26257:26257"
+      - "8090:8080"
+    volumes:
+      - cockroach_data:/cockroach/cockroach-data
+    networks:
+      - e2e-net
+
+  # --- 4. THE CACHE (REDIS) ---
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    networks:
+      - e2e-net
+
+  # --- 5. THE LOGS (CLICKHOUSE) ---
+  # clickhouse:
+  #   image: clickhouse/clickhouse-server
+  #   ports:
+  #     - "8123:8123"
+  #     - "9000:9000"
+  #   ulimits:
+  #     nofile:
+  #       soft: 262144
+  #       hard: 262144
+  #   volumes:
+  #     - clickhouse_data:/var/lib/clickhouse
+  #   networks:
+  #     - e2e-net
+
+volumes:
+  nats_data:
+  temporal_db_data:
+  cockroach_data:
+  redis_data:
+  # clickhouse_data:
+
+networks:
+  e2e-net:
+    driver: bridge
