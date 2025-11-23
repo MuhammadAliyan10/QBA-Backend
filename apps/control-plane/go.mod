@@ -8,10 +8,22 @@ require (
 	github.com/gin-gonic/gin v1.10.1
 	// Dotenv: For config management.
 	github.com/joho/godotenv v1.5.1
+	// PostgreSQL: For ledger transactions.
+	github.com/lib/pq v1.10.9
 
 	// --- MESSAGING ---
 	// NATS JetStream: For the asynchronous event bus.
 	github.com/nats-io/nats.go v1.37.0
+
+	// --- BILLING & DATABASE ---
+	// Redis: For credit balance and rate limiting.
+	github.com/redis/go-redis/v9 v9.7.0
+
+	// --- OBSERVABILITY ---
+	// OpenTelemetry: For distributed tracing and metrics.
+	go.opentelemetry.io/otel v1.38.0
+	go.opentelemetry.io/otel/exporters/prometheus v0.60.0
+	go.opentelemetry.io/otel/sdk/metric v1.38.0
 
 	// --- ORCHESTRATION ---
 	// Temporal SDK: For triggering workflows from the API.
@@ -35,7 +47,7 @@ require (
 
 	// --- UTILITIES ---
 	// UUID: For generating Job IDs.
-	github.com/google/uuid v1.6.0 // indirect
+	github.com/google/uuid v1.6.0
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.22.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -79,15 +91,13 @@ require (
 	e2e-platform/api v0.0.0-00010101000000-000000000000
 	github.com/gin-contrib/cors v1.7.6
 	github.com/olahol/melody v1.4.0
-	go.opentelemetry.io/otel v1.38.0
-	go.opentelemetry.io/otel/exporters/prometheus v0.60.0
 	go.opentelemetry.io/otel/sdk v1.38.0
-	go.opentelemetry.io/otel/sdk/metric v1.38.0
 )
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gorilla/websocket v1.5.0 // indirect

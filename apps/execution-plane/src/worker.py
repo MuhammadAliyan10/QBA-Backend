@@ -47,7 +47,6 @@ signal.signal(signal.SIGINT, handle_shutdown)
 async def main():
     tracer_provider = None
     meter_provider = None
-    client = None
     
     try:
         # 1. Load Config
@@ -82,18 +81,18 @@ async def main():
         logger.info("✅ Worker Started! Waiting for jobs...")
         logger.info("   Task Queue: e2e-browser-tasks")
         
-        # 5. Run Until Shutdown Signal
-        await worker.run(shutdown_event=shutdown_event)
-        
-        logger.info("✅ Worker stopped gracefully. All tasks completed.")
+        # 5. Run worker (graceful shutdown via SIGTERM/SIGINT in shutdown_event)
+        # The worker will stop when shutdown_event is set by signal handlers
+        try:
+            await worker.run()
+        except asyncio.CancelledError:
+            logger.info("✅ Worker stopped gracefully. All tasks completed.")
         
     except Exception as e:
         logger.error(f"❌ Worker failed: {e}", exc_info=True)
         raise
     finally:
         # Cleanup
-        if client:
-            await client.close()
         shutdown_telemetry(tracer_provider, meter_provider)
 
 
