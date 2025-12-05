@@ -6,7 +6,7 @@ from simhash import Simhash
 from exceptions import HumanInterventionRequired  # [NEW] Human-in-the-Loop
 from core.Healer import TheHealer
 from core.GlassBox import GlassBoxEngine
-from algorithms.levenshteinScorer import LevenshteinScorer
+from algorithms.LevenshteinScorer import LevenshteinScorer  # Fixed case
 from core.Planner import TheCortex
 from core.PatternDB import PatternDB  # [NEW] Muscle Memory
 
@@ -48,17 +48,26 @@ class SmartFinder:
         domain = urlparse(page.url).netloc
 
         # Extract tag structure: "BODY DIV HEADER DIV IMG SPAN..."
-        # This ignores text content changes but detects layout changes
         tag_structure = await page.evaluate("""
             () => {
-                return Array.from(document.querySelectorAll('*'))
-                    .map(el => el.tagName)
-                    .join(' ');
+                function getTags(el) {
+                    let tags = el.tagName;
+                    for (let child of el.children) {
+                        tags += ' ' + getTags(child);
+                    }
+                    return tags;
+                }
+                return getTags(document.body);
             }
         """)
 
-        # SimHash the tag structure for similarity matching
-        page_hash = str(Simhash(tag_structure).value)
+        # FIX: Tokenize before hashing to prevent OverflowError on large pages
+        # Split the giant string into features (tag names)
+        # This avoids Simhash's internal C-tokenizer which overflows on >1000 char strings
+        features = tag_structure.split(' ')  # Create list of features
+
+        # Hash the feature list (not the raw string)
+        page_hash = str(Simhash(features).value)
         logger.debug(f"🔍 Fingerprint: {domain} | Hash: {page_hash[:16]}...")
 
         return domain, page_hash

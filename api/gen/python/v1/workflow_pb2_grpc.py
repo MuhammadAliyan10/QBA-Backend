@@ -26,8 +26,7 @@ if _version_not_supported:
 
 
 class WorkflowServiceStub(object):
-    """--- THE SERVICE DEFINITION ---
-    This is like an Interface. It defines what methods the API exposes.
+    """--- SERVICE DEFINITION ---
     """
 
     def __init__(self, channel):
@@ -37,45 +36,54 @@ class WorkflowServiceStub(object):
             channel: A grpc.Channel.
         """
         self.ExecuteWorkflow = channel.unary_unary(
-                '/v1.WorkflowService/ExecuteWorkflow',
+                '/e2e.v1.WorkflowService/ExecuteWorkflow',
                 request_serializer=workflow__pb2.ExecuteWorkflowRequest.SerializeToString,
                 response_deserializer=workflow__pb2.ExecuteWorkflowResponse.FromString,
                 _registered_method=True)
         self.GetJobStatus = channel.unary_unary(
-                '/v1.WorkflowService/GetJobStatus',
+                '/e2e.v1.WorkflowService/GetJobStatus',
                 request_serializer=workflow__pb2.GetJobStatusRequest.SerializeToString,
                 response_deserializer=workflow__pb2.GetJobStatusResponse.FromString,
                 _registered_method=True)
         self.TerminateJob = channel.unary_unary(
-                '/v1.WorkflowService/TerminateJob',
+                '/e2e.v1.WorkflowService/TerminateJob',
                 request_serializer=workflow__pb2.TerminateJobRequest.SerializeToString,
                 response_deserializer=workflow__pb2.TerminateJobResponse.FromString,
+                _registered_method=True)
+        self.ResumeJob = channel.unary_unary(
+                '/e2e.v1.WorkflowService/ResumeJob',
+                request_serializer=workflow__pb2.ResumeJobRequest.SerializeToString,
+                response_deserializer=workflow__pb2.ResumeJobResponse.FromString,
                 _registered_method=True)
 
 
 class WorkflowServiceServicer(object):
-    """--- THE SERVICE DEFINITION ---
-    This is like an Interface. It defines what methods the API exposes.
+    """--- SERVICE DEFINITION ---
     """
 
     def ExecuteWorkflow(self, request, context):
-        """Trigger a new automation job.
-        Equivalent to: POST /api/v1/workflow/execute
+        """Trigger a new automation job (POST /run)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def GetJobStatus(self, request, context):
-        """Get the live status of a specific job.
-        Equivalent to: GET /api/v1/workflow/{job_id}
+        """Get live status (GET /status/:id)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def TerminateJob(self, request, context):
-        """Emergency Kill Switch for a running job.
+        """Emergency Kill Switch (DELETE /job/:id)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ResumeJob(self, request, context):
+        """Human-in-the-Loop Resume (POST /resume)
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -99,17 +107,21 @@ def add_WorkflowServiceServicer_to_server(servicer, server):
                     request_deserializer=workflow__pb2.TerminateJobRequest.FromString,
                     response_serializer=workflow__pb2.TerminateJobResponse.SerializeToString,
             ),
+            'ResumeJob': grpc.unary_unary_rpc_method_handler(
+                    servicer.ResumeJob,
+                    request_deserializer=workflow__pb2.ResumeJobRequest.FromString,
+                    response_serializer=workflow__pb2.ResumeJobResponse.SerializeToString,
+            ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'v1.WorkflowService', rpc_method_handlers)
+            'e2e.v1.WorkflowService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('v1.WorkflowService', rpc_method_handlers)
+    server.add_registered_method_handlers('e2e.v1.WorkflowService', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
 class WorkflowService(object):
-    """--- THE SERVICE DEFINITION ---
-    This is like an Interface. It defines what methods the API exposes.
+    """--- SERVICE DEFINITION ---
     """
 
     @staticmethod
@@ -126,7 +138,7 @@ class WorkflowService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/v1.WorkflowService/ExecuteWorkflow',
+            '/e2e.v1.WorkflowService/ExecuteWorkflow',
             workflow__pb2.ExecuteWorkflowRequest.SerializeToString,
             workflow__pb2.ExecuteWorkflowResponse.FromString,
             options,
@@ -153,7 +165,7 @@ class WorkflowService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/v1.WorkflowService/GetJobStatus',
+            '/e2e.v1.WorkflowService/GetJobStatus',
             workflow__pb2.GetJobStatusRequest.SerializeToString,
             workflow__pb2.GetJobStatusResponse.FromString,
             options,
@@ -180,9 +192,36 @@ class WorkflowService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/v1.WorkflowService/TerminateJob',
+            '/e2e.v1.WorkflowService/TerminateJob',
             workflow__pb2.TerminateJobRequest.SerializeToString,
             workflow__pb2.TerminateJobResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ResumeJob(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/e2e.v1.WorkflowService/ResumeJob',
+            workflow__pb2.ResumeJobRequest.SerializeToString,
+            workflow__pb2.ResumeJobResponse.FromString,
             options,
             channel_credentials,
             insecure,

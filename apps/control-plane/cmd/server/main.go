@@ -11,9 +11,11 @@ import (
 	"syscall"
 	"time"
 
-	// 1. IMPORT YOUR WS MANAGER
+	// 1. Internal Modules
+	"e2e-platform/apps/control-plane/internal/db"
 	"e2e-platform/apps/control-plane/internal/ws"
 
+	// 2. Third-Party Libraries
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -22,7 +24,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	// 2. IMPORT GENERATED PROTOBUFS
+	// 3. Generated Protobuf Contracts
 	pb "e2e-platform/api/gen/go/v1"
 )
 
@@ -41,6 +43,7 @@ func NewConsumer(nc *nats.Conn, ws *ws.Manager) *Consumer {
 
 func (c *Consumer) StartListening() {
 	// Subscribe to ALL job updates (job.update.*)
+	// Example subject: job.update.job-123456789
 	_, err := c.nc.Subscribe("job.update.*", func(m *nats.Msg) {
 		parts := strings.Split(m.Subject, ".")
 		if len(parts) < 3 {
@@ -48,18 +51,32 @@ func (c *Consumer) StartListening() {
 		}
 		jobID := parts[2]
 
-		// 3. UNMARSHAL PROTOBUF (StepUpdateEvent)
-		var event pb.StepUpdateEvent
+		// 4. UNMARSHAL PROTOBUF (JobEvent)
+		// We use the new 'JobEvent' message defined in events.proto
+		var event pb.JobEvent
 		if err := proto.Unmarshal(m.Data, &event); err != nil {
 			log.Printf("❌ Failed to unmarshal event: %v", err)
 			return
 		}
 
-		log.Printf("📨 [Job %s] Status: %s | Node: %s | Msg: %s", jobID, event.Status, event.NodeId, event.LogMessage)
+		// Log to server console for debugging
+		log.Printf("📨 [Job %s] Status: %s | Node: %s | Msg: %s",
+			jobID, event.Status, event.NodeId, event.Message)
 
-		// 4. CONVERT TO JSON FOR FRONTEND
-        // React/Frontend expects JSON, not binary Protobuf
-        jsonBytes, _ := protojson.Marshal(&event)
+		// 5. CONVERT TO JSON FOR FRONTEND
+		// The React frontend expects JSON, so we convert the binary Protobuf to JSON string
+		// using protojson options to handle Enums and defaults correctly.
+		marshaler := protojson.MarshalOptions{
+			UseProtoNames:   true,
+			EmitUnpopulated: true,
+		}
+		jsonBytes, err := marshaler.Marshal(&event)
+		if err != nil {
+			log.Printf("❌ Failed to marshal JSON for WS: %v", err)
+			return
+		}
+
+		// Broadcast to specific Job Channel
 		c.ws.BroadcastToJob(jobID, jsonBytes)
 	})
 
@@ -72,10 +89,13 @@ func (c *Consumer) StartListening() {
 func main() {
 	// 1. Load Config
 	if err := godotenv.Load(); err != nil {
-        log.Println("⚠️  No .env file found, relying on system env")
+		log.Println("⚠️  No .env file found, relying on system env")
 	}
 
-	// 2. Connect to NATS
+	// 2. Initialize Database (CockroachDB/Postgres)
+	db.Init()
+
+	// 3. Connect to NATS (The Nervous System)
 	natsURL := os.Getenv("NATS_URL")
 	if natsURL == "" {
 		natsURL = nats.DefaultURL
@@ -87,7 +107,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	// 3. Connect to Temporal
+	// 4. Connect to Temporal (The Orchestrator)
 	temporalHost := os.Getenv("TEMPORAL_HOST")
 	if temporalHost == "" {
 		temporalHost = "localhost:7233"
@@ -102,12 +122,12 @@ func main() {
 	}
 	defer temporalClient.Close()
 
-	// 4. Setup Components
+	// 5. Setup Components
 	wsManager := ws.NewManager()
 	consumer := NewConsumer(nc, wsManager)
 	consumer.StartListening()
 
-	// 5. Setup Gin
+	// 6. Setup Gin Router
 	r := gin.Default()
 	r.Use(cors.Default())
 
@@ -119,51 +139,49 @@ func main() {
 		wsManager.HandleRequest(c)
 	})
 
-    // --- THE MAIN API ENDPOINT ---
+	// --- [ENDPOINT 1] START AUTOMATION JOB ---
 	r.POST("/run", func(c *gin.Context) {
-        // A. Parse Developer Request (JSON)
-        // We use a struct that matches the Protocol Buffer "ExecuteWorkflowRequest"
-        var req struct {
-            WorkflowID string            `json:"workflow_id"`
-            Params     map[string]string `json:"params"`
-            Config     struct {
-                UsePremiumProxy bool   `json:"use_premium_proxy"`
-                SolveCaptchas   bool   `json:"solve_captchas"`
-                SessionID       string `json:"session_id"`
-                Region          string `json:"region"`
-            } `json:"config"`
-        }
+		// A. Parse Developer Request (JSON)
+		// Matches the structure sent by your Dashboard or Curl
+		var req struct {
+			WorkflowID string            `json:"workflow_id"`
+			Params     map[string]string `json:"params"`
+			Config     struct {
+				UsePremiumProxy bool   `json:"use_premium_proxy"`
+				SolveCaptchas   bool   `json:"solve_captchas"`
+				SessionID       string `json:"session_id"`
+				Region          string `json:"region"`
+			} `json:"config"`
+		}
 
-        if err := c.BindJSON(&req); err != nil {
-            c.JSON(400, gin.H{"error": "Invalid JSON body"})
-            return
-        }
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": "Invalid JSON body"})
+			return
+		}
 
+		// Generate a Unique Job ID
 		jobID := fmt.Sprintf("job-%d", time.Now().Unix())
 
-        // B. Prepare Data for Temporal
-        // The Python Worker expects a single argument: The "Job Payload"
-        // We package everything into a clean Go Map so Python receives a Dictionary.
-        workflowPayload := map[string]interface{}{
-            "job_id":      jobID,
-            "workflow_id": req.WorkflowID,
-            "params":      req.Params,
-            "config": map[string]interface{}{
-                "use_premium_proxy": req.Config.UsePremiumProxy,
-                "solve_captchas":    req.Config.SolveCaptchas,
-                "session_id":        req.Config.SessionID,
-                "region":            req.Config.Region,
-            },
-        }
+		// B. Prepare Data for Temporal
+		// We package everything into a generic map because Python receives it as a dict.
+		workflowPayload := map[string]interface{}{
+			"job_id":      jobID,
+			"workflow_id": req.WorkflowID,
+			"params":      req.Params,
+			"config": map[string]interface{}{
+				"use_premium_proxy": req.Config.UsePremiumProxy,
+				"solve_captchas":    req.Config.SolveCaptchas,
+				"session_id":        req.Config.SessionID,
+				"region":            req.Config.Region,
+			},
+		}
 
 		workflowOptions := client.StartWorkflowOptions{
 			ID:        "workflow-" + jobID,
 			TaskQueue: "e2e-browser-tasks",
 		}
 
-        // C. Start the Workflow
-        // Note: We are now passing the DYNAMIC payload, not hardcoded steps.
-        // The Python Worker will load the "Recipe" based on `workflow_id`.
+		// C. Start the Workflow
 		we, err := temporalClient.ExecuteWorkflow(context.Background(), workflowOptions, "BrowserWorkflow", workflowPayload)
 		if err != nil {
 			log.Printf("❌ Temporal Start Failed: %v", err)
@@ -172,16 +190,17 @@ func main() {
 		}
 
 		c.JSON(202, gin.H{
-			"message": "Job Queued Successfully",
-			"job_id":  jobID,
-			"run_id":  we.GetRunID(),
+			"message":  "Job Queued Successfully",
+			"job_id":   jobID,
+			"run_id":   we.GetRunID(),
 			"trace_ws": fmt.Sprintf("/ws?job_id=%s", jobID),
 		})
 	})
 
-	// --- HUMAN-IN-THE-LOOP RESUME ENDPOINT ---
+	// --- [ENDPOINT 2] HUMAN-IN-THE-LOOP RESUME ---
 	r.POST("/resume", func(c *gin.Context) {
 		// A. Parse Resume Request (JSON)
+		// e.g. {"job_id": "...", "data": {"otp": "123456"}}
 		var req struct {
 			JobID string            `json:"job_id"`
 			Data  map[string]string `json:"data"`
@@ -205,9 +224,9 @@ func main() {
 		err := temporalClient.SignalWorkflow(
 			context.Background(),
 			workflowID,
-			"",                    // Empty RunID = use the currently running execution
-			"USER_INTERACTION",    // Signal name (must match Python @workflow.signal)
-			req.Data,              // Signal payload (map[string]string)
+			"",                 // Empty RunID = use the currently running execution
+			"USER_INTERACTION", // Signal name (Matches Python @workflow.signal)
+			req.Data,           // Signal payload
 		)
 
 		if err != nil {
@@ -228,8 +247,7 @@ func main() {
 		})
 	})
 
-
-	// Start Server
+	// 7. Start Server
 	port := os.Getenv("PORT_GO_API")
 	if port == "" {
 		port = "8080"
@@ -244,7 +262,7 @@ func main() {
 		}
 	}()
 
-	// Graceful Shutdown
+	// 8. Graceful Shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit

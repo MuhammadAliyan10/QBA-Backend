@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0eworkflow.proto\x12\x02v1\"\xa5\x01\n\x16\x45xecuteWorkflowRequest\x12\x0f\n\x07user_id\x18\x01 \x01(\t\x12\x13\n\x0bworkflow_id\x18\x02 \x01(\t\x12\x36\n\x06inputs\x18\x03 \x03(\x0b\x32&.v1.ExecuteWorkflowRequest.InputsEntry\x1a-\n\x0bInputsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"Q\n\x17\x45xecuteWorkflowResponse\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x16\n\x0equeue_position\x18\x03 \x01(\x05\"%\n\x13GetJobStatusRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\"\x80\x01\n\x14GetJobStatusResponse\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x17\n\x0f\x63urrent_step_id\x18\x03 \x01(\t\x12\x18\n\x10percent_complete\x18\x04 \x01(\x05\x12\x15\n\rerror_message\x18\x05 \x01(\t\"5\n\x13TerminateJobRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06reason\x18\x02 \x01(\t\"\'\n\x14TerminateJobResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"\xa4\x01\n\x10\x42rowserStepInput\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0f\n\x07node_id\x18\x02 \x01(\t\x12\x0e\n\x06\x61\x63tion\x18\x03 \x01(\t\x12\x30\n\x06params\x18\x04 \x03(\x0b\x32 .v1.BrowserStepInput.ParamsEntry\x1a-\n\x0bParamsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x32\xe3\x01\n\x0fWorkflowService\x12J\n\x0f\x45xecuteWorkflow\x12\x1a.v1.ExecuteWorkflowRequest\x1a\x1b.v1.ExecuteWorkflowResponse\x12\x41\n\x0cGetJobStatus\x12\x17.v1.GetJobStatusRequest\x1a\x18.v1.GetJobStatusResponse\x12\x41\n\x0cTerminateJob\x12\x17.v1.TerminateJobRequest\x1a\x18.v1.TerminateJobResponseB\x1cZ\x1a\x65\x32\x65-platform/api/gen/go/v1b\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0eworkflow.proto\x12\x06\x65\x32\x65.v1\"\xd1\x01\n\x16\x45xecuteWorkflowRequest\x12\x0f\n\x07user_id\x18\x01 \x01(\t\x12\x13\n\x0bworkflow_id\x18\x02 \x01(\t\x12:\n\x06params\x18\x03 \x03(\x0b\x32*.e2e.v1.ExecuteWorkflowRequest.ParamsEntry\x12&\n\x06\x63onfig\x18\x04 \x01(\x0b\x32\x16.e2e.v1.WorkflowConfig\x1a-\n\x0bParamsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"g\n\x0eWorkflowConfig\x12\x19\n\x11use_premium_proxy\x18\x01 \x01(\x08\x12\x16\n\x0esolve_captchas\x18\x02 \x01(\x08\x12\x12\n\nsession_id\x18\x03 \x01(\t\x12\x0e\n\x06region\x18\x04 \x01(\t\"Q\n\x17\x45xecuteWorkflowResponse\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x16\n\x0equeue_position\x18\x03 \x01(\x05\"%\n\x13GetJobStatusRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\"\x94\x01\n\x14GetJobStatusResponse\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x17\n\x0f\x63urrent_step_id\x18\x03 \x01(\t\x12\x18\n\x10percent_complete\x18\x04 \x01(\x05\x12\x12\n\nresult_url\x18\x05 \x01(\t\x12\x15\n\rerror_message\x18\x06 \x01(\t\"5\n\x13TerminateJobRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06reason\x18\x02 \x01(\t\"\'\n\x14TerminateJobResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\"\x81\x01\n\x10ResumeJobRequest\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x30\n\x04\x64\x61ta\x18\x02 \x03(\x0b\x32\".e2e.v1.ResumeJobRequest.DataEntry\x1a+\n\tDataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"5\n\x11ResumeJobResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t2\xbd\x02\n\x0fWorkflowService\x12R\n\x0f\x45xecuteWorkflow\x12\x1e.e2e.v1.ExecuteWorkflowRequest\x1a\x1f.e2e.v1.ExecuteWorkflowResponse\x12I\n\x0cGetJobStatus\x12\x1b.e2e.v1.GetJobStatusRequest\x1a\x1c.e2e.v1.GetJobStatusResponse\x12I\n\x0cTerminateJob\x12\x1b.e2e.v1.TerminateJobRequest\x1a\x1c.e2e.v1.TerminateJobResponse\x12@\n\tResumeJob\x12\x18.e2e.v1.ResumeJobRequest\x1a\x19.e2e.v1.ResumeJobResponseB\x1cZ\x1a\x65\x32\x65-platform/api/gen/go/v1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -32,28 +32,32 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'workflow_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'Z\032e2e-platform/api/gen/go/v1'
-  _globals['_EXECUTEWORKFLOWREQUEST_INPUTSENTRY']._loaded_options = None
-  _globals['_EXECUTEWORKFLOWREQUEST_INPUTSENTRY']._serialized_options = b'8\001'
-  _globals['_BROWSERSTEPINPUT_PARAMSENTRY']._loaded_options = None
-  _globals['_BROWSERSTEPINPUT_PARAMSENTRY']._serialized_options = b'8\001'
-  _globals['_EXECUTEWORKFLOWREQUEST']._serialized_start=23
-  _globals['_EXECUTEWORKFLOWREQUEST']._serialized_end=188
-  _globals['_EXECUTEWORKFLOWREQUEST_INPUTSENTRY']._serialized_start=143
-  _globals['_EXECUTEWORKFLOWREQUEST_INPUTSENTRY']._serialized_end=188
-  _globals['_EXECUTEWORKFLOWRESPONSE']._serialized_start=190
-  _globals['_EXECUTEWORKFLOWRESPONSE']._serialized_end=271
-  _globals['_GETJOBSTATUSREQUEST']._serialized_start=273
-  _globals['_GETJOBSTATUSREQUEST']._serialized_end=310
-  _globals['_GETJOBSTATUSRESPONSE']._serialized_start=313
-  _globals['_GETJOBSTATUSRESPONSE']._serialized_end=441
-  _globals['_TERMINATEJOBREQUEST']._serialized_start=443
-  _globals['_TERMINATEJOBREQUEST']._serialized_end=496
-  _globals['_TERMINATEJOBRESPONSE']._serialized_start=498
-  _globals['_TERMINATEJOBRESPONSE']._serialized_end=537
-  _globals['_BROWSERSTEPINPUT']._serialized_start=540
-  _globals['_BROWSERSTEPINPUT']._serialized_end=704
-  _globals['_BROWSERSTEPINPUT_PARAMSENTRY']._serialized_start=659
-  _globals['_BROWSERSTEPINPUT_PARAMSENTRY']._serialized_end=704
-  _globals['_WORKFLOWSERVICE']._serialized_start=707
-  _globals['_WORKFLOWSERVICE']._serialized_end=934
+  _globals['_EXECUTEWORKFLOWREQUEST_PARAMSENTRY']._loaded_options = None
+  _globals['_EXECUTEWORKFLOWREQUEST_PARAMSENTRY']._serialized_options = b'8\001'
+  _globals['_RESUMEJOBREQUEST_DATAENTRY']._loaded_options = None
+  _globals['_RESUMEJOBREQUEST_DATAENTRY']._serialized_options = b'8\001'
+  _globals['_EXECUTEWORKFLOWREQUEST']._serialized_start=27
+  _globals['_EXECUTEWORKFLOWREQUEST']._serialized_end=236
+  _globals['_EXECUTEWORKFLOWREQUEST_PARAMSENTRY']._serialized_start=191
+  _globals['_EXECUTEWORKFLOWREQUEST_PARAMSENTRY']._serialized_end=236
+  _globals['_WORKFLOWCONFIG']._serialized_start=238
+  _globals['_WORKFLOWCONFIG']._serialized_end=341
+  _globals['_EXECUTEWORKFLOWRESPONSE']._serialized_start=343
+  _globals['_EXECUTEWORKFLOWRESPONSE']._serialized_end=424
+  _globals['_GETJOBSTATUSREQUEST']._serialized_start=426
+  _globals['_GETJOBSTATUSREQUEST']._serialized_end=463
+  _globals['_GETJOBSTATUSRESPONSE']._serialized_start=466
+  _globals['_GETJOBSTATUSRESPONSE']._serialized_end=614
+  _globals['_TERMINATEJOBREQUEST']._serialized_start=616
+  _globals['_TERMINATEJOBREQUEST']._serialized_end=669
+  _globals['_TERMINATEJOBRESPONSE']._serialized_start=671
+  _globals['_TERMINATEJOBRESPONSE']._serialized_end=710
+  _globals['_RESUMEJOBREQUEST']._serialized_start=713
+  _globals['_RESUMEJOBREQUEST']._serialized_end=842
+  _globals['_RESUMEJOBREQUEST_DATAENTRY']._serialized_start=799
+  _globals['_RESUMEJOBREQUEST_DATAENTRY']._serialized_end=842
+  _globals['_RESUMEJOBRESPONSE']._serialized_start=844
+  _globals['_RESUMEJOBRESPONSE']._serialized_end=897
+  _globals['_WORKFLOWSERVICE']._serialized_start=900
+  _globals['_WORKFLOWSERVICE']._serialized_end=1217
 # @@protoc_insertion_point(module_scope)

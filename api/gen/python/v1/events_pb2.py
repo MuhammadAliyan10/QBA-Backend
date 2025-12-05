@@ -24,24 +24,18 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x65vents.proto\x12\x02v1\"u\n\x0fJobRequestEvent\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0f\n\x07user_id\x18\x02 \x01(\t\x12\x13\n\x0bworkflow_id\x18\x03 \x01(\t\x12\x19\n\x11\x65stimated_credits\x18\x04 \x01(\x05\x12\x11\n\ttimestamp\x18\x05 \x01(\x03\"K\n\x10JobApprovedEvent\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x10\n\x08\x61pproved\x18\x02 \x01(\x08\x12\x15\n\rdenial_reason\x18\x03 \x01(\t\"\xdc\x01\n\x0fStepUpdateEvent\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0f\n\x07node_id\x18\x02 \x01(\t\x12\x0e\n\x06status\x18\x03 \x01(\t\x12\x13\n\x0blog_message\x18\x04 \x01(\t\x12\x16\n\x0escreenshot_url\x18\x05 \x01(\t\x12\x38\n\x0boutput_data\x18\x06 \x03(\x0b\x32#.v1.StepUpdateEvent.OutputDataEntry\x1a\x31\n\x0fOutputDataEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\x95\x01\n\rAuditLogEvent\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x11\n\tworker_id\x18\x02 \x01(\t\x12\x13\n\x0b\x61\x63tion_type\x18\x03 \x01(\t\x12\x17\n\x0ftarget_selector\x18\x04 \x01(\t\x12\x0b\n\x03url\x18\x05 \x01(\t\x12\x13\n\x0b\x64uration_ms\x18\x06 \x01(\x03\x12\x11\n\ttimestamp\x18\x07 \x01(\x03\x42\x1bZ\x19\x65\x32\x65-backend/api/gen/go/v1b\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x65vents.proto\x12\x06\x65\x32\x65.v1\"{\n\x08JobEvent\x12\x0e\n\x06job_id\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x0f\n\x07message\x18\x03 \x01(\t\x12\x0f\n\x07node_id\x18\x04 \x01(\t\x12\x11\n\ttimestamp\x18\x05 \x01(\x03\x12\x1a\n\x12screenshot_preview\x18\x06 \x01(\x0c\"~\n\x0c\x42illingEvent\x12\x0f\n\x07user_id\x18\x01 \x01(\t\x12\x0e\n\x06job_id\x18\x02 \x01(\t\x12\x0e\n\x06\x61mount\x18\x03 \x01(\x01\x12\x18\n\x10transaction_type\x18\x04 \x01(\t\x12\x10\n\x08metadata\x18\x05 \x01(\t\x12\x11\n\ttimestamp\x18\x06 \x01(\x03\"\x9a\x01\n\rWorkflowEvent\x12\x13\n\x0bworkflow_id\x18\x01 \x01(\t\x12\x0f\n\x07user_id\x18\x02 \x01(\t\x12\x0e\n\x06status\x18\x03 \x01(\t\x12\x15\n\rerror_message\x18\x04 \x01(\t\x12\x12\n\nstarted_at\x18\x05 \x01(\x03\x12\x14\n\x0c\x63ompleted_at\x18\x06 \x01(\x03\x12\x12\n\ntotal_cost\x18\x07 \x01(\x01\x42\x1cZ\x1a\x65\x32\x65-platform/api/gen/go/v1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'events_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
-  _globals['DESCRIPTOR']._serialized_options = b'Z\031e2e-backend/api/gen/go/v1'
-  _globals['_STEPUPDATEEVENT_OUTPUTDATAENTRY']._loaded_options = None
-  _globals['_STEPUPDATEEVENT_OUTPUTDATAENTRY']._serialized_options = b'8\001'
-  _globals['_JOBREQUESTEVENT']._serialized_start=20
-  _globals['_JOBREQUESTEVENT']._serialized_end=137
-  _globals['_JOBAPPROVEDEVENT']._serialized_start=139
-  _globals['_JOBAPPROVEDEVENT']._serialized_end=214
-  _globals['_STEPUPDATEEVENT']._serialized_start=217
-  _globals['_STEPUPDATEEVENT']._serialized_end=437
-  _globals['_STEPUPDATEEVENT_OUTPUTDATAENTRY']._serialized_start=388
-  _globals['_STEPUPDATEEVENT_OUTPUTDATAENTRY']._serialized_end=437
-  _globals['_AUDITLOGEVENT']._serialized_start=440
-  _globals['_AUDITLOGEVENT']._serialized_end=589
+  _globals['DESCRIPTOR']._serialized_options = b'Z\032e2e-platform/api/gen/go/v1'
+  _globals['_JOBEVENT']._serialized_start=24
+  _globals['_JOBEVENT']._serialized_end=147
+  _globals['_BILLINGEVENT']._serialized_start=149
+  _globals['_BILLINGEVENT']._serialized_end=275
+  _globals['_WORKFLOWEVENT']._serialized_start=278
+  _globals['_WORKFLOWEVENT']._serialized_end=432
 # @@protoc_insertion_point(module_scope)

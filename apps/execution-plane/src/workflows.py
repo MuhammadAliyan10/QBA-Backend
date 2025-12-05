@@ -2,7 +2,8 @@ from datetime import timedelta
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError
-from activities.activities import browser_automation_activity
+# DO NOT import activities here - it triggers ML library imports (sentence_transformers)
+# Activities are referenced by string name and registered in worker.py
 
 
 @workflow.defn
@@ -72,8 +73,9 @@ class BrowserWorkflow:
                     self.user_input = None  # Consumed
 
                 # Execute browser automation activity
+                # Use string name to avoid importing the activity module
                 return await workflow.execute_activity(
-                    browser_automation_activity,
+                    "browser_automation_activity",  # String reference, not function
                     payload,
                     start_to_close_timeout=timedelta(minutes=5),
                     retry_policy=retry_policy,

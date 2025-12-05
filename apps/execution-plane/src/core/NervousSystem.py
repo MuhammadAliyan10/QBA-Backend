@@ -2,7 +2,7 @@ import time
 import os
 import logging
 from nats.aio.client import Client as NATS
-from api.gen.python.v1.events_pb2 import StepUpdateEvent
+from api.gen.python.v1.events_pb2 import JobEvent  # Updated from StepUpdateEvent
 
 logger = logging.getLogger("nervous_system")
 
@@ -22,12 +22,14 @@ class NervousSystem:
         try:
             nc = await cls.get_nc()
 
-            event = StepUpdateEvent(
+            # Use new JobEvent message with updated field names
+            event = JobEvent(
                 job_id=job_id,
                 status=status,
-                log_message=message,
+                message=message,  # Changed from log_message
                 node_id=node_id,
-                screenshot_url=""  # In production, upload screenshot and put URL here
+                timestamp=int(time.time()),  # Added timestamp
+                screenshot_preview=screenshot  # Changed from screenshot_url
             )
 
             # Serialize to Binary Protobuf

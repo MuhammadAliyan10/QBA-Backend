@@ -22,10 +22,14 @@ const (
 )
 
 type ExecuteWorkflowRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`                                                             // The Clerk User ID
-	WorkflowId    string                 `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`                                                 // The Recipe ID to run
-	Inputs        map[string]string      `protobuf:"bytes,3,rep,name=inputs,proto3" json:"inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // Dynamic inputs (e.g. {"url": "canvas.com"})
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	UserId     string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	WorkflowId string                 `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"` // The specific recipe (e.g. "amazon_scraper")
+	// Dynamic Inputs (e.g. {"url": "https://target.com", "search_term": "laptop"})
+	Params map[string]string `protobuf:"bytes,3,rep,name=params,proto3" json:"params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// [NEW] The "Glass Box" Configuration
+	// This controls the "Physics" of the browser
+	Config        *WorkflowConfig `protobuf:"bytes,4,opt,name=config,proto3" json:"config,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -74,25 +78,101 @@ func (x *ExecuteWorkflowRequest) GetWorkflowId() string {
 	return ""
 }
 
-func (x *ExecuteWorkflowRequest) GetInputs() map[string]string {
+func (x *ExecuteWorkflowRequest) GetParams() map[string]string {
 	if x != nil {
-		return x.Inputs
+		return x.Params
 	}
 	return nil
 }
 
+func (x *ExecuteWorkflowRequest) GetConfig() *WorkflowConfig {
+	if x != nil {
+		return x.Config
+	}
+	return nil
+}
+
+// [NEW] This struct controls the Browser Environment
+type WorkflowConfig struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	UsePremiumProxy bool                   `protobuf:"varint,1,opt,name=use_premium_proxy,json=usePremiumProxy,proto3" json:"use_premium_proxy,omitempty"` // If true, use Residential IP ($$$)
+	SolveCaptchas   bool                   `protobuf:"varint,2,opt,name=solve_captchas,json=solveCaptchas,proto3" json:"solve_captchas,omitempty"`         // If true, pause and ask dev for help
+	SessionId       string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`                      // Inject cookies from this saved session
+	Region          string                 `protobuf:"bytes,4,opt,name=region,proto3" json:"region,omitempty"`                                             // "us", "eu", "asia" (for Proxy)
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *WorkflowConfig) Reset() {
+	*x = WorkflowConfig{}
+	mi := &file_workflow_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkflowConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkflowConfig) ProtoMessage() {}
+
+func (x *WorkflowConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_workflow_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkflowConfig.ProtoReflect.Descriptor instead.
+func (*WorkflowConfig) Descriptor() ([]byte, []int) {
+	return file_workflow_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *WorkflowConfig) GetUsePremiumProxy() bool {
+	if x != nil {
+		return x.UsePremiumProxy
+	}
+	return false
+}
+
+func (x *WorkflowConfig) GetSolveCaptchas() bool {
+	if x != nil {
+		return x.SolveCaptchas
+	}
+	return false
+}
+
+func (x *WorkflowConfig) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *WorkflowConfig) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
 type ExecuteWorkflowResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`                          // The UUID for this specific run
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`                          // The UUID for this run
 	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`                                     // "QUEUED", "RUNNING"
-	QueuePosition int32                  `protobuf:"varint,3,opt,name=queue_position,json=queuePosition,proto3" json:"queue_position,omitempty"` // "You are #5 in line"
+	QueuePosition int32                  `protobuf:"varint,3,opt,name=queue_position,json=queuePosition,proto3" json:"queue_position,omitempty"` // Load balancing info
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ExecuteWorkflowResponse) Reset() {
 	*x = ExecuteWorkflowResponse{}
-	mi := &file_workflow_proto_msgTypes[1]
+	mi := &file_workflow_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -104,7 +184,7 @@ func (x *ExecuteWorkflowResponse) String() string {
 func (*ExecuteWorkflowResponse) ProtoMessage() {}
 
 func (x *ExecuteWorkflowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_workflow_proto_msgTypes[1]
+	mi := &file_workflow_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -117,7 +197,7 @@ func (x *ExecuteWorkflowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecuteWorkflowResponse.ProtoReflect.Descriptor instead.
 func (*ExecuteWorkflowResponse) Descriptor() ([]byte, []int) {
-	return file_workflow_proto_rawDescGZIP(), []int{1}
+	return file_workflow_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ExecuteWorkflowResponse) GetJobId() string {
@@ -150,7 +230,7 @@ type GetJobStatusRequest struct {
 
 func (x *GetJobStatusRequest) Reset() {
 	*x = GetJobStatusRequest{}
-	mi := &file_workflow_proto_msgTypes[2]
+	mi := &file_workflow_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -162,7 +242,7 @@ func (x *GetJobStatusRequest) String() string {
 func (*GetJobStatusRequest) ProtoMessage() {}
 
 func (x *GetJobStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_workflow_proto_msgTypes[2]
+	mi := &file_workflow_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -175,7 +255,7 @@ func (x *GetJobStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetJobStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetJobStatusRequest) Descriptor() ([]byte, []int) {
-	return file_workflow_proto_rawDescGZIP(), []int{2}
+	return file_workflow_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *GetJobStatusRequest) GetJobId() string {
@@ -188,17 +268,19 @@ func (x *GetJobStatusRequest) GetJobId() string {
 type GetJobStatusResponse struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	JobId           string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	Status          string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`                                           // "COMPLETED", "FAILED", "RUNNING"
-	CurrentStepId   string                 `protobuf:"bytes,3,opt,name=current_step_id,json=currentStepId,proto3" json:"current_step_id,omitempty"`      // Which node is currently active?
-	PercentComplete int32                  `protobuf:"varint,4,opt,name=percent_complete,json=percentComplete,proto3" json:"percent_complete,omitempty"` // For the progress bar
-	ErrorMessage    string                 `protobuf:"bytes,5,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`           // Empty if success
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	Status          string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	CurrentStepId   string                 `protobuf:"bytes,3,opt,name=current_step_id,json=currentStepId,proto3" json:"current_step_id,omitempty"`
+	PercentComplete int32                  `protobuf:"varint,4,opt,name=percent_complete,json=percentComplete,proto3" json:"percent_complete,omitempty"`
+	// [NEW] The output file (e.g., the PDF/CSV on R2)
+	ResultUrl     string `protobuf:"bytes,5,opt,name=result_url,json=resultUrl,proto3" json:"result_url,omitempty"`
+	ErrorMessage  string `protobuf:"bytes,6,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetJobStatusResponse) Reset() {
 	*x = GetJobStatusResponse{}
-	mi := &file_workflow_proto_msgTypes[3]
+	mi := &file_workflow_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -210,7 +292,7 @@ func (x *GetJobStatusResponse) String() string {
 func (*GetJobStatusResponse) ProtoMessage() {}
 
 func (x *GetJobStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_workflow_proto_msgTypes[3]
+	mi := &file_workflow_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -223,7 +305,7 @@ func (x *GetJobStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetJobStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetJobStatusResponse) Descriptor() ([]byte, []int) {
-	return file_workflow_proto_rawDescGZIP(), []int{3}
+	return file_workflow_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *GetJobStatusResponse) GetJobId() string {
@@ -254,6 +336,13 @@ func (x *GetJobStatusResponse) GetPercentComplete() int32 {
 	return 0
 }
 
+func (x *GetJobStatusResponse) GetResultUrl() string {
+	if x != nil {
+		return x.ResultUrl
+	}
+	return ""
+}
+
 func (x *GetJobStatusResponse) GetErrorMessage() string {
 	if x != nil {
 		return x.ErrorMessage
@@ -271,7 +360,7 @@ type TerminateJobRequest struct {
 
 func (x *TerminateJobRequest) Reset() {
 	*x = TerminateJobRequest{}
-	mi := &file_workflow_proto_msgTypes[4]
+	mi := &file_workflow_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -283,7 +372,7 @@ func (x *TerminateJobRequest) String() string {
 func (*TerminateJobRequest) ProtoMessage() {}
 
 func (x *TerminateJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_workflow_proto_msgTypes[4]
+	mi := &file_workflow_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -296,7 +385,7 @@ func (x *TerminateJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminateJobRequest.ProtoReflect.Descriptor instead.
 func (*TerminateJobRequest) Descriptor() ([]byte, []int) {
-	return file_workflow_proto_rawDescGZIP(), []int{4}
+	return file_workflow_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *TerminateJobRequest) GetJobId() string {
@@ -322,7 +411,7 @@ type TerminateJobResponse struct {
 
 func (x *TerminateJobResponse) Reset() {
 	*x = TerminateJobResponse{}
-	mi := &file_workflow_proto_msgTypes[5]
+	mi := &file_workflow_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -334,7 +423,7 @@ func (x *TerminateJobResponse) String() string {
 func (*TerminateJobResponse) ProtoMessage() {}
 
 func (x *TerminateJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_workflow_proto_msgTypes[5]
+	mi := &file_workflow_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -347,7 +436,7 @@ func (x *TerminateJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminateJobResponse.ProtoReflect.Descriptor instead.
 func (*TerminateJobResponse) Descriptor() ([]byte, []int) {
-	return file_workflow_proto_rawDescGZIP(), []int{5}
+	return file_workflow_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *TerminateJobResponse) GetSuccess() bool {
@@ -357,31 +446,29 @@ func (x *TerminateJobResponse) GetSuccess() bool {
 	return false
 }
 
-type BrowserStepInput struct {
+type ResumeJobRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	NodeId        string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
-	Action        string                 `protobuf:"bytes,3,opt,name=action,proto3" json:"action,omitempty"` // "GOTO", "CLICK", "TYPE"
-	Params        map[string]string      `protobuf:"bytes,4,rep,name=params,proto3" json:"params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Data          map[string]string      `protobuf:"bytes,2,rep,name=data,proto3" json:"data,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // e.g., {"decision": "yes", "otp": "123456"}
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *BrowserStepInput) Reset() {
-	*x = BrowserStepInput{}
-	mi := &file_workflow_proto_msgTypes[6]
+func (x *ResumeJobRequest) Reset() {
+	*x = ResumeJobRequest{}
+	mi := &file_workflow_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *BrowserStepInput) String() string {
+func (x *ResumeJobRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*BrowserStepInput) ProtoMessage() {}
+func (*ResumeJobRequest) ProtoMessage() {}
 
-func (x *BrowserStepInput) ProtoReflect() protoreflect.Message {
-	mi := &file_workflow_proto_msgTypes[6]
+func (x *ResumeJobRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_workflow_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -392,81 +479,130 @@ func (x *BrowserStepInput) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use BrowserStepInput.ProtoReflect.Descriptor instead.
-func (*BrowserStepInput) Descriptor() ([]byte, []int) {
-	return file_workflow_proto_rawDescGZIP(), []int{6}
+// Deprecated: Use ResumeJobRequest.ProtoReflect.Descriptor instead.
+func (*ResumeJobRequest) Descriptor() ([]byte, []int) {
+	return file_workflow_proto_rawDescGZIP(), []int{7}
 }
 
-func (x *BrowserStepInput) GetJobId() string {
+func (x *ResumeJobRequest) GetJobId() string {
 	if x != nil {
 		return x.JobId
 	}
 	return ""
 }
 
-func (x *BrowserStepInput) GetNodeId() string {
+func (x *ResumeJobRequest) GetData() map[string]string {
 	if x != nil {
-		return x.NodeId
-	}
-	return ""
-}
-
-func (x *BrowserStepInput) GetAction() string {
-	if x != nil {
-		return x.Action
-	}
-	return ""
-}
-
-func (x *BrowserStepInput) GetParams() map[string]string {
-	if x != nil {
-		return x.Params
+		return x.Data
 	}
 	return nil
+}
+
+type ResumeJobResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"` // Error message if success = false
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResumeJobResponse) Reset() {
+	*x = ResumeJobResponse{}
+	mi := &file_workflow_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResumeJobResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResumeJobResponse) ProtoMessage() {}
+
+func (x *ResumeJobResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_workflow_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResumeJobResponse.ProtoReflect.Descriptor instead.
+func (*ResumeJobResponse) Descriptor() ([]byte, []int) {
+	return file_workflow_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ResumeJobResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *ResumeJobResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
 }
 
 var File_workflow_proto protoreflect.FileDescriptor
 
 const file_workflow_proto_rawDesc = "" +
 	"\n" +
-	"\x0eworkflow.proto\x12\x02v1\"\xcd\x01\n" +
+	"\x0eworkflow.proto\x12\x06e2e.v1\"\x81\x02\n" +
 	"\x16ExecuteWorkflowRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1f\n" +
 	"\vworkflow_id\x18\x02 \x01(\tR\n" +
-	"workflowId\x12>\n" +
-	"\x06inputs\x18\x03 \x03(\v2&.v1.ExecuteWorkflowRequest.InputsEntryR\x06inputs\x1a9\n" +
-	"\vInputsEntry\x12\x10\n" +
+	"workflowId\x12B\n" +
+	"\x06params\x18\x03 \x03(\v2*.e2e.v1.ExecuteWorkflowRequest.ParamsEntryR\x06params\x12.\n" +
+	"\x06config\x18\x04 \x01(\v2\x16.e2e.v1.WorkflowConfigR\x06config\x1a9\n" +
+	"\vParamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"o\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x9a\x01\n" +
+	"\x0eWorkflowConfig\x12*\n" +
+	"\x11use_premium_proxy\x18\x01 \x01(\bR\x0fusePremiumProxy\x12%\n" +
+	"\x0esolve_captchas\x18\x02 \x01(\bR\rsolveCaptchas\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x03 \x01(\tR\tsessionId\x12\x16\n" +
+	"\x06region\x18\x04 \x01(\tR\x06region\"o\n" +
 	"\x17ExecuteWorkflowResponse\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12%\n" +
 	"\x0equeue_position\x18\x03 \x01(\x05R\rqueuePosition\",\n" +
 	"\x13GetJobStatusRequest\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"\xbd\x01\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"\xdc\x01\n" +
 	"\x14GetJobStatusResponse\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12&\n" +
 	"\x0fcurrent_step_id\x18\x03 \x01(\tR\rcurrentStepId\x12)\n" +
-	"\x10percent_complete\x18\x04 \x01(\x05R\x0fpercentComplete\x12#\n" +
-	"\rerror_message\x18\x05 \x01(\tR\ferrorMessage\"D\n" +
+	"\x10percent_complete\x18\x04 \x01(\x05R\x0fpercentComplete\x12\x1d\n" +
+	"\n" +
+	"result_url\x18\x05 \x01(\tR\tresultUrl\x12#\n" +
+	"\rerror_message\x18\x06 \x01(\tR\ferrorMessage\"D\n" +
 	"\x13TerminateJobRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\"0\n" +
 	"\x14TerminateJobResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\"\xcf\x01\n" +
-	"\x10BrowserStepInput\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x17\n" +
-	"\anode_id\x18\x02 \x01(\tR\x06nodeId\x12\x16\n" +
-	"\x06action\x18\x03 \x01(\tR\x06action\x128\n" +
-	"\x06params\x18\x04 \x03(\v2 .v1.BrowserStepInput.ParamsEntryR\x06params\x1a9\n" +
-	"\vParamsEntry\x12\x10\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\"\x9a\x01\n" +
+	"\x10ResumeJobRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x126\n" +
+	"\x04data\x18\x02 \x03(\v2\".e2e.v1.ResumeJobRequest.DataEntryR\x04data\x1a7\n" +
+	"\tDataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\xe3\x01\n" +
-	"\x0fWorkflowService\x12J\n" +
-	"\x0fExecuteWorkflow\x12\x1a.v1.ExecuteWorkflowRequest\x1a\x1b.v1.ExecuteWorkflowResponse\x12A\n" +
-	"\fGetJobStatus\x12\x17.v1.GetJobStatusRequest\x1a\x18.v1.GetJobStatusResponse\x12A\n" +
-	"\fTerminateJob\x12\x17.v1.TerminateJobRequest\x1a\x18.v1.TerminateJobResponseB\x1cZ\x1ae2e-platform/api/gen/go/v1b\x06proto3"
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"G\n" +
+	"\x11ResumeJobResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage2\xbd\x02\n" +
+	"\x0fWorkflowService\x12R\n" +
+	"\x0fExecuteWorkflow\x12\x1e.e2e.v1.ExecuteWorkflowRequest\x1a\x1f.e2e.v1.ExecuteWorkflowResponse\x12I\n" +
+	"\fGetJobStatus\x12\x1b.e2e.v1.GetJobStatusRequest\x1a\x1c.e2e.v1.GetJobStatusResponse\x12I\n" +
+	"\fTerminateJob\x12\x1b.e2e.v1.TerminateJobRequest\x1a\x1c.e2e.v1.TerminateJobResponse\x12@\n" +
+	"\tResumeJob\x12\x18.e2e.v1.ResumeJobRequest\x1a\x19.e2e.v1.ResumeJobResponseB\x1cZ\x1ae2e-platform/api/gen/go/v1b\x06proto3"
 
 var (
 	file_workflow_proto_rawDescOnce sync.Once
@@ -480,32 +616,37 @@ func file_workflow_proto_rawDescGZIP() []byte {
 	return file_workflow_proto_rawDescData
 }
 
-var file_workflow_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_workflow_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_workflow_proto_goTypes = []any{
-	(*ExecuteWorkflowRequest)(nil),  // 0: v1.ExecuteWorkflowRequest
-	(*ExecuteWorkflowResponse)(nil), // 1: v1.ExecuteWorkflowResponse
-	(*GetJobStatusRequest)(nil),     // 2: v1.GetJobStatusRequest
-	(*GetJobStatusResponse)(nil),    // 3: v1.GetJobStatusResponse
-	(*TerminateJobRequest)(nil),     // 4: v1.TerminateJobRequest
-	(*TerminateJobResponse)(nil),    // 5: v1.TerminateJobResponse
-	(*BrowserStepInput)(nil),        // 6: v1.BrowserStepInput
-	nil,                             // 7: v1.ExecuteWorkflowRequest.InputsEntry
-	nil,                             // 8: v1.BrowserStepInput.ParamsEntry
+	(*ExecuteWorkflowRequest)(nil),  // 0: e2e.v1.ExecuteWorkflowRequest
+	(*WorkflowConfig)(nil),          // 1: e2e.v1.WorkflowConfig
+	(*ExecuteWorkflowResponse)(nil), // 2: e2e.v1.ExecuteWorkflowResponse
+	(*GetJobStatusRequest)(nil),     // 3: e2e.v1.GetJobStatusRequest
+	(*GetJobStatusResponse)(nil),    // 4: e2e.v1.GetJobStatusResponse
+	(*TerminateJobRequest)(nil),     // 5: e2e.v1.TerminateJobRequest
+	(*TerminateJobResponse)(nil),    // 6: e2e.v1.TerminateJobResponse
+	(*ResumeJobRequest)(nil),        // 7: e2e.v1.ResumeJobRequest
+	(*ResumeJobResponse)(nil),       // 8: e2e.v1.ResumeJobResponse
+	nil,                             // 9: e2e.v1.ExecuteWorkflowRequest.ParamsEntry
+	nil,                             // 10: e2e.v1.ResumeJobRequest.DataEntry
 }
 var file_workflow_proto_depIdxs = []int32{
-	7, // 0: v1.ExecuteWorkflowRequest.inputs:type_name -> v1.ExecuteWorkflowRequest.InputsEntry
-	8, // 1: v1.BrowserStepInput.params:type_name -> v1.BrowserStepInput.ParamsEntry
-	0, // 2: v1.WorkflowService.ExecuteWorkflow:input_type -> v1.ExecuteWorkflowRequest
-	2, // 3: v1.WorkflowService.GetJobStatus:input_type -> v1.GetJobStatusRequest
-	4, // 4: v1.WorkflowService.TerminateJob:input_type -> v1.TerminateJobRequest
-	1, // 5: v1.WorkflowService.ExecuteWorkflow:output_type -> v1.ExecuteWorkflowResponse
-	3, // 6: v1.WorkflowService.GetJobStatus:output_type -> v1.GetJobStatusResponse
-	5, // 7: v1.WorkflowService.TerminateJob:output_type -> v1.TerminateJobResponse
-	5, // [5:8] is the sub-list for method output_type
-	2, // [2:5] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	9,  // 0: e2e.v1.ExecuteWorkflowRequest.params:type_name -> e2e.v1.ExecuteWorkflowRequest.ParamsEntry
+	1,  // 1: e2e.v1.ExecuteWorkflowRequest.config:type_name -> e2e.v1.WorkflowConfig
+	10, // 2: e2e.v1.ResumeJobRequest.data:type_name -> e2e.v1.ResumeJobRequest.DataEntry
+	0,  // 3: e2e.v1.WorkflowService.ExecuteWorkflow:input_type -> e2e.v1.ExecuteWorkflowRequest
+	3,  // 4: e2e.v1.WorkflowService.GetJobStatus:input_type -> e2e.v1.GetJobStatusRequest
+	5,  // 5: e2e.v1.WorkflowService.TerminateJob:input_type -> e2e.v1.TerminateJobRequest
+	7,  // 6: e2e.v1.WorkflowService.ResumeJob:input_type -> e2e.v1.ResumeJobRequest
+	2,  // 7: e2e.v1.WorkflowService.ExecuteWorkflow:output_type -> e2e.v1.ExecuteWorkflowResponse
+	4,  // 8: e2e.v1.WorkflowService.GetJobStatus:output_type -> e2e.v1.GetJobStatusResponse
+	6,  // 9: e2e.v1.WorkflowService.TerminateJob:output_type -> e2e.v1.TerminateJobResponse
+	8,  // 10: e2e.v1.WorkflowService.ResumeJob:output_type -> e2e.v1.ResumeJobResponse
+	7,  // [7:11] is the sub-list for method output_type
+	3,  // [3:7] is the sub-list for method input_type
+	3,  // [3:3] is the sub-list for extension type_name
+	3,  // [3:3] is the sub-list for extension extendee
+	0,  // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_workflow_proto_init() }
@@ -519,7 +660,7 @@ func file_workflow_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_workflow_proto_rawDesc), len(file_workflow_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

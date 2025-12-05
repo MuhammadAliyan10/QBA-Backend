@@ -131,19 +131,19 @@ async def browser_automation_activity(payload: dict) -> dict:
             async def handle_download(download):
                 filename = download.suggested_filename
                 await NervousSystem.publish_update(job_id, "RUNNING", f"Intercepted download: {filename}", "io")
-                  # Stream to Local/S3 (Simulated here with a temp path,
-                  # in prod you use boto3.upload_fileobj(download.create_read_stream(), ...))
+                # Stream to Local/S3 (Simulated here with a temp path,
+                # in prod you use boto3.upload_fileobj(download.create_read_stream(), ...))
                 try:
-                # Ideally: stream to R2. For MVP: save to persistent volume.
-                # await download.save_as(f"/data/downloads/{job_id}_{filename}")
+                    # Ideally: stream to R2. For MVP: save to persistent volume.
+                    # await download.save_as(f"/data/downloads/{job_id}_{filename}")
 
-                # Report success URL
+                    # Report success URL
                     final_url = f"https://r2.api.com/{job_id}/{filename}"
                     await NervousSystem.publish_update(job_id, "SUCCESS", f"File uploaded: {final_url}", "io")
                 except Exception as e:
                     await NervousSystem.publish_update(job_id, "FAILED", f"Download failed: {e}", "io")
 
-              page.on("download", handle_download)
+            page.on("download", handle_download)
 
             # Initialize the Co-Pilot (SmartFinder)
             finder = SmartFinder(job_id)

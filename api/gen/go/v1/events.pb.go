@@ -21,34 +21,35 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// --- TOPIC: job.request ---
-// Published by: Go Gateway
-// Consumed by: Billing Service
-type JobRequestEvent struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	JobId            string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	UserId           string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	WorkflowId       string                 `protobuf:"bytes,3,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
-	EstimatedCredits int32                  `protobuf:"varint,4,opt,name=estimated_credits,json=estimatedCredits,proto3" json:"estimated_credits,omitempty"` // How much to freeze
-	Timestamp        int64                  `protobuf:"varint,5,opt,name=timestamp,proto3" json:"timestamp,omitempty"`                                       // Unix timestamp
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+// 1. Live Job Updates (The Glass Box Stream)
+type JobEvent struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	JobId string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	// Status: "RUNNING", "HEALER_ACTIVE" (Self-Healing), "COMPLETED", "FAILED"
+	Status    string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	Message   string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`             // e.g. "Raycast detected obstruction. Removing..."
+	NodeId    string `protobuf:"bytes,4,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"` // Which step is running?
+	Timestamp int64  `protobuf:"varint,5,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	// [NEW] A tiny thumbnail (base64 or raw bytes) so the user can see the bot working
+	ScreenshotPreview []byte `protobuf:"bytes,6,opt,name=screenshot_preview,json=screenshotPreview,proto3" json:"screenshot_preview,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
-func (x *JobRequestEvent) Reset() {
-	*x = JobRequestEvent{}
+func (x *JobEvent) Reset() {
+	*x = JobEvent{}
 	mi := &file_events_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *JobRequestEvent) String() string {
+func (x *JobEvent) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*JobRequestEvent) ProtoMessage() {}
+func (*JobEvent) ProtoMessage() {}
 
-func (x *JobRequestEvent) ProtoReflect() protoreflect.Message {
+func (x *JobEvent) ProtoReflect() protoreflect.Message {
 	mi := &file_events_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -60,228 +61,82 @@ func (x *JobRequestEvent) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use JobRequestEvent.ProtoReflect.Descriptor instead.
-func (*JobRequestEvent) Descriptor() ([]byte, []int) {
+// Deprecated: Use JobEvent.ProtoReflect.Descriptor instead.
+func (*JobEvent) Descriptor() ([]byte, []int) {
 	return file_events_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *JobRequestEvent) GetJobId() string {
+func (x *JobEvent) GetJobId() string {
 	if x != nil {
 		return x.JobId
 	}
 	return ""
 }
 
-func (x *JobRequestEvent) GetUserId() string {
-	if x != nil {
-		return x.UserId
-	}
-	return ""
-}
-
-func (x *JobRequestEvent) GetWorkflowId() string {
-	if x != nil {
-		return x.WorkflowId
-	}
-	return ""
-}
-
-func (x *JobRequestEvent) GetEstimatedCredits() int32 {
-	if x != nil {
-		return x.EstimatedCredits
-	}
-	return 0
-}
-
-func (x *JobRequestEvent) GetTimestamp() int64 {
-	if x != nil {
-		return x.Timestamp
-	}
-	return 0
-}
-
-// --- TOPIC: job.approved ---
-// Published by: Billing Service
-// Consumed by: Temporal Orchestrator
-type JobApprovedEvent struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	Approved      bool                   `protobuf:"varint,2,opt,name=approved,proto3" json:"approved,omitempty"`
-	DenialReason  string                 `protobuf:"bytes,3,opt,name=denial_reason,json=denialReason,proto3" json:"denial_reason,omitempty"` // e.g. "Insufficient Funds"
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *JobApprovedEvent) Reset() {
-	*x = JobApprovedEvent{}
-	mi := &file_events_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *JobApprovedEvent) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*JobApprovedEvent) ProtoMessage() {}
-
-func (x *JobApprovedEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_events_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use JobApprovedEvent.ProtoReflect.Descriptor instead.
-func (*JobApprovedEvent) Descriptor() ([]byte, []int) {
-	return file_events_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *JobApprovedEvent) GetJobId() string {
-	if x != nil {
-		return x.JobId
-	}
-	return ""
-}
-
-func (x *JobApprovedEvent) GetApproved() bool {
-	if x != nil {
-		return x.Approved
-	}
-	return false
-}
-
-func (x *JobApprovedEvent) GetDenialReason() string {
-	if x != nil {
-		return x.DenialReason
-	}
-	return ""
-}
-
-// --- TOPIC: job.update ---
-// Published by: Python Worker
-// Consumed by: Go Gateway (to push to WebSocket)
-type StepUpdateEvent struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	JobId  string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	NodeId string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"` // The React Flow Node ID
-	Status string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`               // "RUNNING", "SUCCESS", "FAILED"
-	// The "Live Feed" Data
-	LogMessage    string            `protobuf:"bytes,4,opt,name=log_message,json=logMessage,proto3" json:"log_message,omitempty"`                                                                           // "Found login button..."
-	ScreenshotUrl string            `protobuf:"bytes,5,opt,name=screenshot_url,json=screenshotUrl,proto3" json:"screenshot_url,omitempty"`                                                                  // Thumbnail for the UI
-	OutputData    map[string]string `protobuf:"bytes,6,rep,name=output_data,json=outputData,proto3" json:"output_data,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // Variables extracted
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *StepUpdateEvent) Reset() {
-	*x = StepUpdateEvent{}
-	mi := &file_events_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *StepUpdateEvent) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*StepUpdateEvent) ProtoMessage() {}
-
-func (x *StepUpdateEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_events_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use StepUpdateEvent.ProtoReflect.Descriptor instead.
-func (*StepUpdateEvent) Descriptor() ([]byte, []int) {
-	return file_events_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *StepUpdateEvent) GetJobId() string {
-	if x != nil {
-		return x.JobId
-	}
-	return ""
-}
-
-func (x *StepUpdateEvent) GetNodeId() string {
-	if x != nil {
-		return x.NodeId
-	}
-	return ""
-}
-
-func (x *StepUpdateEvent) GetStatus() string {
+func (x *JobEvent) GetStatus() string {
 	if x != nil {
 		return x.Status
 	}
 	return ""
 }
 
-func (x *StepUpdateEvent) GetLogMessage() string {
+func (x *JobEvent) GetMessage() string {
 	if x != nil {
-		return x.LogMessage
+		return x.Message
 	}
 	return ""
 }
 
-func (x *StepUpdateEvent) GetScreenshotUrl() string {
+func (x *JobEvent) GetNodeId() string {
 	if x != nil {
-		return x.ScreenshotUrl
+		return x.NodeId
 	}
 	return ""
 }
 
-func (x *StepUpdateEvent) GetOutputData() map[string]string {
+func (x *JobEvent) GetTimestamp() int64 {
 	if x != nil {
-		return x.OutputData
+		return x.Timestamp
+	}
+	return 0
+}
+
+func (x *JobEvent) GetScreenshotPreview() []byte {
+	if x != nil {
+		return x.ScreenshotPreview
 	}
 	return nil
 }
 
-// --- TOPIC: job.audit ---
-// Published by: Python Worker
-// Consumed by: ClickHouse Ingestor
-type AuditLogEvent struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	JobId          string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	WorkerId       string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`                   // Which specific pod ran this?
-	ActionType     string                 `protobuf:"bytes,3,opt,name=action_type,json=actionType,proto3" json:"action_type,omitempty"`             // "CLICK", "TYPE", "NAVIGATE"
-	TargetSelector string                 `protobuf:"bytes,4,opt,name=target_selector,json=targetSelector,proto3" json:"target_selector,omitempty"` // "#login-btn"
-	Url            string                 `protobuf:"bytes,5,opt,name=url,proto3" json:"url,omitempty"`                                             // "https://canvas.instructure.com/login"
-	DurationMs     int64                  `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`            // Performance tracking
-	Timestamp      int64                  `protobuf:"varint,7,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+// 2. Billing Events (The Ledger)
+type BillingEvent struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	UserId string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	JobId  string                 `protobuf:"bytes,2,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	// [UPDATED] Changed from int32 to double for micro-cents (e.g. 0.0050)
+	Amount          float64 `protobuf:"fixed64,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	TransactionType string  `protobuf:"bytes,4,opt,name=transaction_type,json=transactionType,proto3" json:"transaction_type,omitempty"` // "DEDUCTION", "TOPUP"
+	Metadata        string  `protobuf:"bytes,5,opt,name=metadata,proto3" json:"metadata,omitempty"`                                      // JSON string for extra details
+	Timestamp       int64   `protobuf:"varint,6,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
-func (x *AuditLogEvent) Reset() {
-	*x = AuditLogEvent{}
-	mi := &file_events_proto_msgTypes[3]
+func (x *BillingEvent) Reset() {
+	*x = BillingEvent{}
+	mi := &file_events_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *AuditLogEvent) String() string {
+func (x *BillingEvent) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*AuditLogEvent) ProtoMessage() {}
+func (*BillingEvent) ProtoMessage() {}
 
-func (x *AuditLogEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_events_proto_msgTypes[3]
+func (x *BillingEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_events_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -292,56 +147,143 @@ func (x *AuditLogEvent) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use AuditLogEvent.ProtoReflect.Descriptor instead.
-func (*AuditLogEvent) Descriptor() ([]byte, []int) {
-	return file_events_proto_rawDescGZIP(), []int{3}
+// Deprecated: Use BillingEvent.ProtoReflect.Descriptor instead.
+func (*BillingEvent) Descriptor() ([]byte, []int) {
+	return file_events_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *AuditLogEvent) GetJobId() string {
+func (x *BillingEvent) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *BillingEvent) GetJobId() string {
 	if x != nil {
 		return x.JobId
 	}
 	return ""
 }
 
-func (x *AuditLogEvent) GetWorkerId() string {
+func (x *BillingEvent) GetAmount() float64 {
 	if x != nil {
-		return x.WorkerId
-	}
-	return ""
-}
-
-func (x *AuditLogEvent) GetActionType() string {
-	if x != nil {
-		return x.ActionType
-	}
-	return ""
-}
-
-func (x *AuditLogEvent) GetTargetSelector() string {
-	if x != nil {
-		return x.TargetSelector
-	}
-	return ""
-}
-
-func (x *AuditLogEvent) GetUrl() string {
-	if x != nil {
-		return x.Url
-	}
-	return ""
-}
-
-func (x *AuditLogEvent) GetDurationMs() int64 {
-	if x != nil {
-		return x.DurationMs
+		return x.Amount
 	}
 	return 0
 }
 
-func (x *AuditLogEvent) GetTimestamp() int64 {
+func (x *BillingEvent) GetTransactionType() string {
+	if x != nil {
+		return x.TransactionType
+	}
+	return ""
+}
+
+func (x *BillingEvent) GetMetadata() string {
+	if x != nil {
+		return x.Metadata
+	}
+	return ""
+}
+
+func (x *BillingEvent) GetTimestamp() int64 {
 	if x != nil {
 		return x.Timestamp
+	}
+	return 0
+}
+
+// 3. Workflow Audit Log (Long-term storage)
+type WorkflowEvent struct {
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	WorkflowId   string                 `protobuf:"bytes,1,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	UserId       string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Status       string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	ErrorMessage string                 `protobuf:"bytes,4,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	StartedAt    int64                  `protobuf:"varint,5,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	CompletedAt  int64                  `protobuf:"varint,6,opt,name=completed_at,json=completedAt,proto3" json:"completed_at,omitempty"`
+	// [NEW] How much this specific run cost
+	TotalCost     float64 `protobuf:"fixed64,7,opt,name=total_cost,json=totalCost,proto3" json:"total_cost,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkflowEvent) Reset() {
+	*x = WorkflowEvent{}
+	mi := &file_events_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkflowEvent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkflowEvent) ProtoMessage() {}
+
+func (x *WorkflowEvent) ProtoReflect() protoreflect.Message {
+	mi := &file_events_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkflowEvent.ProtoReflect.Descriptor instead.
+func (*WorkflowEvent) Descriptor() ([]byte, []int) {
+	return file_events_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *WorkflowEvent) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+func (x *WorkflowEvent) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *WorkflowEvent) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *WorkflowEvent) GetErrorMessage() string {
+	if x != nil {
+		return x.ErrorMessage
+	}
+	return ""
+}
+
+func (x *WorkflowEvent) GetStartedAt() int64 {
+	if x != nil {
+		return x.StartedAt
+	}
+	return 0
+}
+
+func (x *WorkflowEvent) GetCompletedAt() int64 {
+	if x != nil {
+		return x.CompletedAt
+	}
+	return 0
+}
+
+func (x *WorkflowEvent) GetTotalCost() float64 {
+	if x != nil {
+		return x.TotalCost
 	}
 	return 0
 }
@@ -350,40 +292,32 @@ var File_events_proto protoreflect.FileDescriptor
 
 const file_events_proto_rawDesc = "" +
 	"\n" +
-	"\fevents.proto\x12\x02v1\"\xad\x01\n" +
-	"\x0fJobRequestEvent\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x17\n" +
-	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1f\n" +
-	"\vworkflow_id\x18\x03 \x01(\tR\n" +
-	"workflowId\x12+\n" +
-	"\x11estimated_credits\x18\x04 \x01(\x05R\x10estimatedCredits\x12\x1c\n" +
-	"\ttimestamp\x18\x05 \x01(\x03R\ttimestamp\"j\n" +
-	"\x10JobApprovedEvent\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1a\n" +
-	"\bapproved\x18\x02 \x01(\bR\bapproved\x12#\n" +
-	"\rdenial_reason\x18\x03 \x01(\tR\fdenialReason\"\xa6\x02\n" +
-	"\x0fStepUpdateEvent\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x17\n" +
-	"\anode_id\x18\x02 \x01(\tR\x06nodeId\x12\x16\n" +
-	"\x06status\x18\x03 \x01(\tR\x06status\x12\x1f\n" +
-	"\vlog_message\x18\x04 \x01(\tR\n" +
-	"logMessage\x12%\n" +
-	"\x0escreenshot_url\x18\x05 \x01(\tR\rscreenshotUrl\x12D\n" +
-	"\voutput_data\x18\x06 \x03(\v2#.v1.StepUpdateEvent.OutputDataEntryR\n" +
-	"outputData\x1a=\n" +
-	"\x0fOutputDataEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xde\x01\n" +
-	"\rAuditLogEvent\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
-	"\tworker_id\x18\x02 \x01(\tR\bworkerId\x12\x1f\n" +
-	"\vaction_type\x18\x03 \x01(\tR\n" +
-	"actionType\x12'\n" +
-	"\x0ftarget_selector\x18\x04 \x01(\tR\x0etargetSelector\x12\x10\n" +
-	"\x03url\x18\x05 \x01(\tR\x03url\x12\x1f\n" +
-	"\vduration_ms\x18\x06 \x01(\x03R\n" +
-	"durationMs\x12\x1c\n" +
-	"\ttimestamp\x18\a \x01(\x03R\ttimestampB\x1bZ\x19e2e-backend/api/gen/go/v1b\x06proto3"
+	"\fevents.proto\x12\x06e2e.v1\"\xb9\x01\n" +
+	"\bJobEvent\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x16\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status\x12\x18\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\x12\x17\n" +
+	"\anode_id\x18\x04 \x01(\tR\x06nodeId\x12\x1c\n" +
+	"\ttimestamp\x18\x05 \x01(\x03R\ttimestamp\x12-\n" +
+	"\x12screenshot_preview\x18\x06 \x01(\fR\x11screenshotPreview\"\xbb\x01\n" +
+	"\fBillingEvent\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x15\n" +
+	"\x06job_id\x18\x02 \x01(\tR\x05jobId\x12\x16\n" +
+	"\x06amount\x18\x03 \x01(\x01R\x06amount\x12)\n" +
+	"\x10transaction_type\x18\x04 \x01(\tR\x0ftransactionType\x12\x1a\n" +
+	"\bmetadata\x18\x05 \x01(\tR\bmetadata\x12\x1c\n" +
+	"\ttimestamp\x18\x06 \x01(\x03R\ttimestamp\"\xe7\x01\n" +
+	"\rWorkflowEvent\x12\x1f\n" +
+	"\vworkflow_id\x18\x01 \x01(\tR\n" +
+	"workflowId\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x12#\n" +
+	"\rerror_message\x18\x04 \x01(\tR\ferrorMessage\x12\x1d\n" +
+	"\n" +
+	"started_at\x18\x05 \x01(\x03R\tstartedAt\x12!\n" +
+	"\fcompleted_at\x18\x06 \x01(\x03R\vcompletedAt\x12\x1d\n" +
+	"\n" +
+	"total_cost\x18\a \x01(\x01R\ttotalCostB\x1cZ\x1ae2e-platform/api/gen/go/v1b\x06proto3"
 
 var (
 	file_events_proto_rawDescOnce sync.Once
@@ -397,21 +331,18 @@ func file_events_proto_rawDescGZIP() []byte {
 	return file_events_proto_rawDescData
 }
 
-var file_events_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_events_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_events_proto_goTypes = []any{
-	(*JobRequestEvent)(nil),  // 0: v1.JobRequestEvent
-	(*JobApprovedEvent)(nil), // 1: v1.JobApprovedEvent
-	(*StepUpdateEvent)(nil),  // 2: v1.StepUpdateEvent
-	(*AuditLogEvent)(nil),    // 3: v1.AuditLogEvent
-	nil,                      // 4: v1.StepUpdateEvent.OutputDataEntry
+	(*JobEvent)(nil),      // 0: e2e.v1.JobEvent
+	(*BillingEvent)(nil),  // 1: e2e.v1.BillingEvent
+	(*WorkflowEvent)(nil), // 2: e2e.v1.WorkflowEvent
 }
 var file_events_proto_depIdxs = []int32{
-	4, // 0: v1.StepUpdateEvent.output_data:type_name -> v1.StepUpdateEvent.OutputDataEntry
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	0, // [0:0] is the sub-list for method output_type
+	0, // [0:0] is the sub-list for method input_type
+	0, // [0:0] is the sub-list for extension type_name
+	0, // [0:0] is the sub-list for extension extendee
+	0, // [0:0] is the sub-list for field type_name
 }
 
 func init() { file_events_proto_init() }
@@ -425,7 +356,7 @@ func file_events_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_events_proto_rawDesc), len(file_events_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
