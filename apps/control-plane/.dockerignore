@@ -1,0 +1,7 @@
+*.log
+.env
+.git/
+*.md
+__debug_bin
+.vscode/
+.idea/

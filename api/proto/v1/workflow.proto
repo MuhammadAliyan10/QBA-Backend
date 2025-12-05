@@ -14,6 +14,9 @@ service WorkflowService {
 
   // Emergency Kill Switch (DELETE /job/:id)
   rpc TerminateJob (TerminateJobRequest) returns (TerminateJobResponse);
+
+  // Human-in-the-Loop Resume (POST /resume)
+  rpc ResumeJob (ResumeJobRequest) returns (ResumeJobResponse);
 }
 
 // --- MESSAGES ---
@@ -67,4 +70,14 @@ message TerminateJobRequest {
 
 message TerminateJobResponse {
   bool success = 1;
+}
+
+message ResumeJobRequest {
+  string job_id = 1;
+  map<string, string> data = 2;  // e.g., {"decision": "yes", "otp": "123456"}
+}
+
+message ResumeJobResponse {
+  bool success = 1;
+  string message = 2;  // Error message if success = false
 }

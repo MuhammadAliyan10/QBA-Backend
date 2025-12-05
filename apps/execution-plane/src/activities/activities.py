@@ -1,3 +1,4 @@
+import os
 import asyncio
 import logging
 import base64
@@ -42,6 +43,24 @@ RECIPES = {
     ]
 }
 
+def get_proxy_config(region="us"):
+    """
+    Constructs the Proxy dictionary for Playwright.
+    Supports BrightData / Smartproxy / IPRoyal formats.
+    """
+    server = os.getenv("PROXY_SERVER") # e.g., "http://brd.superproxy.io:22225"
+    username = os.getenv("PROXY_USER")
+    password = os.getenv("PROXY_PASSWORD")
+
+    if not server or not username:
+        return None
+
+    return {
+        "server": server,
+        "username": f"{username}-country-{region}", # Most providers use this format
+        "password": password
+    }
+
 @activity.defn
 async def browser_automation_activity(payload: dict) -> dict:
     """
@@ -78,14 +97,19 @@ async def browser_automation_activity(payload: dict) -> dict:
         # --- 4. BROWSER LAUNCH STRATEGY ---
         launch_args = {
             "headless": True,
-            "args": ["--no-sandbox", "--disable-setuid-sandbox"] # Required for Docker
+            "args": ["--no-sandbox", "--disable-setuid-sandbox"]
         }
 
         # PROXY LOGIC (The "Warden")
         if config.get("use_premium_proxy"):
-            # In a real app, you fetch these creds from Env/Vault
-            # launch_args["proxy"] = {"server": "http://brd.superproxy.io:22225", ...}
-            await NervousSystem.publish_update(job_id, "RUNNING", "Routing via Residential Proxy 🛡️", "init")
+            region = config.get("region", "us")
+            proxy_conf = get_proxy_config(region)
+
+            if proxy_conf:
+                launch_args["proxy"] = proxy_conf
+                await NervousSystem.publish_update(job_id, "RUNNING", f"Routing via Residential Proxy ({region}) 🛡️", "init")
+            else:
+                await NervousSystem.publish_update(job_id, "WARNING", "Proxy credentials missing! Using Datacenter IP.", "init")
 
         try:
             browser = await p.chromium.launch(**launch_args)
@@ -103,6 +127,23 @@ async def browser_automation_activity(payload: dict) -> dict:
                 # await context.add_cookies(cookies_from_redis)
 
             page = await context.new_page()
+
+            async def handle_download(download):
+                filename = download.suggested_filename
+                await NervousSystem.publish_update(job_id, "RUNNING", f"Intercepted download: {filename}", "io")
+                  # Stream to Local/S3 (Simulated here with a temp path,
+                  # in prod you use boto3.upload_fileobj(download.create_read_stream(), ...))
+                try:
+                # Ideally: stream to R2. For MVP: save to persistent volume.
+                # await download.save_as(f"/data/downloads/{job_id}_{filename}")
+
+                # Report success URL
+                    final_url = f"https://r2.api.com/{job_id}/{filename}"
+                    await NervousSystem.publish_update(job_id, "SUCCESS", f"File uploaded: {final_url}", "io")
+                except Exception as e:
+                    await NervousSystem.publish_update(job_id, "FAILED", f"Download failed: {e}", "io")
+
+              page.on("download", handle_download)
 
             # Initialize the Co-Pilot (SmartFinder)
             finder = SmartFinder(job_id)

@@ -179,6 +179,56 @@ func main() {
 		})
 	})
 
+	// --- HUMAN-IN-THE-LOOP RESUME ENDPOINT ---
+	r.POST("/resume", func(c *gin.Context) {
+		// A. Parse Resume Request (JSON)
+		var req struct {
+			JobID string            `json:"job_id"`
+			Data  map[string]string `json:"data"`
+		}
+
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": "Invalid JSON body"})
+			return
+		}
+
+		if req.JobID == "" {
+			c.JSON(400, gin.H{"error": "job_id is required"})
+			return
+		}
+
+		// B. Send Temporal Signal to the Running Workflow
+		workflowID := "workflow-" + req.JobID
+
+		log.Printf("📨 Sending signal to workflow %s with data: %v", workflowID, req.Data)
+
+		err := temporalClient.SignalWorkflow(
+			context.Background(),
+			workflowID,
+			"",                    // Empty RunID = use the currently running execution
+			"USER_INTERACTION",    // Signal name (must match Python @workflow.signal)
+			req.Data,              // Signal payload (map[string]string)
+		)
+
+		if err != nil {
+			log.Printf("❌ Signal Failed for Job %s: %v", req.JobID, err)
+			c.JSON(500, gin.H{
+				"success": false,
+				"error":   "Failed to signal workflow",
+				"details": err.Error(),
+			})
+			return
+		}
+
+		log.Printf("✅ Signal sent successfully to Job %s", req.JobID)
+		c.JSON(200, gin.H{
+			"success": true,
+			"message": "Workflow resumed",
+			"job_id":  req.JobID,
+		})
+	})
+
+
 	// Start Server
 	port := os.Getenv("PORT_GO_API")
 	if port == "" {
