@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	// FIX: Correct imports
+	// 1. IMPORT YOUR WS MANAGER
 	"e2e-platform/apps/control-plane/internal/ws"
 
 	"github.com/gin-contrib/cors"
@@ -19,9 +19,10 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/nats-io/nats.go"
 	"go.temporal.io/sdk/client"
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
-	// Import generated protobufs
+	// 2. IMPORT GENERATED PROTOBUFS
 	pb "e2e-platform/api/gen/go/v1"
 )
 
@@ -47,39 +48,31 @@ func (c *Consumer) StartListening() {
 		}
 		jobID := parts[2]
 
-		log.Printf("📨 Received Event for %s", jobID)
-
-		// Unmarshal Protobuf
+		// 3. UNMARSHAL PROTOBUF (StepUpdateEvent)
 		var event pb.StepUpdateEvent
 		if err := proto.Unmarshal(m.Data, &event); err != nil {
 			log.Printf("❌ Failed to unmarshal event: %v", err)
 			return
 		}
 
-		log.Printf("   Status: %s | Msg: %s", event.Status, event.LogMessage)
+		log.Printf("📨 [Job %s] Status: %s | Node: %s | Msg: %s", jobID, event.Status, event.NodeId, event.LogMessage)
 
-		// Push to WebSocket (Serialize to JSON for frontend)
-		// In a real app, we might send binary or JSON. React Flow usually likes JSON.
-		// For now, let's just broadcast the raw bytes or a JSON wrapper.
-		// Let's re-marshal to JSON for the frontend.
-		// Or just send the struct if wsManager handles it.
-		c.ws.BroadcastToJob(jobID, m.Data) // Assuming frontend can handle it or we change this later.
+		// 4. CONVERT TO JSON FOR FRONTEND
+        // React/Frontend expects JSON, not binary Protobuf
+        jsonBytes, _ := protojson.Marshal(&event)
+		c.ws.BroadcastToJob(jobID, jsonBytes)
 	})
 
 	if err != nil {
 		log.Fatalf("❌ Failed to subscribe to NATS: %v", err)
 	}
-	log.Println("👂 Listening for Job Updates on NATS...")
+	log.Println("👂 Listening for Job Updates on NATS (Subject: job.update.*)...")
 }
 
 func main() {
 	// 1. Load Config
-	// Trying 3 levels up since we run from apps/control-plane/cmd/server/
-	if err := godotenv.Load("../../../.env"); err != nil {
-		// Fallback for running via 'make run-go'
-		if err := godotenv.Load("../../.env"); err != nil {
-			log.Println("⚠️  No .env file found, relying on system env")
-		}
+	if err := godotenv.Load(); err != nil {
+        log.Println("⚠️  No .env file found, relying on system env")
 	}
 
 	// 2. Connect to NATS
@@ -93,7 +86,6 @@ func main() {
 		log.Fatalf("❌ Failed to connect to NATS: %v", err)
 	}
 	defer nc.Close()
-	log.Println("✅ NATS JetStream Connected!")
 
 	// 3. Connect to Temporal
 	temporalHost := os.Getenv("TEMPORAL_HOST")
@@ -109,7 +101,6 @@ func main() {
 		log.Fatalf("❌ Failed to connect to Temporal: %v", err)
 	}
 	defer temporalClient.Close()
-	log.Println("✅ Temporal Connected!")
 
 	// 4. Setup Components
 	wsManager := ws.NewManager()
@@ -121,73 +112,70 @@ func main() {
 	r.Use(cors.Default())
 
 	r.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "alive"})
+		c.JSON(200, gin.H{"status": "alive", "service": "control-plane"})
 	})
 
 	r.GET("/ws", func(c *gin.Context) {
 		wsManager.HandleRequest(c)
 	})
 
+    // --- THE MAIN API ENDPOINT ---
 	r.POST("/run", func(c *gin.Context) {
+        // A. Parse Developer Request (JSON)
+        // We use a struct that matches the Protocol Buffer "ExecuteWorkflowRequest"
+        var req struct {
+            WorkflowID string            `json:"workflow_id"`
+            Params     map[string]string `json:"params"`
+            Config     struct {
+                UsePremiumProxy bool   `json:"use_premium_proxy"`
+                SolveCaptchas   bool   `json:"solve_captchas"`
+                SessionID       string `json:"session_id"`
+                Region          string `json:"region"`
+            } `json:"config"`
+        }
+
+        if err := c.BindJSON(&req); err != nil {
+            c.JSON(400, gin.H{"error": "Invalid JSON body"})
+            return
+        }
+
 		jobID := fmt.Sprintf("job-%d", time.Now().Unix())
 
-		steps := []*pb.BrowserStepInput{
-			{
-				JobId:  jobID,
-				NodeId: "node-1",
-				Action: "GOTO",
-				Params: map[string]string{"url": "http://localhost:8888/test_page.html"},
-			},
-			// Test 1: Click login button (Should be found by Sniper)
-			{
-				JobId:  jobID,
-				NodeId: "node-2",
-				Action: "CLICK",
-				Params: map[string]string{"intent": "login"},
-			},
-			// Test 2: Type in username field
-			{
-				JobId:  jobID,
-				NodeId: "node-3",
-				Action: "TYPE",
-				Params: map[string]string{"intent": "username", "text": "test_user_123"},
-			},
-			// Test 3: Scroll down
-			{
-				JobId:  jobID,
-				NodeId: "node-4",
-				Action: "SCROLL",
-				Params: map[string]string{"direction": "down", "amount": "300"},
-			},
-		}
+        // B. Prepare Data for Temporal
+        // The Python Worker expects a single argument: The "Job Payload"
+        // We package everything into a clean Go Map so Python receives a Dictionary.
+        workflowPayload := map[string]interface{}{
+            "job_id":      jobID,
+            "workflow_id": req.WorkflowID,
+            "params":      req.Params,
+            "config": map[string]interface{}{
+                "use_premium_proxy": req.Config.UsePremiumProxy,
+                "solve_captchas":    req.Config.SolveCaptchas,
+                "session_id":        req.Config.SessionID,
+                "region":            req.Config.Region,
+            },
+        }
 
 		workflowOptions := client.StartWorkflowOptions{
 			ID:        "workflow-" + jobID,
 			TaskQueue: "e2e-browser-tasks",
 		}
 
-		// Convert to generic map to avoid Temporal Protobuf decoding issues in Python
-		// This is a quick fix. Ideally we use a custom DataConverter.
-		var stepsData []map[string]interface{}
-		for _, step := range steps {
-			stepsData = append(stepsData, map[string]interface{}{
-				"job_id":  step.JobId,
-				"node_id": step.NodeId,
-				"action":  step.Action,
-				"params":  step.Params,
-			})
-		}
-
-		we, err := temporalClient.ExecuteWorkflow(context.Background(), workflowOptions, "BrowserWorkflow", stepsData)
+        // C. Start the Workflow
+        // Note: We are now passing the DYNAMIC payload, not hardcoded steps.
+        // The Python Worker will load the "Recipe" based on `workflow_id`.
+		we, err := temporalClient.ExecuteWorkflow(context.Background(), workflowOptions, "BrowserWorkflow", workflowPayload)
 		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
+			log.Printf("❌ Temporal Start Failed: %v", err)
+			c.JSON(500, gin.H{"error": "Failed to start workflow"})
 			return
 		}
 
-		c.JSON(200, gin.H{
-			"message": "Mission Launched 🚀",
+		c.JSON(202, gin.H{
+			"message": "Job Queued Successfully",
 			"job_id":  jobID,
 			"run_id":  we.GetRunID(),
+			"trace_ws": fmt.Sprintf("/ws?job_id=%s", jobID),
 		})
 	})
 

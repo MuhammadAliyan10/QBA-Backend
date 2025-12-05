@@ -1,6 +1,6 @@
 module e2e-platform/api
 
-go 1.25.4
+go 1.23
 
 require (
 	google.golang.org/grpc v1.77.0

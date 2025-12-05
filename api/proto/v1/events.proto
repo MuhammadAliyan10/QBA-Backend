@@ -4,31 +4,45 @@ package e2e.v1;
 
 option go_package = "e2e-platform/api/gen/go/v1";
 
-// Job Status Update Event
+// --- THE NERVOUS SYSTEM MESSAGES (NATS) ---
+
+// 1. Live Job Updates (The Glass Box Stream)
 message JobEvent {
-    string job_id = 1;
-    string status = 2;  // "pending", "running", "completed", "failed"
-    string message = 3;
-    int64 timestamp = 4;
+  string job_id = 1;
+
+  // Status: "RUNNING", "HEALER_ACTIVE" (Self-Healing), "COMPLETED", "FAILED"
+  string status = 2;
+
+  string message = 3;  // e.g. "Raycast detected obstruction. Removing..."
+  string node_id = 4;  // Which step is running?
+  int64 timestamp = 5;
+
+  // [NEW] A tiny thumbnail (base64 or raw bytes) so the user can see the bot working
+  bytes screenshot_preview = 6;
 }
 
-// Billing Event for Ledger Writes
+// 2. Billing Events (The Ledger)
 message BillingEvent {
-    string user_id = 1;
-    int32 amount = 2;               // Positive for credit, negative for deduction
-    int32 balance_after = 3;        // Balance after transaction
-    string transaction_type = 4;    // "DEDUCTION", "TOPUP", "REFUND"
-    string metadata = 5;            // JSON metadata (optional)
-    int64 timestamp = 6;            // Unix timestamp
-    string transaction_id = 7;      // Unique transaction ID
+  string user_id = 1;
+  string job_id = 2;
+
+  // [UPDATED] Changed from int32 to double for micro-cents (e.g. 0.0050)
+  double amount = 3;
+
+  string transaction_type = 4; // "DEDUCTION", "TOPUP"
+  string metadata = 5;         // JSON string for extra details
+  int64 timestamp = 6;
 }
 
-// Workflow Events
+// 3. Workflow Audit Log (Long-term storage)
 message WorkflowEvent {
-    string workflow_id = 1;
-    string user_id = 2;
-    string status = 3;
-    string error_message = 4;
-    int64 started_at = 5;
-    int64 completed_at = 6;
+  string workflow_id = 1;
+  string user_id = 2;
+  string status = 3;
+  string error_message = 4;
+  int64 started_at = 5;
+  int64 completed_at = 6;
+
+  // [NEW] How much this specific run cost
+  double total_cost = 7;
 }

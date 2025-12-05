@@ -27,9 +27,8 @@ func NewManager() *Manager {
 	// Handle Connection
 	m.HandleConnect(func(s *melody.Session) {
 		jobID := s.Request.URL.Query().Get("job_id")
+		// If no Job ID, we treat it as a "Global Dashboard" listener (optional)
 		if jobID == "" {
-			// Optional: Allow connecting without job_id for general dashboard updates
-			log.Println("🟢 WS Connected (Global)")
 			return
 		}
 
@@ -40,10 +39,30 @@ func NewManager() *Manager {
 		mgr.lock.Unlock()
 	})
 
-	// Handle Disconnect
+	// Handle Disconnect (THE FIX)
 	m.HandleDisconnect(func(s *melody.Session) {
 		jobID := s.Request.URL.Query().Get("job_id")
 		log.Printf("🔴 WS Disconnected: Job %s", jobID)
+
+		mgr.lock.Lock()
+		defer mgr.lock.Unlock()
+
+		// Remove this specific session from the list to prevent Memory Leaks
+		if conns, ok := mgr.sessions[jobID]; ok {
+			// Filter in place
+			newConns := conns[:0]
+			for _, conn := range conns {
+				if conn != s {
+					newConns = append(newConns, conn)
+				}
+			}
+			// If list is empty, delete the map key to save memory
+			if len(newConns) == 0 {
+				delete(mgr.sessions, jobID)
+			} else {
+				mgr.sessions[jobID] = newConns
+			}
+		}
 	})
 
 	return mgr

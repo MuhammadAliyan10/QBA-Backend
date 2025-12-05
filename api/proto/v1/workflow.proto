@@ -1,37 +1,47 @@
 syntax = "proto3";
 
-package v1;
+package e2e.v1;
 
-// This option tells the Go compiler where to generate the code
 option go_package = "e2e-platform/api/gen/go/v1";
 
-// --- THE SERVICE DEFINITION ---
-// This is like an Interface. It defines what methods the API exposes.
+// --- SERVICE DEFINITION ---
 service WorkflowService {
-  // Trigger a new automation job.
-  // Equivalent to: POST /api/v1/workflow/execute
+  // Trigger a new automation job (POST /run)
   rpc ExecuteWorkflow (ExecuteWorkflowRequest) returns (ExecuteWorkflowResponse);
 
-  // Get the live status of a specific job.
-  // Equivalent to: GET /api/v1/workflow/{job_id}
+  // Get live status (GET /status/:id)
   rpc GetJobStatus (GetJobStatusRequest) returns (GetJobStatusResponse);
 
-  // Emergency Kill Switch for a running job.
+  // Emergency Kill Switch (DELETE /job/:id)
   rpc TerminateJob (TerminateJobRequest) returns (TerminateJobResponse);
 }
 
-// --- THE MESSAGES (DATA TYPES) ---
+// --- MESSAGES ---
 
 message ExecuteWorkflowRequest {
-  string user_id = 1;          // The Clerk User ID
-  string workflow_id = 2;      // The Recipe ID to run
-  map<string, string> inputs = 3; // Dynamic inputs (e.g. {"url": "canvas.com"})
+  string user_id = 1;
+  string workflow_id = 2; // The specific recipe (e.g. "amazon_scraper")
+
+  // Dynamic Inputs (e.g. {"url": "https://target.com", "search_term": "laptop"})
+  map<string, string> params = 3;
+
+  // [NEW] The "Glass Box" Configuration
+  // This controls the "Physics" of the browser
+  WorkflowConfig config = 4;
+}
+
+// [NEW] This struct controls the Browser Environment
+message WorkflowConfig {
+  bool use_premium_proxy = 1;  // If true, use Residential IP ($$$)
+  bool solve_captchas = 2;     // If true, pause and ask dev for help
+  string session_id = 3;       // Inject cookies from this saved session
+  string region = 4;           // "us", "eu", "asia" (for Proxy)
 }
 
 message ExecuteWorkflowResponse {
-  string job_id = 1;           // The UUID for this specific run
+  string job_id = 1;           // The UUID for this run
   string status = 2;           // "QUEUED", "RUNNING"
-  int32 queue_position = 3;    // "You are #5 in line"
+  int32 queue_position = 3;    // Load balancing info
 }
 
 message GetJobStatusRequest {
@@ -40,10 +50,14 @@ message GetJobStatusRequest {
 
 message GetJobStatusResponse {
   string job_id = 1;
-  string status = 2;           // "COMPLETED", "FAILED", "RUNNING"
-  string current_step_id = 3;  // Which node is currently active?
-  int32 percent_complete = 4;  // For the progress bar
-  string error_message = 5;    // Empty if success
+  string status = 2;
+  string current_step_id = 3;
+  int32 percent_complete = 4;
+
+  // [NEW] The output file (e.g., the PDF/CSV on R2)
+  string result_url = 5;
+
+  string error_message = 6;
 }
 
 message TerminateJobRequest {
@@ -53,11 +67,4 @@ message TerminateJobRequest {
 
 message TerminateJobResponse {
   bool success = 1;
-}
-
-message BrowserStepInput {
-  string job_id = 1;
-  string node_id = 2;
-  string action = 3;      // "GOTO", "CLICK", "TYPE"
-  map<string, string> params = 4;
 }
