@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 def init_telemetry(service_name: str = "execution-plane"):
     """
     Initialize OpenTelemetry with OTLP exporters.
-    
+
     Args:
         service_name: Name of the service for telemetry
     """
@@ -41,13 +41,13 @@ def init_telemetry(service_name: str = "execution-plane"):
     tracer_provider = None
     if _tracing_enabled():
         tracer_provider = _init_tracing(resource)
-        logger.info(f"✅ OpenTelemetry tracing initialized for {service_name}")
+        logger.info(f"[Telemetry] OpenTelemetry tracing initialized for {service_name}")
 
     # Initialize metrics
     meter_provider = None
     if _metrics_enabled():
         meter_provider = _init_metrics(resource)
-        logger.info(f"✅ OpenTelemetry metrics initialized for {service_name}")
+        logger.info(f"[Telemetry] OpenTelemetry metrics initialized for {service_name}")
 
     return tracer_provider, meter_provider
 
@@ -56,17 +56,17 @@ def _init_tracing(resource: Resource) -> TracerProvider:
     """Initialize tracing with OTLP exporter."""
     # Get OTLP endpoint from environment
     otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-    
+
     # Create OTLP span exporter
     span_exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
-    
+
     # Create tracer provider
     tracer_provider = TracerProvider(resource=resource)
     tracer_provider.add_span_processor(BatchSpanProcessor(span_exporter))
-    
+
     # Set as global tracer provider
     trace.set_tracer_provider(tracer_provider)
-    
+
     return tracer_provider
 
 
@@ -74,19 +74,19 @@ def _init_metrics(resource: Resource) -> MeterProvider:
     """Initialize metrics with OTLP exporter."""
     # Get OTLP endpoint from environment
     otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-    
+
     # Create OTLP metric exporter
     metric_exporter = OTLPMetricExporter(endpoint=otlp_endpoint, insecure=True)
-    
+
     # Create metric reader
     metric_reader = PeriodicExportingMetricReader(metric_exporter, export_interval_millis=60000)
-    
+
     # Create meter provider
     meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
-    
+
     # Set as global meter provider
     metrics.set_meter_provider(meter_provider)
-    
+
     return meter_provider
 
 
@@ -110,7 +110,7 @@ def shutdown_telemetry(tracer_provider: TracerProvider = None, meter_provider: M
     if tracer_provider:
         tracer_provider.shutdown()
         logger.info("Tracer provider shut down")
-    
+
     if meter_provider:
         meter_provider.shutdown()
         logger.info("Meter provider shut down")

@@ -31,6 +31,11 @@ message ExecuteWorkflowRequest {
   // [NEW] The "Glass Box" Configuration
   // This controls the "Physics" of the browser
   WorkflowConfig config = 4;
+
+  // [NEW] Secure Secrets (passwords, API keys, tokens)
+  // CRITICAL: These are NEVER logged to console, NATS, or database
+  // Only exists in memory during execution
+  map<string, string> secrets = 5;
 }
 
 // [NEW] This struct controls the Browser Environment

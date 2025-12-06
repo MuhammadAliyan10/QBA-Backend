@@ -43,7 +43,7 @@ class TheCortex:
                 normalize_embeddings=True
             ).astype(np.float32)
             self.archetype_vectors[context] = vector
-            logger.debug(f"   📊 Archetype '{context}' cached (dim={vector.shape[0]})")
+            logger.debug(f"[Metrics] Archetype'{context}' cached (dim={vector.shape[0]})")
 
         # Intent Mappings (What user wants -> Context required)
         # This remains for specific validation rules
@@ -65,7 +65,7 @@ class TheCortex:
             "COMMERCE": [".product-actions", "#add-to-cart", ".sticky-bottom", ".buy-box"]
         }
 
-        logger.info("✅ TheCortex initialized with 3 archetype vectors")
+        logger.info("[System] TheCortex initialized with 3 archetype vectors")
 
     async def classify_page(self, page: Page) -> str:
         """
@@ -94,7 +94,7 @@ class TheCortex:
 
             # Check for zero vector (empty page)
             if np.linalg.norm(page_vector) < 1e-6:
-                logger.warning("⚠️ Page has no extractable features. Classifying as GENERIC.")
+                logger.warning("[Warning] Page has no extractable features. Classifying as GENERIC.")
                 return "GENERIC"
 
             # Step 2: Compute Cosine Similarity with each Archetype
@@ -103,7 +103,7 @@ class TheCortex:
                 # Cosine Similarity: V_page · V_archetype (both are normalized)
                 similarity = float(np.dot(page_vector, archetype_vector))
                 scores[context] = similarity
-                logger.debug(f"   🎯 {context}: {similarity:.4f}")
+                logger.debug(f"[Logic] {context}: {similarity:.4f}")
 
             # Step 3: Find Best Match
             best_context = max(scores, key=scores.get)
@@ -118,7 +118,7 @@ class TheCortex:
                 return "GENERIC"
 
         except Exception as e:
-            logger.error(f"❌ Classification failed: {e}")
+            logger.error(f"[Error] Classification failed: {e}")
             return "GENERIC"
 
     async def validate_action(self, page: Page, intent: str) -> bool:
@@ -195,7 +195,7 @@ class TheCortex:
             return True
 
         except Exception as e:
-            logger.error(f"❌ Validation failed: {e}")
+            logger.error(f"[Error] Validation failed: {e}")
             return True  # Fail-safe: allow action if validation errors
 
     def get_search_zones(self, intent: str) -> list[str]:
@@ -220,7 +220,7 @@ class TheCortex:
             if key in intent_lower:
                 zones = self.ROI_MAP.get(context, [])
                 if zones:
-                    logger.debug(f"🎯 Search Zones for '{intent}': {zones[:3]}...")
+                    logger.debug(f"[Logic] Search Zones for'{intent}': {zones[:3]}...")
                 return zones
 
         return []

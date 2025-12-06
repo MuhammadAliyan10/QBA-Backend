@@ -82,7 +82,7 @@ class TheHealer:
         # 3. Threshold Check (Lower distance = Better match)
         # Distance > 1.5 usually means "Not found"
         if best_index != -1 and distance < 1.5:
-            logger.info(f"❤️ Healer: Found match via Vector Math! (Dist: {distance:.4f})")
+            logger.info(f"[Healer] Healer: Found match via Vector Math! (Dist: {distance:.4f})")
             return self.stored_elements[best_index]
 
         logger.warning(f"💔 Healer: No mathematical match found (Best Dist: {distance:.4f})")

@@ -23,7 +23,7 @@ class BrowserWorkflow:
     def __init__(self):
         self.user_input: dict | None = None
 
-    @workflow.signal
+    @workflow.signal(name="USER_INTERACTION")
     async def submit_user_input(self, data: dict):
         """
         Signal handler for human input.
@@ -86,7 +86,7 @@ class BrowserWorkflow:
                 # The original exception is in e.cause
                 if isinstance(e.cause, ApplicationError) and e.cause.type == "HumanInterventionRequired":
 
-                    workflow.logger.info(f"⏸️ Human Intervention Triggered: {e.cause.message}")
+                    workflow.logger.info(f"[Workflow] Human Intervention Triggered: {e.cause.message}")
 
                     # Optional: Fire a notification activity here
                     # await workflow.execute_activity(notify_user, {...})
@@ -99,7 +99,7 @@ class BrowserWorkflow:
                         timeout=timedelta(hours=24)  # Max wait time
                     )
 
-                    workflow.logger.info("▶️ Resuming with Human Signal...")
+                    workflow.logger.info("[Workflow] Resuming with Human Signal...")
                     # Loop continues, re-executing activity with user input in payload
                     continue
 

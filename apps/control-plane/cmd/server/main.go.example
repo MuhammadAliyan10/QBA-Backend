@@ -1,0 +1,70 @@
+// Example: How to apply AuthMiddleware in main.go
+//
+// This shows the integration of API key authentication middleware
+// into the Go control plane server.
+
+package main
+
+import (
+	"database/sql"
+	"log"
+	"os"
+
+	"github.com/gin-gonic/gin"
+	_ "github.com/lib/pq"
+
+	"e2e-platform/internal/middleware"
+	// ... other imports
+)
+
+func main() {
+	// 1. Connect to CockroachDB
+	dbDSN := os.Getenv("DB_DSN")
+	db, err := sql.Open("postgres", dbDSN)
+	if err != nil {
+		log.Fatal("Failed to connect to database:", err)
+	}
+	defer db.Close()
+
+	// 2. Initialize Gin router
+	router := gin.Default()
+
+	// 3. Public routes (no auth required)
+	router.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok"})
+	})
+
+	// 4. Protected routes (require API key)
+	protected := router.Group("/")
+	protected.Use(middleware.AuthMiddleware(db))  // <-- Apply middleware here
+	{
+		protected.POST("/run", runWorkflowHandler)
+		protected.POST("/resume", resumeWorkflowHandler)
+		protected.GET("/status/:job_id", getStatusHandler)
+		// ... other protected routes
+	}
+
+	// 5. Start server
+	port := os.Getenv("PORT_GO_API")
+	if port == "" {
+		port = "8080"
+	}
+
+	log.Printf("🚀 Server starting on port %s", port)
+	log.Fatal(router.Run(":" + port))
+}
+
+// Example protected handler
+func runWorkflowHandler(c *gin.Context) {
+	// Extract user ID from context (set by middleware)
+	userID, exists := middleware.GetUserID(c)
+	if !exists {
+		c.JSON(401, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	// Use userID in your logic
+	log.Printf("User %s is running a workflow", userID)
+
+	// ... workflow execution logic
+}

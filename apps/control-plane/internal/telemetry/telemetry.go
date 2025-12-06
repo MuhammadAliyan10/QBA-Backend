@@ -43,7 +43,7 @@ func InitTelemetry(serviceName string) (*metric.MeterProvider, error) {
 	// Set global meter provider
 	otel.SetMeterProvider(meterProvider)
 
-	log.Printf("✅ OpenTelemetry initialized for service: %s", serviceName)
+	log.Printf("[Telemetry] OpenTelemetry initialized for service: %s", serviceName)
 	return meterProvider, nil
 }
 

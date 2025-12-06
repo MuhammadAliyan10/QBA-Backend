@@ -68,7 +68,7 @@ class SmartFinder:
 
         # Hash the feature list (not the raw string)
         page_hash = str(Simhash(features).value)
-        logger.debug(f"🔍 Fingerprint: {domain} | Hash: {page_hash[:16]}...")
+        logger.debug(f"[Logic] Fingerprint: {domain} | Hash: {page_hash[:16]}...")
 
         return domain, page_hash
 
@@ -184,12 +184,12 @@ class SmartFinder:
 
                 # Verify it's still valid and visible
                 if element and await element.is_visible():
-                    logger.info(f"   ✅ Memory Hit Confirmed! (Saved ~200ms)")
+                    logger.info(f"[System] Memory Hit Confirmed! (Saved ~200ms)")
                     return element
                 else:
-                    logger.warning("   ⚠️ Pattern Drift: Cached element missing or invisible.")
+                    logger.warning("[Warning] Pattern Drift: Cached element missing or invisible.")
             except Exception as e:
-                logger.warning(f"   ⚠️ Cached selector failed: {e}")
+                logger.warning(f"[Warning] Cached selector failed: {e}")
 
         # --- STEP 3: MATH PATH (SLOW PATH / HYDRATION WAIT) ---
         logger.info("   🧮 Math Path: Scanning DOM...")
@@ -208,7 +208,7 @@ class SmartFinder:
                         page, raw_nodes
                     )
                     if candidates:
-                        logger.info(f"   🔍 Focused Scan hit in {priority_zones}")
+                        logger.info(f"[Logic] Focused Scan hit in {priority_zones}")
                         break
                 except:
                     pass
@@ -249,7 +249,7 @@ class SmartFinder:
 
         # --- STEP 5: VERIFICATION ---
         if best_match and best_score > 0.70:
-            logger.info(f"   ✅ Sniper Hit! Score: {best_score:.2f}")
+            logger.info(f"[System] Sniper Hit! Score: {best_score:.2f}")
 
             # --- 🆕 STEP 6: LEARNING (SAVE PATTERN) ---
             try:
@@ -257,9 +257,9 @@ class SmartFinder:
                 selector = await self._generate_selector(page, best_match)
                 # Save to pattern database for future fast-path retrieval
                 self.pattern_db.save_pattern(domain, page_hash, intent, selector)
-                logger.debug(f"   💾 Pattern learned: {selector[:50]}...")
+                logger.debug(f"[Storage] Pattern learned: {selector[:50]}...")
             except Exception as e:
-                logger.warning(f"   ⚠️ Failed to save pattern: {e}")
+                logger.warning(f"[Warning] Failed to save pattern: {e}")
 
             # Physics Check
             if await self.glass.is_physically_clickable(page, best_match):

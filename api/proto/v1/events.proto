@@ -46,3 +46,12 @@ message WorkflowEvent {
   // [NEW] How much this specific run cost
   double total_cost = 7;
 }
+
+// 4. Human Intervention Request (The Pause Button)
+message HumanInterventionEvent {
+  string job_id = 1;
+  string reason = 2;                // e.g., "Price too high", "Captcha detected"
+  string prompt_message = 3;        // User-facing question
+  repeated string options = 4;      // Interactive choices: ["Approve", "Deny", "Skip"]
+  int64 timestamp = 5;
+}

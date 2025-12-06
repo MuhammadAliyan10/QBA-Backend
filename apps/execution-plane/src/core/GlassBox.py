@@ -48,7 +48,7 @@ class GlassBoxEngine:
             """, [cx, cy, element]) # <--- PASS ARGS AS A LIST
 
             if is_obscured:
-                logger.warning(f"⚠️ Element at ({cx}, {cy}) is obscured by another layer.")
+                logger.warning(f"[Warning] Element at ({cx}, {cy}) is obscured by another layer.")
                 return False
 
             return True

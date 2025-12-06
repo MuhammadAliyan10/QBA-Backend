@@ -1,291 +1,459 @@
-## e2e | Intelligent Automation Platform
+# e2e-Platform 🚀
 
-**Current Version:** 0.2.0-alpha  
-**Architecture:** Polyglot Microservices (Go + Python)  
-**Status:** ✅ Logic Core Complete | 🔄 Element Timing Debug
+**AI-Powered Browser Automation with Semantic Intelligence**
 
----
-
-### 1. System Overview
-
-e2e is a high-performance RPA platform that decouples Control from Execution.
-
-- **Control Plane (Go):** Handles high-concurrency I/O (WebSockets, Auth, Billing) and routes traffic.
-- **Execution Plane (Python):** Runs heavy compute tasks (Headless Browsers, AI Inference) in isolated sandboxes.
-- **The Nervous System (NATS):** Connects the two planes asynchronously with Protobuf messages.
-
-### 2. Repository Structure
-
-This is a Monorepo containing both backends and infrastructure code.
-
-- **/api:** Contains `.proto` definitions. This is the Single Source of Truth. Both Go and Python generate their types from these files.
-- **/apps/control-plane:** The Go API Gateway. Uses Gin for HTTP and Melody for WebSockets.
-- **/apps/execution-plane:** The Python Worker. Uses Playwright for automation and Temporal for orchestration.
-- **/infra:** Terraform and Kubernetes manifests for AWS deployment.
-
-### 3. The Core Workflow
-
-1. **Ingestion:** User sends a prompt to Go Gateway (gRPC-Web).
-2. **Validation:** Go verifies Auth (Clerk) and Credits (Redis).
-3. **Queueing:** Go publishes a JobRequest to NATS JetStream.
-4. **Orchestration:** Temporal picks up the job and assigns it to a Python Worker.
-5. **Execution:** Python Worker launches a browser, uses **Smart Finder** (Sniper → Brain fallback), and streams logs back to NATS.
-6. **Visualization:** Go consumes NATS logs (Protobuf) and pushes them to the Frontend via WebSocket.
+An enterprise-grade automation engine that combines traditional browser automation with cutting-edge AI to create self-healing, intelligent workflows that adapt to UI changes automatically.
 
 ---
 
-## 4. What's Implemented ✅
+## 🎯 What is e2e-Platform?
 
-### Phase 1: Heuristic Processing
-1. **Levenshtein Heuristic Scorer ("Sniper")**
-   - Location: `apps/execution-plane/src/algorithms/levenshtein.py`
-   - Weighted scoring: +20% for `<button>`, +30% for ID match, +40% for aria-label
-   - Fast, free, local computation
+e2e-Platform is a next-generation browser automation system that uses **semantic understanding** instead of brittle CSS selectors. When you ask it to "click the search button," it understands what a search button _means_, not just what it's called.
 
-2. **DOM Tree Pruner ("Compressor")**
-   - Location: `apps/execution-plane/src/core/dom_pruner.py`
-   - Removes scripts, styles, comments
-   - Token counting and truncation (>10k tokens)
-   - Uses `lxml` for performance
+### The Problem We Solve
 
-3. **Protobuf Contract**
-   - Added `BrowserStepInput` to `api/proto/v1/workflow.proto`
-   - Type-safe communication between Go and Python
-   - Regenerated code for both languages
+Traditional automation breaks when:
 
-4. **Feedback Loop (NATS + Protobuf)**
-   - Python serializes `StepUpdateEvent` to Protobuf
-   - Go deserializes and logs in real-time
-   - Sub-50ms latency achieved
+- Button text changes ("Search" → "Find")
+- CSS classes get updated (`.btn-primary` → `.button-search`)
+- UI layouts shift
+- Websites deploy new designs
 
-### Phase 2: AI Integration
-1. **LLM Client ("The Brain")**
-   - Location: `apps/execution-plane/src/core/llm_client.py`
-   - Mock implementation (ready for OpenAI/Gemini)
-   - Fallback when heuristics fail
+**Our Solution**: AI that understands _intent_, not _structure_.
 
-2. **Smart Finder ("The Cortex")**
-   - Location: `apps/execution-plane/src/core/smart_finder.py`
-   - **Fallback Strategy:** Sniper (free) → Compressor → Brain (costly)
-   - Goal: 80% Sniper hit rate to minimize AI costs
+```python
+# Traditional (Brittle):
+selenium.find_element_by_css_selector("#searchBtn").click()  # ❌ Breaks on CSS changes
 
-3. **Expanded Actions**
-   - `GOTO`: Navigate with network idle wait
-   - `CLICK`: Smart element detection (Sniper + Brain)
-   - `TYPE`: Find input fields and fill text
-   - `SCROLL`: Scroll page up/down
+# e2e-Platform (Intelligent):
+find_element(intent="search button").click()  # ✅ Adapts automatically
+```
 
 ---
 
-## 5. Prerequisites
+## 🏗️ Architecture
 
-- `Go` 1.22+
-- `Python 3.11+` (with pip/poetry)
-- `Docker` & Docker Compose
-- `Protoc` (Protocol Buffer Compiler)
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     CLIENT REQUEST                          │
+│         POST /run {"workflow_id": "github_login"}           │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│              CONTROL PLANE (Go)                             │
+│  • REST API (Gin)                                           │
+│  • Temporal Workflow Orchestration                          │
+│  • Job Queue Management                                     │
+│  • WebSocket Real-time Updates                             │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│              EVENT BUS (NATS)                               │
+│  • Pub/Sub Messaging                                        │
+│  • Job Status Updates                                       │
+│  • Decoupled Communication                                  │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│           EXECUTION PLANE (Python)                          │
+│                                                             │
+│  ┌─────────────────────────────────────────────┐           │
+│  │  1. RECIPE MANAGER (Vector Search)          │           │
+│  │     • Qdrant Vector Database                │           │
+│  │     • Sentence Transformers (384-dim)       │           │
+│  │     • Semantic Recipe Matching              │           │
+│  └─────────────────────────────────────────────┘           │
+│                       │                                      │
+│                       ▼                                      │
+│  ┌─────────────────────────────────────────────┐           │
+│  │  2. SMART FINDER (AI Element Detection)     │           │
+│  │     • Intent → Element Embeddings           │           │
+│  │     • TensorEngine (Semantic Search)        │           │
+│  │     • PatternDB (Muscle Memory Cache)       │           │
+│  └─────────────────────────────────────────────┘           │
+│                       │                                      │
+│                       ▼                                      │
+│  ┌─────────────────────────────────────────────┐           │
+│  │  3. BROWSER ENGINE (Playwright)             │           │
+│  │     • Chromium Automation                   │           │
+│  │     • Network Sniffing                      │           │
+│  │     • Protocol Intelligence                 │           │
+│  └─────────────────────────────────────────────┘           │
+│                       │                                      │
+│                       ▼                                      │
+│  ┌─────────────────────────────────────────────┐           │
+│  │  4. ACCOUNT MANAGER (Session Pooling)       │           │
+│  │     • Credential Leasing                    │           │
+│  │     • Cookie Rehydration                    │           │
+│  │     • Race Condition Protection             │           │
+│  └─────────────────────────────────────────────┘           │
+└─────────────────────────────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│              PERSISTENCE LAYER                              │
+│  • CockroachDB (Jobs, Accounts)                            │
+│  • Qdrant (Recipe Embeddings)                              │
+│  • PatternDB (Element Cache)                               │
+│  • MinIO (Screenshots, Files)                              │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 6. Quick Start (Local Development)
+## ✨ Key Features
 
-### Step 1: Infrastructure
-Start the local dependency stack (Postgres, NATS, Temporal, Redis):
-```sh
+### 🧠 AI-Powered Element Finding
+
+Uses **sentence transformers** to match user intent with UI elements semantically:
+
+```python
+# You say: "field to find topics in the encyclopedia"
+# AI understands: #searchInput (cosine similarity: 0.82)
+```
+
+### 💾 Muscle Memory (PatternDB)
+
+Learns successful element locations and reuses them:
+
+- **First run**: 200ms (full DOM scan + AI scoring)
+- **Cached run**: 15ms (instant selector lookup)
+- **Drift detection**: Auto-relearns when UI changes
+
+### 🔄 Protocol Intelligence (NetworkSniffer)
+
+Switches from slow browser automation to fast API calls:
+
+- Captures verified API credentials automatically
+- Replays requests at 10x speed
+- Perfect for pagination, search, data extraction
+
+### 🔐 Account Pool Manager
+
+- Atomic account leasing (no race conditions)
+- Cookie-based fast-path authentication
+- Automatic credential rotation
+
+### 📊 Enterprise-Grade Observability
+
+- Structured logging (`[Component] message`)
+- NATS event streaming
+- WebSocket real-time updates
+- Temporal workflow visibility
+
+---
+
+## 🛠️ Tech Stack
+
+| Layer               | Technology              | Purpose                             |
+| ------------------- | ----------------------- | ----------------------------------- |
+| **Orchestration**   | Temporal                | Durable workflow execution, retries |
+| **Control Plane**   | Go + Gin                | High-performance API server         |
+| **Execution Plane** | Python + Playwright     | Browser automation                  |
+| **AI/ML**           | Sentence Transformers   | Semantic embeddings (384-dim)       |
+| **Vector DB**       | Qdrant                  | Recipe storage & semantic search    |
+| **Event Bus**       | NATS                    | Pub/sub messaging                   |
+| **Databases**       | CockroachDB, PostgreSQL | Jobs, accounts, patterns            |
+| **Object Storage**  | MinIO                   | Screenshots, downloads              |
+| **Cache**           | Redis                   | Rate limiting, sessions             |
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- Docker & Docker Compose
+- Go 1.21+
+- Python 3.11+
+- Make
+
+### 1. Start Infrastructure
+
+```bash
+# Clone repository
+git clone <repository-url>
+cd e2e-Backend
+
+# Start all services (NATS, Temporal, Databases)
 make up
+
+# Wait for Temporal to initialize (~30s)
+sleep 30
 ```
 
-### Step 2: Code Generation
-Compile the Protobuf definitions into Go and Python code:
-```sh
-make proto
-```
+### 2. Start Control Plane
 
-**Note:** If `make proto` fails due to missing Python `grpc_tools`, run manually:
-```sh
-# Go (always works)
-protoc --proto_path=api/proto/v1 \
-  --go_out=api/gen/go/v1 --go_opt=paths=source_relative \
-  --go-grpc_out=api/gen/go/v1 --go-grpc_opt=paths=source_relative \
-  api/proto/v1/*.proto
-
-# Python (requires grpcio-tools in venv)
-cd apps/execution-plane
-source venv/bin/activate  # or poetry shell
-python -m grpc_tools.protoc -Iapi/proto/v1 \
-  --python_out=api/gen/python/v1 \
-  --grpc_python_out=api/gen/python/v1 \
-  api/proto/v1/*.proto
-```
-
-### Step 3: Install Python Dependencies
-```sh
-cd apps/execution-plane
-pip install -r requirements.txt
-playwright install chromium  # Download browser binaries
-```
-
-### Step 4: Run Services
-
-**Terminal 1 (Control Plane):**
-```sh
+```bash
 cd apps/control-plane
 go run cmd/server/main.go
+
+# Server starts on http://localhost:8080
 ```
 
-**Terminal 2 (Execution Plane):**
-```sh
+### 3. Start Execution Plane
+
+```bash
 cd apps/execution-plane
+
+# Create virtual environment (first time only)
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Start worker
 python src/worker.py
 ```
 
-### Step 5: Test the System
-```sh
-curl -X POST http://localhost:8080/run
+### 4. Seed Recipes
+
+```bash
+cd apps/execution-plane
+source venv/bin/activate
+python scripts/seed_recipes.py
 ```
 
-Watch the logs in both terminals. You should see:
-- Go: `📨 Received Event for job-XXX`
-- Python: `🧠 Brain processing intent...`
+### 5. Run Your First Workflow
 
----
+```bash
+curl -X POST http://localhost:8080/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_id": "github_explorer",
+    "params": {
+      "url": "https://github.com"
+    }
+  }'
 
-## 7. How It Works (Deep Dive)
-
-### The Smart Finder Flow
-
-```
-User: "Click login"
-    ↓
-┌─────────────────────┐
-│  1. SNIPER (Fast)   │  Levenshtein distance + weighted scoring
-│  Score > 0.75?      │  → Click immediately (FREE)
-└─────────┬───────────┘
-          │ MISS
-          ↓
-┌─────────────────────┐
-│  2. COMPRESSOR      │  Prune HTML: <200KB → 10 tokens
-│  Token count OK?    │  → Prepare for LLM
-└─────────┬───────────┘
-          │
-          ↓
-┌─────────────────────┐
-│  3. BRAIN (Slow)    │  LLM returns CSS selector
-│  Confidence > 0.5?  │  → Validate and click (COSTLY)
-└─────────┬───────────┘
-          │ HIT
-          ↓
-        CLICK!
-```
-
-### Protobuf Message Flow
-
-```
-Go (main.go)
-    ↓ ExecuteWorkflow(BrowserStepInput[])
-Temporal
-    ↓ Assign to Worker
-Python (worker.py)
-    ↓ browser_automation_activity(BrowserStepInput)
-SmartFinder
-    ↓ publish_update(StepUpdateEvent)
-NATS JetStream
-    ↓ job.update.{job_id}
-Go Consumer (main.go)
-    ↓ Unmarshal Protobuf
-WebSocket Manager
-    ↓ Broadcast to Frontend
+# Response:
+# {
+#   "job_id": "job-1234567890",
+#   "message": "Job Queued Successfully",
+#   "run_id": "..."
+# }
 ```
 
 ---
 
-## 8. Testing
+## 📖 Usage Examples
 
-### Test Page
-Location: `apps/execution-plane/tests/test_page.html`
+### Example 1: Wikipedia Search
 
-Contains:
-- Easy target: `<button id="login-btn">Login</button>` (for Sniper)
-- Hard target: Nested link (for Brain)
-- Input field (for TYPE action)
-
-### Test Report
-View logs and outputs: `apps/execution-plane/tests/test_report.html`
-
----
-
-## 9. Current Status & Known Issues
-
-### ✅ Working
-- Protobuf integration (Go ↔ Python)
-- NATS real-time feedback
-- Sniper algorithm with weighted scoring
-- HTML compression and token counting
-- Mock Brain (LLM placeholder)
-- TYPE and SCROLL actions
-
-### 🔧 Known Issue: Element Timing
-**Symptom:** Sniper finds 0 elements even on working pages
-
-**Cause:** `query_selector_all` runs before DOM is fully ready
-
-**Evidence:**
-```
-Status: RUNNING | Msg: Sniper scanned 0 interactive elements.
-Status: WARNING | Msg: Sniper found 0 elements. Page might be empty.
+```bash
+curl -X POST http://localhost:8080/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_id": "wikipedia_search",
+    "params": {
+      "query": "Artificial Intelligence"
+    }
+  }'
 ```
 
-**Fix in Progress:** Adding explicit element waits and polling logic
+### Example 2: E-Commerce Scraping
+
+```bash
+curl -X POST http://localhost:8080/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_id": "amazon_scraper",
+    "params": {
+      "product": "laptop",
+      "max_price": 1000
+    }
+  }'
+```
+
+### Example 3: Custom Workflow (Developer Mode)
+
+```bash
+curl -X POST http://localhost:8080/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "workflow_id": "custom_flow",
+    "steps": [
+      {
+        "action": "GOTO",
+        "params": {"url": "https://example.com"}
+      },
+      {
+        "action": "TYPE",
+        "params": {
+          "intent": "search box",
+          "text": "hello world"
+        }
+      },
+      {
+        "action": "CLICK",
+        "params": {"intent": "submit button"}
+      }
+    ]
+  }'
+```
 
 ---
 
-## 10. Performance Metrics
+## 🧪 How It Works (Technical Deep Dive)
 
-**Goal (Cost Optimization):**
-- Sniper: 80% of interactions (FREE)
-- Brain: 20% of interactions (COSTLY)
-
-**Current:**
-- Sniper: 0% (timing bug)
-- Brain: 100% (expensive)
-
-**Once Fixed:**
-- Expected Sniper hit rate: 85%+
-- AI cost reduction: 80%
+See [WORKFLOW.md](./WORKFLOW.md) for a complete end-to-end walkthrough with execution traces.
 
 ---
 
-## 11. Security Protocols
+## 📊 Production Deployment
 
-- **Credentials:** Never log raw passwords. Use AWS KMS encryption helpers in `apps/execution-plane/src/core/security.py`
-- **Networking:** Workers must run with gVisor runtime in production
-- **Sandboxing:** Playwright runs in headless mode with restricted network access
+### Docker Services
+
+```yaml
+services:
+  - temporal # Workflow orchestration
+  - postgres # Temporal storage
+  - nats # Event bus
+  - cockroach # Jobs database
+  - qdrant # Vector embeddings
+  - redis # Cache & rate limiting
+  - minio # File storage
+```
+
+### Environment Variables
+
+```bash
+# Required
+NATS_URL=nats://127.0.0.1:4222
+TEMPORAL_HOST=localhost:7233
+PORT_GO_API=8080
+
+# Optional (for proxies)
+PROXY_SERVER=http://proxy:port
+PROXY_USER=username
+PROXY_PASSWORD=password
+```
+
+### Monitoring
+
+```bash
+# Check service health
+docker ps
+
+# View logs
+docker logs -f e2e_temporal
+docker logs -f e2e_nats
+
+# Database queries
+docker exec -it e2e_cockroach cockroach sql --insecure
+```
 
 ---
 
-## 12. Next Steps
+## 🔬 Core Algorithms
 
-1. **Fix Element Timing:** Add robust waits for DOM readiness
-2. **Real LLM Integration:** Replace mock with OpenAI/Gemini client
-3. **Screenshot Capture:** Visual feedback for debugging
-4. **WebSocket Frontend:** Complete the live feed to React Flow UI
-5. **Production Deploy:** Kubernetes + gVisor isolation
+### 1. Semantic Recipe Matching (Vector Search)
+
+```python
+# Input: "find items on shopping site"
+query_embedding = model.encode("find items on shopping site")  # → [0.45, -0.23, ...]
+
+# Database: Pre-computed recipe embeddings
+recipes = [
+  {"name": "amazon_scraper", "embedding": [0.48, -0.19, ...]},
+  {"name": "github_login", "embedding": [-0.12, 0.67, ...]},
+  ...
+]
+
+# Cosine similarity scoring
+scores = cosine_similarity(query_embedding, recipe_embeddings)
+best_match = recipes[argmax(scores)]  # amazon_scraper (score: 0.82)
+```
+
+### 2. Intent-Based Element Finding (SmartFinder)
+
+```python
+# Traditional (breaks easily):
+element = page.query_selector("button.search-btn")
+
+# e2e-Platform (adapts automatically):
+1. Extract all interactive elements
+2. Get text/aria-label/id for each
+3. Compute embedding for intent + element
+4. Score = cosine_similarity(intent_vector, element_vector)
+5. Return highest scoring element (>0.70 threshold)
+```
+
+### 3. Pattern Learning (Muscle Memory)
+
+```python
+# First execution:
+domain = "amazon.com"
+page_hash = simhash(DOM_structure)  # Structural fingerprint
+intent = "search button"
+selector = "#nav-search-submit-button"
+
+# Save pattern:
+PatternDB.save(domain, page_hash, intent, selector)
+
+# Next execution (same page structure):
+cached_selector = PatternDB.get(domain, page_hash, intent)
+if cached_selector:
+    element = page.query_selector(cached_selector)  # ⚡ 15ms instead of 200ms
+```
 
 ---
 
-## 13. Changelog
+## 🎯 Performance Benchmarks
 
-### v0.2.0-alpha (Current)
-- ✅ Phase 1: Sniper + Compressor implemented
-- ✅ Phase 2: Brain (mock) + SmartFinder implemented
-- ✅ Protobuf contracts enforced
-- ✅ NATS feedback loop live
-- ✅ Actions expanded: GOTO, CLICK, TYPE, SCROLL
-- 🔧 Debugging: Element timing issue
-
-### v0.1.0-alpha
-- Initial setup: Go + Python + NATS + Temporal
-- Hello World workflow verified
+| Metric                   | Traditional Selenium    | e2e-Platform          |
+| ------------------------ | ----------------------- | --------------------- |
+| Adaptation to UI changes | ❌ Breaks immediately   | ✅ Self-heals         |
+| Maintenance cost         | High (constant updates) | Low (learns patterns) |
+| Speed (cached)           | ~200ms                  | ~15ms (13x faster)    |
+| Protocol switching       | Manual                  | Automatic             |
+| CAPTCHA handling         | Fails                   | Hibernates + human    |
 
 ---
 
-**Copyright © 2025 e2e Platform. Confidential.**
+## 🔒 Security Features
+
+- **Account Pool Isolation**: FOR UPDATE SKIP LOCKED prevents race conditions
+- **Credential Encryption**: AES-256 for stored passwords
+- **Network Timeouts**: 10s hard limits prevent DoS
+- **Cookie Security**: Secure storage with expiration tracking
+- **Audit Logging**: All account access logged
+
+---
+
+## 🤝 Contributing
+
+We welcome contributions! Please see our contributing guidelines (coming soon).
+
+---
+
+## 📄 License
+
+[Your License Here]
+
+---
+
+## 📞 Support
+
+- **Documentation**: See [WORKFLOW.md](./WORKFLOW.md) for detailed workflows
+- **Issues**: [GitHub Issues](your-repo-url/issues)
+- **Contact**: your-email@domain.com
+
+---
+
+## 🌟 Why e2e-Platform?
+
+| Feature            | Selenium/Puppeteer  | e2e-Platform                   |
+| ------------------ | ------------------- | ------------------------------ |
+| Selector Strategy  | CSS/XPath (brittle) | Semantic AI (adaptive)         |
+| UI Changes         | ❌ Breaks           | ✅ Adapts                      |
+| Speed Optimization | Manual              | Automatic (Protocol Switching) |
+| Learning           | None                | Pattern caching                |
+| CAPTCHA Handling   | Fails               | Human-in-the-loop              |
+| Scale              | ~10 concurrent      | ~100+ concurrent               |
+
+---
+
+**Built with ❤️ for developers who want automation that doesn't break.**

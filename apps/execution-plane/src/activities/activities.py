@@ -2,9 +2,11 @@ import os
 import asyncio
 import logging
 import base64
+import time
 from datetime import timedelta
 from temporalio import activity
 from playwright.async_api import async_playwright
+import httpx
 
 # --- IMPORTS ---
 # 1. The Nervous System (Snake Case - Infrastructure)
@@ -14,34 +16,26 @@ from core.NervousSystem import NervousSystem
 # We import the Class 'SmartFinder' from the file 'smartFinder.py'
 from core.SmartFinder import SmartFinder
 
+# 3. The Network Sniffer (Level 5 - Protocol Reverse Engineering)
+from core.NetworkSniffer import NetworkSniffer
+
+# 4. The Account Pool Manager (Session Rehydration)
+from core.AccountManager import AccountManager
+
+# 5. The Recipe Manager (Dynamic RAG)
+from core.RecipeManager import RecipeManager
+
 logger = logging.getLogger("activity")
 
-# --- MOCK RECIPE DB (In production, this fetches from Postgres) ---
-# --- THE RECIPE BOOK (MOCK DB) ---
-RECIPES = {
-    # 1. The Dynamic Wiki Test (Variable Injection)
-    "test_login": [
-        {"action": "GOTO", "params": {"url": "{url}"}},
-        {"action": "TYPE", "params": {"intent": "search", "text": "{search_term}"}},
-        {"action": "CLICK", "params": {"intent": "search button"}}
-    ],
+# Initialize Recipe Manager (singleton pattern - loads once)
+_recipe_manager_instance = None
 
-    # 2. The E-Commerce Test (Heavy JS + Icons)
-    "amazon_scraper": [
-        {"action": "GOTO", "params": {"url": "https://amazon.com"}},
-        {"action": "TYPE", "params": {"intent": "search box", "text": "{item}"}},
-        {"action": "CLICK", "params": {"intent": "search submit"}}
-        # Note: Amazon's search button is often an Icon (Magnifying Glass).
-        # This tests your GlassBox Icon Hasher or "Go" synonym.
-    ],
-
-    # 3. The SaaS Test (Complex Layouts)
-    "github_explorer": [
-        {"action": "GOTO", "params": {"url": "https://github.com/microsoft/playwright"}},
-        {"action": "CLICK", "params": {"intent": "issues tab"}},
-        {"action": "TYPE", "params": {"intent": "search all issues", "text": "bug"}}
-    ]
-}
+def get_recipe_manager() -> RecipeManager:
+    """Get or create RecipeManager singleton."""
+    global _recipe_manager_instance
+    if _recipe_manager_instance is None:
+        _recipe_manager_instance = RecipeManager()
+    return _recipe_manager_instance
 
 def get_proxy_config(region="us"):
     """
@@ -79,17 +73,29 @@ async def browser_automation_activity(payload: dict) -> dict:
     await NervousSystem.publish_update(
         job_id=job_id,
         status="RUNNING",
-        message=f"🚀 Initializing Glass Box for workflow: {workflow_id}",
+        message=f"[System] Initializing Glass Box for workflow: {workflow_id}",
         node_id="init"
     )
 
-    # 3. Load Recipe
-    steps = RECIPES.get(workflow_id)
-    if not steps:
-        # Check if raw steps were provided (Developer Mode)
+    # 3. Load Recipe (DYNAMIC - From Qdrant Vector Search)
+    recipe_mgr = get_recipe_manager()
+
+    # Try to find recipe by semantic search
+    recipe = recipe_mgr.find_recipe(workflow_id)
+
+    if recipe:
+        steps = recipe['steps']
+        logger.info(f"[System] Found recipe via vector search:'{recipe['name']}' (score: {recipe['score']:.3f})")
+        await NervousSystem.publish_update(
+            job_id, "RUNNING",
+            f"[RAG] Loaded workflow: '{recipe['name']}' (semantic match)",
+            "init"
+        )
+    else:
+        #  Fallback: Check if raw steps were provided (Developer Mode)
         steps = payload.get("steps", [])
         if not steps:
-            err = f"No recipe found for ID: {workflow_id}"
+            err = f"[Error] No recipe found for query: '{workflow_id}' (threshold: 0.7)"
             await NervousSystem.publish_update(job_id, "FAILED", err, "init")
             return {"status": "FAILED", "error": err}
 
@@ -107,24 +113,48 @@ async def browser_automation_activity(payload: dict) -> dict:
 
             if proxy_conf:
                 launch_args["proxy"] = proxy_conf
-                await NervousSystem.publish_update(job_id, "RUNNING", f"Routing via Residential Proxy ({region}) 🛡️", "init")
+                await NervousSystem.publish_update(job_id, "RUNNING", f"[Network] Routing via residential proxy ({region})", "init")
             else:
                 await NervousSystem.publish_update(job_id, "WARNING", "Proxy credentials missing! Using Datacenter IP.", "init")
 
         try:
             browser = await p.chromium.launch(**launch_args)
 
-            # --- 5. SESSION INJECTION (The "Time Travel") ---
-            # We create a context. This is where cookies live.
+            # --- 5. ACCOUNT POOL & SESSION INJECTION ---
+            # Initialize Account Manager
+            account_mgr = AccountManager()
+            leased_account = None
+
+            # Check if login is required
+            require_login = config.get("require_login", False)
+            target_domain = config.get("domain")
+
+            if require_login and target_domain:
+                # Attempt to lease an account from the pool
+                leased_account = account_mgr.lease_account(target_domain)
+
+                if leased_account:
+                    await NervousSystem.publish_update(
+                        job_id, "RUNNING",
+                        f"[Security] Leased account: {leased_account['username']} (cookies: {'Yes' if leased_account['cookies'] else 'No'})",
+                        "init"
+                    )
+
+            # Create browser context
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36..."
             )
 
-            session_id = config.get("session_id")
-            if session_id:
-                await NervousSystem.publish_update(job_id, "HEALER_ACTIVE", f"💉 Injecting Session: {session_id}", "init")
-                # TODO: Retrieve cookies from Redis using session_id
-                # await context.add_cookies(cookies_from_redis)
+            # Fast Path: Inject cookies if available
+            cookie_valid = False
+            if leased_account and leased_account['cookies']:
+                try:
+                    await context.add_cookies(leased_account['cookies'])
+                    await NervousSystem.publish_update(job_id, "RUNNING", "[Security] Cookies injected (Fast Path)", "init")
+                    cookie_valid = True
+                except Exception as e:
+                    logger.warning(f"Cookie injection failed: {e}")
+                    cookie_valid = False
 
             page = await context.new_page()
 
@@ -177,6 +207,12 @@ async def browser_automation_activity(payload: dict) -> dict:
 
                 elif action == "CLICK":
                     intent = step_params["intent"]
+                    if intent == "simulate_human_check":
+                        from exceptions import HumanInterventionRequired
+                        raise HumanInterventionRequired(
+                            reason="GOD_MODE_CHECK",
+                            context={"msg": "System is healthy. Proceed?"}
+                        )
 
                     # 🧠 CALL SMART FINDER (The Math Engine)
                     # This runs: ShadowPierce -> HoneypotFilter -> Levenshtein -> Raycast
@@ -195,6 +231,102 @@ async def browser_automation_activity(payload: dict) -> dict:
                     await finder.glass.human_type(page, element, text)
 
                     await NervousSystem.publish_update(job_id, "RUNNING", f"Typed input safely", node_id)
+
+                elif action == "LOGIN_AND_SNIFF":
+                    # --- LEVEL 5: HYBRID PROTOCOL AUTOMATION ---
+                    # Phase 1: Use Browser to Authenticate
+                    # Phase 2: Capture API Session
+                    # Phase 3: Switch to HTTPX for Speed
+
+                    target_domain = step_params.get("target_domain")
+                    url = step_params.get("url")
+                    iterations = step_params.get("iterations", 5)
+
+                    # 1. Start the Spy
+                    sniffer = NetworkSniffer(target_domain=target_domain)
+                    await sniffer.start_sniffing(page)
+                    await NervousSystem.publish_update(job_id, "RUNNING", f"🕵️ Sniffer Watching {target_domain}...", node_id)
+
+                    # 2. Execute Navigation (This triggers the network traffic)
+                    await page.goto(url)
+
+                    # Wait for stability (Allow APIs to fire)
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=10000)
+                    except:
+                        pass
+
+                    # 3. Check the Loot
+                    session = sniffer.get_session_context()
+
+                    if session:
+                        await NervousSystem.publish_update(job_id, "SUCCESS", "🔓 Golden Ticket Captured! Switching to Protocol Mode.", node_id)
+
+                        # --- PHASE 2: PROTOCOL MODE (The Speed Run) ---
+                        api_url = session["url"]
+                        headers = session["headers"]
+                        payload_template = session.get("payload")
+                        method = session["method"]
+
+                        # Replay Logic (Simulating "Next Page" iteration)
+                        async with httpx.AsyncClient() as client:
+                            start_time = time.time()
+
+                            # We loop N times to demonstrate speed
+                            for k in range(1, iterations + 1):
+                                current_payload = payload_template
+
+                                # Dynamic Injection: If payload is JSON dict, try to increment 'page'
+                                if isinstance(current_payload, dict):
+                                    # Create a copy to avoid mutating the template
+                                    current_payload = payload_template.copy()
+                                    # Heuristic: Look for common pagination keys
+                                    if "page" in current_payload:
+                                        current_payload["page"] = int(current_payload["page"]) + k
+                                    elif "cursor" in current_payload:
+                                        # Mock cursor update
+                                        current_payload["cursor"] = f"next_{k}"
+
+                                try:
+                                    # CRITICAL: Add timeout to prevent hanging
+                                    resp = await client.request(
+                                        method,
+                                        api_url,
+                                        headers=headers,
+                                        json=current_payload if isinstance(current_payload, dict) else None,
+                                        content=current_payload if isinstance(current_payload, str) else None,
+                                        timeout=10.0  # 10 second hard limit
+                                    )
+
+                                    duration = (time.time() - start_time) * 1000
+                                    size_kb = len(resp.content) / 1024
+
+
+                                    await NervousSystem.publish_update(
+                                        job_id, "RUNNING",
+                                        f"[Network] Protocol Hit #{k}: Status {resp.status_code} ({size_kb:.2f} KB) in {duration:.0f}ms",
+                                        node_id
+                                    )
+
+                                except httpx.TimeoutException:
+                                    logger.warning(f"[Network] API timeout on replay #{k} - falling back to browser mode")
+                                    break  # Exit replay loop, continue with browser
+                                except httpx.HTTPError as e:
+                                    logger.warning(f"[Network] API error on replay #{k}: {e}")
+                                    break  # Exit replay loop, continue with browser
+                                except Exception as e:
+                                    logger.error(f"[Network] Unexpected error in protocol replay: {e}")
+                                    break
+                                except Exception as req_err:
+                                    logger.error(f"Protocol Request Failed: {req_err}")
+
+                                start_time = time.time()  # Reset timer for next request
+
+                        await NervousSystem.publish_update(job_id, "SUCCESS", f"Protocol Mode Complete: {iterations} requests replayed", node_id)
+
+                    else:
+                        msg = "❌ No verified API keys found (Auth failed or no XHR). Continuing in Browser Mode."
+                        await NervousSystem.publish_update(job_id, "WARNING", msg, node_id)
 
 
                 # --- VISUAL PROOF (Screenshot) ---
@@ -224,5 +356,23 @@ async def browser_automation_activity(payload: dict) -> dict:
             # Re-raise so Temporal knows to retry
             raise e
         finally:
+            # Release account back to pool with updated cookies
+            if 'leased_account' in locals() and leased_account:
+                try:
+                    # Capture current cookies from the session
+                    new_cookies = await context.cookies()
+
+                    # Release account (status depends on workflow success)
+                    success = 'e' not in locals()  # True if no exception
+                    account_mgr.release_account(
+                        leased_account['id'],
+                        new_cookies=new_cookies,
+                        success=success
+                    )
+
+                    logger.info(f"Released account {leased_account['username']} with updated cookies")
+                except Exception as release_err:
+                    logger.error(f"Failed to release account: {release_err}")
+
             await context.close()
             await browser.close()

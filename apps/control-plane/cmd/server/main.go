@@ -55,12 +55,12 @@ func (c *Consumer) StartListening() {
 		// We use the new 'JobEvent' message defined in events.proto
 		var event pb.JobEvent
 		if err := proto.Unmarshal(m.Data, &event); err != nil {
-			log.Printf("❌ Failed to unmarshal event: %v", err)
+			log.Printf("[Error] Failed to unmarshal event: %v", err)
 			return
 		}
 
 		// Log to server console for debugging
-		log.Printf("📨 [Job %s] Status: %s | Node: %s | Msg: %s",
+		log.Printf("[Event] Job %s Status: %s | Node: %s | Msg: %s",
 			jobID, event.Status, event.NodeId, event.Message)
 
 		// 5. CONVERT TO JSON FOR FRONTEND
@@ -72,7 +72,7 @@ func (c *Consumer) StartListening() {
 		}
 		jsonBytes, err := marshaler.Marshal(&event)
 		if err != nil {
-			log.Printf("❌ Failed to marshal JSON for WS: %v", err)
+			log.Printf("[Error] Failed to marshal JSON for WS: %v", err)
 			return
 		}
 
@@ -81,15 +81,15 @@ func (c *Consumer) StartListening() {
 	})
 
 	if err != nil {
-		log.Fatalf("❌ Failed to subscribe to NATS: %v", err)
+		log.Fatalf("[Error] Failed to subscribe to NATS: %v", err)
 	}
-	log.Println("👂 Listening for Job Updates on NATS (Subject: job.update.*)...")
+	log.Println("[System] Listening for job updates on NATS (subject: job.update.*)")
 }
 
 func main() {
 	// 1. Load Config
 	if err := godotenv.Load(); err != nil {
-		log.Println("⚠️  No .env file found, relying on system env")
+		log.Println("[System] No .env file found, relying on system environment")
 	}
 
 	// 2. Initialize Database (CockroachDB/Postgres)
@@ -100,10 +100,10 @@ func main() {
 	if natsURL == "" {
 		natsURL = nats.DefaultURL
 	}
-	log.Printf("🔌 Connecting to NATS at %s...", natsURL)
+	log.Printf("[System] Connecting to NATS at %s", natsURL)
 	nc, err := nats.Connect(natsURL)
 	if err != nil {
-		log.Fatalf("❌ Failed to connect to NATS: %v", err)
+		log.Fatalf("[Error] Failed to connect to NATS: %v", err)
 	}
 	defer nc.Close()
 
@@ -112,13 +112,13 @@ func main() {
 	if temporalHost == "" {
 		temporalHost = "localhost:7233"
 	}
-	log.Printf("⏳ Connecting to Temporal at %s...", temporalHost)
+	log.Printf("[System] Connecting to Temporal at %s", temporalHost)
 
 	temporalClient, err := client.Dial(client.Options{
 		HostPort: temporalHost,
 	})
 	if err != nil {
-		log.Fatalf("❌ Failed to connect to Temporal: %v", err)
+		log.Fatalf("[Error] Failed to connect to Temporal: %v", err)
 	}
 	defer temporalClient.Close()
 
@@ -184,7 +184,7 @@ func main() {
 		// C. Start the Workflow
 		we, err := temporalClient.ExecuteWorkflow(context.Background(), workflowOptions, "BrowserWorkflow", workflowPayload)
 		if err != nil {
-			log.Printf("❌ Temporal Start Failed: %v", err)
+			log.Printf("[Error] Temporal workflow start failed: %v", err)
 			c.JSON(500, gin.H{"error": "Failed to start workflow"})
 			return
 		}
@@ -219,7 +219,7 @@ func main() {
 		// B. Send Temporal Signal to the Running Workflow
 		workflowID := "workflow-" + req.JobID
 
-		log.Printf("📨 Sending signal to workflow %s with data: %v", workflowID, req.Data)
+		log.Printf("[Signal] Sending signal to workflow %s with data: %v", workflowID, req.Data)
 
 		err := temporalClient.SignalWorkflow(
 			context.Background(),
@@ -230,7 +230,7 @@ func main() {
 		)
 
 		if err != nil {
-			log.Printf("❌ Signal Failed for Job %s: %v", req.JobID, err)
+			log.Printf("[Error] Signal failed for job %s: %v", req.JobID, err)
 			c.JSON(500, gin.H{
 				"success": false,
 				"error":   "Failed to signal workflow",
@@ -239,7 +239,7 @@ func main() {
 			return
 		}
 
-		log.Printf("✅ Signal sent successfully to Job %s", req.JobID)
+		log.Printf("[Signal] Signal sent successfully to job %s", req.JobID)
 		c.JSON(200, gin.H{
 			"success": true,
 			"message": "Workflow resumed",
@@ -256,7 +256,7 @@ func main() {
 	srv := &http.Server{Addr: ":" + port, Handler: r}
 
 	go func() {
-		log.Printf("🚀 Control Plane Running on port %s", port)
+		log.Printf("[System] Control plane server running on port %s", port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("listen: %s\n", err)
 		}

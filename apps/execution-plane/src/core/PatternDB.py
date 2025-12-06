@@ -33,7 +33,7 @@ class PatternDB:
         # Ensure we are in the correct directory (execution-plane root)
         base_dir = os.path.dirname(os.path.abspath(__file__))
         self.db_path = os.path.join(base_dir, "../../", db_path)
-        logger.info(f"🗄️ Initializing PatternDB at: {self.db_path}")
+        logger.info(f"[Database] Initializing PatternDB at: {self.db_path}")
         self._init_db()
 
     def _get_conn(self):
@@ -63,7 +63,7 @@ class PatternDB:
         """)
         conn.commit()
         conn.close()
-        logger.debug("✅ PatternDB schema initialized")
+        logger.debug("[System] PatternDB schema initialized")
 
     def get_pattern(self, domain: str, page_simhash: str, intent: str) -> str | None:
         """

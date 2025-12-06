@@ -33,7 +33,7 @@ async def main():
     temporal_host = os.getenv("TEMPORAL_HOST", "localhost:7233")
     task_queue = "e2e-browser-tasks"
 
-    logger.info(f"🚀 Starting Worker connecting to {temporal_host}")
+    logger.info(f"[System] Worker process started, connecting to {temporal_host}")
 
     # Telemetry
     tracer_provider, meter_provider = init_telemetry("execution-plane")
@@ -44,7 +44,7 @@ async def main():
     try:
         # 3. CONNECT
         client = await Client.connect(temporal_host, interceptors=interceptors)
-        logger.info("✅ Connected to Temporal Cluster")
+        logger.info("[System] Successfully connected to Temporal cluster")
 
         # 4. CREATE WORKER
         worker = Worker(
@@ -56,20 +56,20 @@ async def main():
             graceful_shutdown_timeout=timedelta(seconds=15)
         )
 
-        logger.info(f"👂 Listening on queue: '{task_queue}'")
-        logger.info("   Press Ctrl+C to stop.")
+        logger.info(f"[Worker] Listening on queue: '{task_queue}'")
+        logger.info("[Worker] Press Ctrl+C to stop.")
 
         # 5. RUN (BLOCKING)
         # The SDK automatically handles SIGINT/SIGTERM here.
         # It will wait for 'graceful_shutdown_timeout' before killing activities.
         await worker.run()
 
-        logger.info("👋 Worker shutdown complete.")
+        logger.info("[System] Worker shutdown complete.")
 
     except asyncio.CancelledError:
-        logger.info("🛑 Worker cancelled.")
+        logger.info("[System] Worker cancelled.")
     except Exception as e:
-        logger.error(f"❌ Critical Worker Error: {e}", exc_info=True)
+        logger.error(f"[System] Critical worker error: {e}", exc_info=True)
         sys.exit(1)
     finally:
         shutdown_telemetry(tracer_provider, meter_provider)

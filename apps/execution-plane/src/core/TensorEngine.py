@@ -31,7 +31,7 @@ class TensorEngine:
             cls._instance = super(TensorEngine, cls).__new__(cls)
             logger.info("🧠 Initializing Tensor Engine (Singleton)...")
             cls._model = SentenceTransformer('all-MiniLM-L6-v2')
-            logger.info("✅ Model loaded: all-MiniLM-L6-v2 (384-dim)")
+            logger.info("[System] Model loaded: all-MiniLM-L6-v2 (384-dim)")
         return cls._instance
 
     @property
@@ -96,18 +96,18 @@ class TensorEngine:
             sanitized = " ".join(weighted_text.lower().split())
 
             if not sanitized.strip():
-                logger.warning("⚠️ Page has no extractable metadata. Returning Zero Vector.")
+                logger.warning("[Warning] Page has no extractable metadata. Returning Zero Vector.")
                 return np.zeros(384, dtype=np.float32)
 
             # Encode to Vector Space
             vector = self._model.encode(sanitized, convert_to_numpy=True, normalize_embeddings=True)
 
-            logger.debug(f"📊 Vectorized: '{sanitized[:50]}...' → ||V|| = {np.linalg.norm(vector):.3f}")
+            logger.debug(f"[Metrics] Vectorized:'{sanitized[:50]}...' → ||V|| = {np.linalg.norm(vector):.3f}")
 
             return vector.astype(np.float32)
 
         except Exception as e:
-            logger.error(f"❌ Vectorization failed: {e}")
+            logger.error(f"[Error] Vectorization failed: {e}")
             return np.zeros(384, dtype=np.float32)
 
     def compute_relevance(self, page_vector: np.ndarray, user_intent: str) -> float:
@@ -152,7 +152,7 @@ class TensorEngine:
 
             # Handle Zero Vectors (Division by Zero Protection)
             if norm_page < 1e-6 or norm_intent < 1e-6:
-                logger.warning("⚠️ Zero vector detected. Returning 0.0 similarity.")
+                logger.warning("[Warning] Zero vector detected. Returning 0.0 similarity.")
                 return 0.0
 
             # Cosine Similarity: V·I / (||V|| × ||I||)
@@ -163,12 +163,12 @@ class TensorEngine:
             # Clamp to [-1.0, 1.0] (numerical stability)
             cosine_score = np.clip(cosine_score, -1.0, 1.0)
 
-            logger.info(f"🎯 Relevance Score: {cosine_score:.4f} (Intent: '{user_intent}')")
+            logger.info(f"[Logic] Relevance Score: {cosine_score:.4f} (Intent:'{user_intent}')")
 
             return float(cosine_score)
 
         except Exception as e:
-            logger.error(f"❌ Relevance computation failed: {e}")
+            logger.error(f"[Error] Relevance computation failed: {e}")
             return 0.0
 
 

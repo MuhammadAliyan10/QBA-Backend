@@ -30,7 +30,7 @@ func Init() {
 		log.Fatalf("❌ DB Unreachable: %v", err)
 	}
 
-	log.Println("✅ Connected to CockroachDB (The Ledger)")
+	log.Println("[Database] Successfully connected to CockroachDB")
 
 	// Run Auto-Migration
 	if err := createTables(); err != nil {

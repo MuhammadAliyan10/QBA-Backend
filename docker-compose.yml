@@ -1,43 +1,51 @@
-version: "3.8"
-
 services:
   # --- 1. THE NERVOUS SYSTEM (NATS JETSTREAM) ---
   nats:
     image: nats:latest
+    container_name: e2e_nats
+    restart: unless-stopped
     ports:
-      - "4222:4222"
-      - "8222:8222"
-    command: "-c /etc/nats/nats-server.conf"
+      - "4222:4222" # Client Port
+      - "8222:8222" # Dashboard Port
+    # Force enable JetStream and set monitoring port
+    command: "-js -m 8222"
     volumes:
-      - ./config/nats.conf:/etc/nats/nats-server.conf
+      # Optional: Map config if you need custom limits later
+      # - ./config/nats.conf:/etc/nats/nats-server.conf
       - nats_data:/data
     networks:
       - e2e-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/varz"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-  # --- 2. THE ORCHESTRATOR (TEMPORAL SERVER) ---
+  # --- 2. THE ORCHESTRATOR (TEMPORAL) ---
   temporal:
     image: temporalio/auto-setup:latest
+    container_name: e2e_temporal
+    restart: unless-stopped
     ports:
-      - "7233:7233" # gRPC Port ONLY
+      - "7233:7233" # gRPC Port
     environment:
-      # FIX: Explicitly set the DB Driver
       - DB=postgres12
-      # FIX: The auto-setup script needs SEEDS to find the DB
-      - POSTGRES_SEEDS=temporal-db
+      - POSTGRES_SEEDS=e2e_postgres
       - POSTGRES_USER=temporal
       - POSTGRES_PWD=temporal
       - POSTGRES_DB=temporal
       - DB_PORT=5432
-      # Skip version check to prevent startup lag/errors
       - SKIP_DEFAULT_VERSION_CHECK=true
     depends_on:
-      - temporal-db
+      postgres:
+        condition: service_healthy
     networks:
       - e2e-net
 
-  # --- 2.5 TEMPORAL UI (THE DASHBOARD) ---
   temporal-ui:
     image: temporalio/ui:latest
+    container_name: e2e_temporal_ui
+    restart: unless-stopped
     ports:
       - "8088:8080"
     environment:
@@ -48,8 +56,10 @@ services:
     networks:
       - e2e-net
 
-  temporal-db:
+  postgres:
     image: postgres:15-alpine
+    container_name: e2e_postgres
+    restart: unless-stopped
     environment:
       - POSTGRES_USER=temporal
       - POSTGRES_PASSWORD=temporal
@@ -58,14 +68,21 @@ services:
       - temporal_db_data:/var/lib/postgresql/data
     networks:
       - e2e-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-  # --- 3. THE TRANSACTIONAL DB (COCKROACHDB) ---
+  # --- 3. THE LEDGER (COCKROACHDB) ---
   cockroach:
     image: cockroachdb/cockroach:latest
+    container_name: e2e_cockroach
+    restart: unless-stopped
     command: start-single-node --insecure
     ports:
-      - "26257:26257"
-      - "8090:8080"
+      - "26257:26257" # SQL Port
+      - "8090:8080" # Dashboard Port
     volumes:
       - cockroach_data:/cockroach/cockroach-data
     networks:
@@ -74,6 +91,8 @@ services:
   # --- 4. THE CACHE (REDIS) ---
   redis:
     image: redis:alpine
+    container_name: e2e_redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     command: redis-server --save 60 1 --loglevel warning
@@ -82,9 +101,66 @@ services:
     networks:
       - e2e-net
 
-  # --- 5. THE LOGS (CLICKHOUSE) ---
+  # --- 5. THE STORAGE (MINIO - LOCAL S3) ---
+  minio:
+    image: minio/minio:latest
+    container_name: e2e_minio
+    restart: unless-stopped
+    ports:
+      - "9000:9000" # API
+      - "9001:9001" # Console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - e2e-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Helper to create the default bucket automatically
+  minio-create-bucket:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb myminio/e2e-local-bucket;
+      /usr/bin/mc anonymous set public myminio/e2e-local-bucket;
+      exit 0;
+      "
+    networks:
+      - e2e-net
+
+  # --- 6. THE BRAIN (QDRANT VECTOR DB) ---
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: e2e_qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333" # REST API
+      - "6334:6334" # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - e2e-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- 7. THE LOGS (CLICKHOUSE - Optional) ---
   # clickhouse:
   #   image: clickhouse/clickhouse-server
+  #   container_name: e2e_clickhouse
   #   ports:
   #     - "8123:8123"
   #     - "9000:9000"
@@ -102,6 +178,8 @@ volumes:
   temporal_db_data:
   cockroach_data:
   redis_data:
+  minio_data:
+  qdrant_data:
   # clickhouse_data:
 
 networks:
