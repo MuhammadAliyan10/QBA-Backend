@@ -17,7 +17,7 @@ class TheHealer:
         # Load a tiny, fast model (80MB) onto the CPU.
         # This runs LOCALLY. No API cost.
         if TheHealer._model is None:
-            logger.info("🧠 Loading Local Embedding Model (all-MiniLM-L6-v2)...")
+            logger.info("Loading embedding model (all-MiniLM-L6-v2)...")
             TheHealer._model = SentenceTransformer('all-MiniLM-L6-v2')
 
         self.model = TheHealer._model
@@ -50,7 +50,7 @@ class TheHealer:
         """
         Takes all buttons on the page and saves them into the Vector Index.
         """
-        logger.info(f"🧠 Healer: Memorizing {len(candidates)} elements...")
+        logger.info(f"Healer memorizing {len(candidates)} elements...")
         self.index.reset() # Clear old memory
         self.stored_elements = candidates
 

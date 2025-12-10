@@ -92,10 +92,10 @@ class PatternDB:
         conn.close()
 
         if row:
-            logger.info(f"🧠 Memory Hit: Found cached selector for '{intent}' on {domain}")
+            logger.info(f"Cache hit: Found cached selector for '{intent}' on {domain}")
             return row[0]
 
-        logger.debug(f"💭 Memory Miss: No pattern for '{intent}' on {domain}")
+        logger.debug(f"Cache miss: No pattern for '{intent}' on {domain}")
         return None
 
     def save_pattern(self, domain: str, page_simhash: str, intent: str, selector: str):
@@ -128,7 +128,7 @@ class PatternDB:
 
         conn.commit()
         conn.close()
-        logger.info(f"📝 Memory Saved: Linked '{intent}' to selector '{selector[:50]}...'")
+        logger.info(f"Pattern saved: Linked '{intent}' to selector '{selector[:50]}...'")
 
 
 # ==================== VERIFICATION BLOCK ====================
@@ -150,7 +150,7 @@ if __name__ == "__main__":
     try:
         print(f"\n[Test 1] Database Creation...")
         db = PatternDB(db_path=temp_db.name)
-        print("✅ Database initialized")
+        print("Database initialized")
 
         print("\n[Test 2] Save Pattern...")
         db.save_pattern(
@@ -159,16 +159,16 @@ if __name__ == "__main__":
             intent="search",
             selector="#twotabsearchtextbox"
         )
-        print("✅ Pattern saved")
+        print("Pattern saved")
 
         print("\n[Test 3] Retrieve Pattern (Hit)...")
         result = db.get_pattern("amazon.com", "12345678901234567890", "search")
-        print(f"✅ Retrieved: {result}")
+        print(f"Retrieved: {result}")
         assert result == "#twotabsearchtextbox", "Selector mismatch!"
 
         print("\n[Test 4] Retrieve Pattern (Miss)...")
         result = db.get_pattern("amazon.com", "99999999999999999999", "search")
-        print(f"✅ Result: {result} (Expected: None)")
+        print(f"Result: {result} (Expected: None)")
         assert result is None, "Should return None for cache miss!"
 
         print("\n[Test 5] Update Pattern (Increment Count)...")
@@ -181,11 +181,11 @@ if __name__ == "__main__":
         cursor.execute("SELECT success_count FROM patterns WHERE domain = 'amazon.com'")
         count = cursor.fetchone()[0]
         conn.close()
-        print(f"✅ Success count: {count} (Expected: 3)")
+        print(f"Success count: {count} (Expected: 3)")
         assert count == 3, "Success count should be 3!"
 
         print("\n" + "=" * 60)
-        print("ALL TESTS PASSED ✅")
+        print("ALL TESTS PASSED")
         print("=" * 60)
 
     finally:

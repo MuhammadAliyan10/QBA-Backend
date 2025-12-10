@@ -101,99 +101,72 @@ class AccountManager:
             domain: Domain name (e.g., "example.com")
 
         Returns:
-            Dictionary with account data:
-                {
-                    'id': UUID,
-                    'username': str,
-                    'password': str (decrypted),
-                    'cookies': dict or None
-                }
-            Returns None if no accounts available.
+            Dictionary with account data or None if no accounts available
         """
         try:
             with self.engine.begin() as conn:
                 # Atomic SELECT + UPDATE with SKIP LOCKED
                 # Prioritize accounts with cookies first
                 query = text("""
-    def lease_account(self, domain: str) -> dict | None:
-        """
-        Atomically lease an available account for a specific domain.
+                    SELECT id, username, password_encrypted, cookies, domain
+                    FROM account_pool
+                    WHERE domain = :domain
+                      AND status = 'AVAILABLE'
+                      AND (expires_at IS NULL OR expires_at > NOW())
+                    ORDER BY
+                        (cookies IS NOT NULL) DESC,  -- Prioritize accounts with cookies
+                        last_used_at ASC NULLS FIRST
+                    LIMIT 1
+                    FOR UPDATE SKIP LOCKED
+                """)
 
-        CRITICAL: Uses FOR UPDATE SKIP LOCKED to prevent race conditions.
-        This ensures two concurrent jobs NEVER get the same account.
+                result = conn.execute(query, {"domain": domain})
+                row = result.fetchone()
 
-        Race Condition Protection:
-        - Job A queries: SELECT ... FOR UPDATE SKIP LOCKED
-        - Job B queries simultaneously: SKIPS locked row, gets next account
-        - No collision possible!
+                if not row:
+                    logger.warning(f"[AccountManager] No available accounts for domain: {domain}")
+                    return None
 
-        Args:
-            domain: Target domain (e.g., "amazon.com")
+                account_id, username, password_enc, cookies_json, domain_name = row
 
-        Returns:
-            Account dict with credentials and cookies, or None if pool empty
-        """
-        conn = self._get_conn()
-        cursor = conn.cursor()
+                # Update status immediately while we hold the lock
+                update_query = text("""
+                    UPDATE account_pool
+                    SET status = 'LEASED',
+                        leased_at = NOW(),
+                        last_used_at = NOW()
+                    WHERE id = :account_id
+                """)
 
-        try:
-            # ATOMIC LEASE: Lock the row immediately
-            cursor.execute("""
-                SELECT id, username, password, cookies, domain
-                FROM accounts
-                WHERE domain = ?
-                  AND status = 'AVAILABLE'
-                  AND (expires_at IS NULL OR expires_at > datetime('now'))
-                ORDER BY last_used ASC
-                LIMIT 1
-                FOR UPDATE SKIP LOCKED
-            """, (domain,))
+                conn.execute(update_query, {"account_id": account_id})
 
-            row = cursor.fetchone()
+                # Decrypt password
+                password = self._decrypt_password(password_enc)
 
-            if not row:
-                conn.close()
-                logger.warning(f"[AccountManager] No available accounts for domain: {domain}")
-                return None
+                # Parse cookies if they exist
+                cookies = None
+                if cookies_json:
+                    try:
+                        cookies = json.loads(cookies_json) if isinstance(cookies_json, str) else cookies_json
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning(f"[AccountManager] Invalid cookie JSON for account {account_id}")
 
-            account_id, username, password, cookies_json, domain = row
+                account_data = {
+                    "id": str(account_id),
+                    "username": username,
+                    "password": password,
+                    "cookies": cookies,
+                    "domain": domain_name
+                }
 
-            # Update status immediately while we hold the lock
-            cursor.execute("""
-                UPDATE accounts
-                SET status = 'LEASED',
-                    leased_at = datetime('now'),
-                    last_used = datetime('now')
-                WHERE id = ?
-            """, (account_id,))
-
-            conn.commit()
-
-            # Parse cookies if they exist
-            cookies = None
-            if cookies_json:
-                try:
-                    cookies = json.loads(cookies_json)
-                except json.JSONDecodeError:
-                    logger.warning(f"[AccountManager] Invalid cookie JSON for account {account_id}")
-
-            account_data = {
-                "id": account_id,
-                "username": username,
-                "password": password,
-                "cookies": cookies,
-                "domain": domain
-            }
-
-            logger.info(f"[Security] Leased account '{username}' for {domain} (ID: {account_id})")
-            return account_data
+                logger.info(f"[Security] Leased account '{username}' for {domain} (ID: {account_id})")
+                return account_data
 
         except Exception as e:
-            conn.rollback()
-            logger.error(f"[AccountManager] Failed to lease account for {domain}: {e}")
+            logger.error(f"[AccountManager] Failed to lease account for {domain}: {e}", exc_info=True)
             return None
-        finally:
-            conn.close()
+
+
 
     def release_account(
         self,

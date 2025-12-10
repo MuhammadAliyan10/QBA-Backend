@@ -39,7 +39,7 @@ type PolarEvent struct {
 func NewPolarWebhookHandler(redisClient *redis.Client, natsConn *nats.Conn) *PolarWebhookHandler {
 	webhookSecret := os.Getenv("POLAR_WEBHOOK_SECRET")
 	if webhookSecret == "" {
-		log.Println("⚠️  POLAR_WEBHOOK_SECRET not set. Webhook signature verification disabled.")
+		log.Println("[WARN] POLAR_WEBHOOK_SECRET not set. Webhook signature verification disabled.")
 	}
 
 	return &PolarWebhookHandler{
@@ -54,7 +54,7 @@ func (pwh *PolarWebhookHandler) HandleWebhook(c *gin.Context) {
 	// Read request body
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		log.Printf("❌ Failed to read webhook body: %v", err)
+		log.Printf("[ERROR] Failed to read webhook body: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
@@ -62,7 +62,7 @@ func (pwh *PolarWebhookHandler) HandleWebhook(c *gin.Context) {
 	// Verify Polar signature
 	signature := c.GetHeader("X-Polar-Signature")
 	if pwh.webhookSecret != "" && !pwh.verifySignature(body, signature) {
-		log.Println("❌ Invalid Polar signature")
+		log.Println("[ERROR] Invalid Polar signature")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid signature"})
 		return
 	}
@@ -70,12 +70,12 @@ func (pwh *PolarWebhookHandler) HandleWebhook(c *gin.Context) {
 	// Parse event
 	var event PolarEvent
 	if err := json.Unmarshal(body, &event); err != nil {
-		log.Printf("❌ Failed to parse Polar event: %v", err)
+		log.Printf("[ERROR] Failed to parse Polar event: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
 		return
 	}
 
-	log.Printf("📨 Received Polar event: %s", event.Type)
+	log.Printf("[Event] Received Polar event: %s", event.Type)
 
 	// Handle different event types
 	switch event.Type {
@@ -86,7 +86,7 @@ func (pwh *PolarWebhookHandler) HandleWebhook(c *gin.Context) {
 	case "subscription.created":
 		pwh.handleSubscriptionCreated(c.Request.Context(), &event)
 	default:
-		log.Printf("ℹ️  Unhandled event type: %s", event.Type)
+		log.Printf("[Info] Unhandled event type: %s", event.Type)
 	}
 
 	// Always return 200 to Polar
@@ -115,27 +115,27 @@ func (pwh *PolarWebhookHandler) handleCheckoutCompleted(ctx context.Context, eve
 	// Get user_id from custom fields
 	customFields, ok := data["custom_fields"].(map[string]interface{})
 	if !ok {
-		log.Println("❌ No custom_fields in checkout")
+		log.Println("[ERROR] No custom_fields in checkout")
 		return
 	}
 
 	userID, ok := customFields["user_id"].(string)
 	if !ok {
-		log.Println("❌ No user_id in custom_fields")
+		log.Println("[ERROR] No user_id in custom_fields")
 		return
 	}
 
 	// Get product info
 	product, ok := data["product"].(map[string]interface{})
 	if !ok {
-		log.Println("❌ No product in checkout")
+		log.Println("[ERROR] No product in checkout")
 		return
 	}
 
 	// Get credit amount from product metadata
 	metadata, ok := product["metadata"].(map[string]interface{})
 	if !ok {
-		log.Println("❌ No metadata in product")
+		log.Println("[ERROR] No metadata in product")
 		return
 	}
 
@@ -144,7 +144,7 @@ func (pwh *PolarWebhookHandler) handleCheckoutCompleted(ctx context.Context, eve
 		// Try to get from price
 		priceAmount, ok := data["amount"].(float64)
 		if !ok {
-			log.Println("❌ No credits or amount in checkout")
+			log.Println("[ERROR] No credits or amount in checkout")
 			return
 		}
 		// Default conversion: $1 = 10 credits
@@ -153,7 +153,7 @@ func (pwh *PolarWebhookHandler) handleCheckoutCompleted(ctx context.Context, eve
 
 	credits := int(creditsFloat)
 	if credits <= 0 {
-		log.Println("❌ Invalid credit amount")
+		log.Println("[ERROR] Invalid credit amount")
 		return
 	}
 
@@ -161,11 +161,11 @@ func (pwh *PolarWebhookHandler) handleCheckoutCompleted(ctx context.Context, eve
 	key := fmt.Sprintf("user:%s:credits", userID)
 	newBalance, err := pwh.redis.IncrBy(ctx, key, int64(credits)).Result()
 	if err != nil {
-		log.Printf("❌ Failed to add credits to Redis: %v", err)
+		log.Printf("[ERROR] Failed to add credits to Redis: %v", err)
 		return
 	}
 
-	log.Printf("💰 Added %d credits to user %s. New balance: %d", credits, userID, newBalance)
+	log.Printf("[Billing] Added %d credits to user %s. New balance: %d", credits, userID, newBalance)
 
 	// Get checkout ID for metadata
 	checkoutID, _ := data["id"].(string)
@@ -194,7 +194,7 @@ func (pwh *PolarWebhookHandler) handleSubscriptionCreated(ctx context.Context, e
 	}
 
 	if userID == "" {
-		log.Println("❌ No user_id in subscription")
+		log.Println("[ERROR] No user_id in subscription")
 		return
 	}
 
@@ -218,11 +218,11 @@ func (pwh *PolarWebhookHandler) handleSubscriptionCreated(ctx context.Context, e
 	key := fmt.Sprintf("user:%s:credits", userID)
 	newBalance, err := pwh.redis.IncrBy(ctx, key, int64(monthlyCredits)).Result()
 	if err != nil {
-		log.Printf("❌ Failed to add subscription credits: %v", err)
+		log.Printf("[ERROR] Failed to add subscription credits: %v", err)
 		return
 	}
 
-	log.Printf("🔄 Added %d subscription credits to user %s. Balance: %d", monthlyCredits, userID, newBalance)
+	log.Printf("[Billing] Added %d subscription credits to user %s. Balance: %d", monthlyCredits, userID, newBalance)
 
 	subscriptionID, _ := data["id"].(string)
 	pwh.publishBillingEvent(userID, monthlyCredits, int(newBalance), subscriptionID)
@@ -251,9 +251,9 @@ func (pwh *PolarWebhookHandler) publishBillingEvent(userID string, amount int, b
 	data, _ := json.Marshal(event)
 
 	if err := pwh.nats.Publish("billing.events", data); err != nil {
-		log.Printf("⚠️  Failed to publish billing event: %v", err)
+		log.Printf("[WARN] Failed to publish billing event: %v", err)
 	} else {
-		log.Printf("📨 Published TOPUP event for user %s", userID)
+		log.Printf("[Event] Published TOPUP event for user %s", userID)
 	}
 }
 

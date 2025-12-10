@@ -29,7 +29,7 @@ class TensorEngine:
         """
         if cls._instance is None:
             cls._instance = super(TensorEngine, cls).__new__(cls)
-            logger.info("🧠 Initializing Tensor Engine (Singleton)...")
+            logger.info("Initializing Tensor Engine (Singleton)...")
             cls._model = SentenceTransformer('all-MiniLM-L6-v2')
             logger.info("[System] Model loaded: all-MiniLM-L6-v2 (384-dim)")
         return cls._instance
@@ -185,40 +185,40 @@ if __name__ == "__main__":
     print("\n[Test 1] Singleton Pattern...")
     engine1 = TensorEngine()
     engine2 = TensorEngine()
-    print(f"✅ Singleton Test: {engine1.model is engine2.model} (Should be True)")
+    print(f"Singleton Test: {engine1.model is engine2.model} (Should be True)")
 
     # Mock Page Data (Simulate DOM extraction)
     print("\n[Test 2] Mock Page Vectorization...")
     mock_page_text = "Amazon.com: Online Shopping for Electronics, Apparel, Computers"
     mock_vector = engine1.model.encode(mock_page_text, convert_to_numpy=True, normalize_embeddings=True)
-    print(f"✅ Mock Vector Shape: {mock_vector.shape} (Expected: (384,))")
-    print(f"✅ Vector Norm: {np.linalg.norm(mock_vector):.4f} (Expected: ~1.0)")
+    print(f"Mock Vector Shape: {mock_vector.shape} (Expected: (384,))")
+    print(f"Vector Norm: {np.linalg.norm(mock_vector):.4f} (Expected: ~1.0)")
 
     # Mock User Intent
     print("\n[Test 3] Cosine Similarity Computation...")
     user_intent = "Buy iPhone"
     relevance_score = engine1.compute_relevance(mock_vector, user_intent)
-    print(f"✅ Cosine Score: {relevance_score:.4f}")
+    print(f"Cosine Score: {relevance_score:.4f}")
     print(f"   Interpretation: {'Strong Match' if relevance_score > 0.5 else 'Weak Match'}")
 
     # Edge Case: Zero Vector
     print("\n[Test 4] Edge Case - Zero Vector...")
     zero_vector = np.zeros(384, dtype=np.float32)
     zero_score = engine1.compute_relevance(zero_vector, "test")
-    print(f"✅ Zero Vector Score: {zero_score:.4f} (Expected: 0.0)")
+    print(f"Zero Vector Score: {zero_score:.4f} (Expected: 0.0)")
 
     # Additional Test: High Similarity
     print("\n[Test 5] High Similarity Test...")
     similar_intent = "online shopping electronics"
     high_score = engine1.compute_relevance(mock_vector, similar_intent)
-    print(f"✅ Similar Intent Score: {high_score:.4f} (Should be > 0.5)")
+    print(f"Similar Intent Score: {high_score:.4f} (Should be > 0.5)")
 
     # Additional Test: Low Similarity
     print("\n[Test 6] Low Similarity Test...")
     unrelated_intent = "cooking recipes italian pasta"
     low_score = engine1.compute_relevance(mock_vector, unrelated_intent)
-    print(f"✅ Unrelated Intent Score: {low_score:.4f} (Should be < 0.3)")
+    print(f"Unrelated Intent Score: {low_score:.4f} (Should be < 0.3)")
 
     print("\n" + "=" * 60)
-    print("ALL TESTS PASSED ✅")
+    print("ALL TESTS PASSED")
     print("=" * 60)

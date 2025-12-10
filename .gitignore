@@ -59,3 +59,16 @@ out/
 # -----------------------------
 Thumbs.db
 ehthumbs.db
+
+# -----------------------------
+# PROJECT SPECIFIC
+# -----------------------------
+# Database files
+*.db
+patterns.db
+
+# Security reports
+security-report.json
+
+# Local test artifacts
+/tmp/test_*.png

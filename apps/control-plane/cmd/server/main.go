@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,6 +14,9 @@ import (
 
 	// 1. Internal Modules
 	"e2e-platform/apps/control-plane/internal/db"
+	"e2e-platform/apps/control-plane/internal/metrics"
+	"e2e-platform/apps/control-plane/internal/middleware"
+	"e2e-platform/apps/control-plane/internal/webhook"
 	"e2e-platform/apps/control-plane/internal/ws"
 
 	// 2. Third-Party Libraries
@@ -20,6 +24,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"github.com/nats-io/nats.go"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 	"go.temporal.io/sdk/client"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -78,6 +84,53 @@ func (c *Consumer) StartListening() {
 
 		// Broadcast to specific Job Channel
 		c.ws.BroadcastToJob(jobID, jsonBytes)
+
+		// 6. TRIGGER WEBHOOK ON JOB COMPLETION/FAILURE
+		// Only dispatch webhooks for terminal states
+		if event.Status == "COMPLETED" || event.Status == "FAILED" {
+			// Query webhook_url from jobs table
+			var webhookURL sql.NullString
+			err := db.Conn.QueryRow(
+				"SELECT webhook_url FROM jobs WHERE id = $1",
+				jobID,
+			).Scan(&webhookURL)
+
+			// If webhook URL exists, dispatch notification
+			if err == nil && webhookURL.Valid {
+				// Build webhook payload
+				payload := webhook.WebhookPayload{
+					JobID:     jobID,
+					Status:    event.Status,
+					Data: map[string]interface{}{
+						"message": event.Message,
+						"node_id": event.NodeId,
+					},
+					Timestamp: time.Now().UTC().Format(time.RFC3339),
+				}
+
+				// PRODUCTION GATE: Enforce secure configuration in release mode
+				secret := os.Getenv("WEBHOOK_SECRET")
+				if secret == "" {
+					// Check if running in production (Gin release mode)
+					ginMode := os.Getenv("GIN_MODE")
+					if ginMode == "release" {
+						// CRITICAL: Do not allow insecure production deployment
+						log.Fatal("[SECURITY] WEBHOOK_SECRET must be set in production. Refusing to start.")
+					} else {
+						// Development mode: Allow with loud warning and temporary secret
+						log.Println("[WARNING] WEBHOOK_SECRET not set. Using temporary dev secret. DO NOT USE IN PRODUCTION!")
+						secret = fmt.Sprintf("dev_temp_secret_%d", time.Now().UnixNano())
+					}
+				}
+
+				// Dispatch webhook asynchronously (non-blocking)
+				go webhook.Dispatch(webhookURL.String, payload, secret)
+
+				log.Printf("[Webhook] Dispatching webhook for job %s to %s", jobID, webhookURL.String)
+			} else if err != nil && err != sql.ErrNoRows {
+				log.Printf("[Webhook] Database error querying webhook_url for job %s: %v", jobID, err)
+			}
+		}
 	})
 
 	if err != nil {
@@ -95,7 +148,27 @@ func main() {
 	// 2. Initialize Database (CockroachDB/Postgres)
 	db.Init()
 
-	// 3. Connect to NATS (The Nervous System)
+	// 3. Initialize Redis (Rate Limiting & Caching)
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL == "" {
+		redisURL = "localhost:6379"
+	}
+	log.Printf("[System] Connecting to Redis at %s", redisURL)
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: redisURL,
+	})
+	// Test Redis connection
+	if err := redisClient.Ping(context.Background()).Err(); err != nil {
+		log.Printf("[Warning] Redis connection failed: %v. Rate limiting will be disabled.", err)
+		redisClient = nil // Disable if Redis unavailable
+	} else {
+		log.Println("[System] Connected to Redis successfully")
+	}
+
+	// 4. Initialize Prometheus Metrics
+	metrics.InitMetrics()
+
+	// 5. Connect to NATS (The Nervous System)
 	natsURL := os.Getenv("NATS_URL")
 	if natsURL == "" {
 		natsURL = nats.DefaultURL
@@ -107,7 +180,7 @@ func main() {
 	}
 	defer nc.Close()
 
-	// 4. Connect to Temporal (The Orchestrator)
+	// 6. Connect to Temporal (The Orchestrator)
 	temporalHost := os.Getenv("TEMPORAL_HOST")
 	if temporalHost == "" {
 		temporalHost = "localhost:7233"
@@ -122,25 +195,52 @@ func main() {
 	}
 	defer temporalClient.Close()
 
-	// 5. Setup Components
+	// 7. Setup Components
 	wsManager := ws.NewManager()
 	consumer := NewConsumer(nc, wsManager)
 	consumer.StartListening()
 
-	// 6. Setup Gin Router
+	// 8. Setup Gin Router
 	r := gin.Default()
 	r.Use(cors.Default())
+
+	// Add metrics middleware to track all requests
+	r.Use(func(c *gin.Context) {
+		start := time.Now()
+		c.Next()
+		duration := time.Since(start)
+		status := fmt.Sprintf("%d", c.Writer.Status())
+		metrics.RecordAPIRequest(c.Request.Method, c.Request.URL.Path, status)
+		metrics.APIRequestDuration.WithLabelValues(c.Request.Method, c.Request.URL.Path).Observe(duration.Seconds())
+	})
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "alive", "service": "control-plane"})
 	})
+
+	// Prometheus metrics endpoint
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	r.GET("/ws", func(c *gin.Context) {
 		wsManager.HandleRequest(c)
 	})
 
 	// --- [ENDPOINT 1] START AUTOMATION JOB ---
-	r.POST("/run", func(c *gin.Context) {
+	// Create protected route group with rate limiting
+	protected := r.Group("/")
+	if redisClient != nil {
+		// Apply rate limiting if Redis is available
+		protected.Use(func(c *gin.Context) {
+			// Dev mode: allow X-User-ID header for testing
+			if userID := c.GetHeader("X-User-ID"); userID != "" {
+				c.Set("userID", userID)
+			}
+			c.Next()
+		})
+		protected.Use(middleware.NewRateLimitMiddleware(redisClient).Middleware())
+	}
+
+	protected.POST("/run", func(c *gin.Context) {
 		// A. Parse Developer Request (JSON)
 		// Matches the structure sent by your Dashboard or Curl
 		var req struct {
@@ -188,6 +288,10 @@ func main() {
 			c.JSON(500, gin.H{"error": "Failed to start workflow"})
 			return
 		}
+
+		// Record metrics
+		metrics.RecordWorkflowStart(req.WorkflowID)
+		metrics.IncrementJobQueueCount("queued")
 
 		c.JSON(202, gin.H{
 			"message":  "Job Queued Successfully",
@@ -247,7 +351,7 @@ func main() {
 		})
 	})
 
-	// 7. Start Server
+	// 9. Start Server
 	port := os.Getenv("PORT_GO_API")
 	if port == "" {
 		port = "8080"
@@ -262,7 +366,7 @@ func main() {
 		}
 	}()
 
-	// 8. Graceful Shutdown
+	// 10. Graceful Shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit

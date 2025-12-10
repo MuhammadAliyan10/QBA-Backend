@@ -8,12 +8,15 @@ WORKDIR /build
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates
 
-# Copy go mod files
-COPY go.mod go.sum ./
+# Copy go mod files from control-plane directory
+COPY apps/control-plane/go.mod apps/control-plane/go.sum ./
 RUN go mod download
 
 # Copy source code
-COPY . .
+COPY apps/control-plane/ ./
+
+# Copy proto gen files (needed for imports)
+COPY api/gen/go/ /build/api/gen/go/
 
 # Build the binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \

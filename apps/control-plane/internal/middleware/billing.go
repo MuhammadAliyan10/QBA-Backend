@@ -79,7 +79,7 @@ func (bm *BillingMiddleware) Middleware() gin.HandlerFunc {
 		if err != nil {
 			// Insufficient balance
 			if err.Error() == "insufficient_balance" {
-				log.Printf("❌ User %s has insufficient credits", userIDStr)
+				log.Printf("[ERROR] User %s has insufficient credits", userIDStr)
 				c.JSON(http.StatusPaymentRequired, gin.H{
 					"error":   "Insufficient credits",
 					"message": "Please top up your account to continue",
@@ -90,7 +90,7 @@ func (bm *BillingMiddleware) Middleware() gin.HandlerFunc {
 			}
 
 			// Redis error
-			log.Printf("❌ Redis error for user %s: %v", userIDStr, err)
+			log.Printf("[ERROR] Redis error for user %s: %v", userIDStr, err)
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error": "Billing service unavailable",
 			})
@@ -139,7 +139,7 @@ func (bm *BillingMiddleware) deductCredits(ctx context.Context, userID string) (
 		return 0, fmt.Errorf("insufficient_balance")
 	}
 
-	log.Printf("✅ Deducted %d credits from user %s. Balance: %d", bm.creditCost, userID, balance)
+	log.Printf("[OK] Deducted %d credits from user %s. Balance: %d", bm.creditCost, userID, balance)
 	return balance, nil
 }
 
@@ -152,7 +152,7 @@ func (bm *BillingMiddleware) publishBillingEvent(userID string, amount int, bala
 	// Publish to NATS
 	err := bm.nats.Publish("billing.events", []byte(data))
 	if err != nil {
-		log.Printf("⚠️  Failed to publish billing event: %v", err)
+		log.Printf("[WARN] Failed to publish billing event: %v", err)
 		// Don't fail the request - ledger write is async
 		return
 	}
@@ -208,7 +208,7 @@ func (bm *BillingMiddleware) InitializeUserCredits(ctx context.Context, userID s
 	}
 
 	if set {
-		log.Printf("🆕 Initialized %d credits for new user %s", defaultCredits, userID)
+		log.Printf("[NEW] Initialized %d credits for new user %s", defaultCredits, userID)
 		// Publish event
 		go bm.publishBillingEvent(userID, defaultCredits, defaultCredits)
 	}

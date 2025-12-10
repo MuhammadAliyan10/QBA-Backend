@@ -118,11 +118,11 @@ class NetworkSniffer:
                     try:
                         # Try parsing JSON first
                         post_data = json.loads(raw_payload)
-                        logger.info(f"📦 Captured JSON Payload: {list(post_data.keys()) if isinstance(post_data, dict) else '<array>'}")
+                        logger.info(f"Captured JSON payload: {list(post_data.keys()) if isinstance(post_data, dict) else '<array>'}")
                     except json.JSONDecodeError:
                         # Fallback: Store raw string (for Form Data or GraphQL)
                         post_data = raw_payload
-                        logger.debug(f"📦 Captured raw payload (non-JSON): {len(raw_payload)} bytes")
+                        logger.debug(f"Captured raw payload (non-JSON): {len(raw_payload)} bytes")
             except Exception:
                 pass  # Binary data or empty
 
@@ -188,7 +188,7 @@ if __name__ == "__main__":
                 print(f"Payload: {session['payload']}")
                 print("="*50)
             else:
-                print("\n❌ No session captured")
+                print("\nNo session captured")
 
             await browser.close()
 

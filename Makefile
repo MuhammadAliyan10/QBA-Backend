@@ -17,18 +17,18 @@ help:
 	@echo "  make run-go      -> Start Go Control Plane"
 	@echo "  make run-python  -> Start Python Worker"
 	@echo ""
-	@echo -e "$(BLUE)Level 5 Enterprise Commands:$(NC)"
-	@echo "  make audit       -> 🛡️  Run security audit (bandit + gosec)"
-	@echo "  make test        -> 🧪 Run all tests with coverage"
-	@echo "  make install-deps -> 📦 Install all dependencies"
-	@echo "  make docker-build -> 🐳 Build production Docker images"
+	@echo -e "$(BLUE)Enterprise Commands:$(NC)"
+	@echo "  make audit       -> Run security audit (bandit + gosec)"
+	@echo "  make test        -> Run all tests with coverage"
+	@echo "  make install-deps -> Install all dependencies"
+	@echo "  make docker-build -> Build production Docker images"
 
 # ----------------------------------------------------------
 # 1. CODE GENERATION
 # ----------------------------------------------------------
 
 proto:
-	@echo -e "$(BLUE)🚀 Generating Protobuf Code...$(NC)"
+	@echo -e "$(BLUE)[Proto] Generating Protobuf Code...$(NC)"
 
 	# Create output folders
 	mkdir -p api/gen/go/v1
@@ -37,7 +37,7 @@ proto:
 	# ----------------------
 	# GO Code Generation
 	# ----------------------
-	@echo -e "$(YELLOW)→ Generating Go gRPC Code...$(NC)"
+	@echo -e "$(YELLOW)[Proto] Generating Go gRPC Code...$(NC)"
 	protoc --proto_path=api/proto/v1 \
 		--go_out=api/gen/go/v1 --go_opt=paths=source_relative \
 		--go-grpc_out=api/gen/go/v1 --go-grpc_opt=paths=source_relative \
@@ -46,7 +46,7 @@ proto:
 	# ----------------------
 	# Python Code Generation
 	# ----------------------
-	@echo -e "$(YELLOW)→ Generating Python gRPC Code...$(NC)"
+	@echo -e "$(YELLOW)[Proto] Generating Python gRPC Code...$(NC)"
 	python3 -m grpc_tools.protoc -Iapi/proto/v1 \
 		--python_out=api/gen/python/v1 \
 		--grpc_python_out=api/gen/python/v1 \
@@ -55,29 +55,29 @@ proto:
 	# ----------------------
 	# Fix Python import issues (macOS + Linux compatible)
 	# ----------------------
-	@echo -e "$(YELLOW)→ Fixing Python imports...$(NC)"
+	@echo -e "$(YELLOW)[Proto] Fixing Python imports...$(NC)"
 	@if [[ "$$(uname)" == "Darwin" ]]; then \
 		sed -i '' 's/import events_pb2/from . import events_pb2/' api/gen/python/v1/events_pb2_grpc.py || true; \
 	else \
 		sed -i 's/import events_pb2/from . import events_pb2/' api/gen/python/v1/events_pb2_grpc.py || true; \
 	fi
 
-	@echo -e "$(GREEN)✅ Code Generation Complete!$(NC)"
+	@echo -e "$(GREEN)[Proto] Code Generation Complete$(NC)"
 
 # ----------------------------------------------------------
 # 2. INFRASTRUCTURE
 # ----------------------------------------------------------
 
 up:
-	@echo -e "$(BLUE)☁️  Spinning up Local Cloud...$(NC)"
+	@echo -e "$(BLUE)[Infra] Starting Local Cloud...$(NC)"
 	docker-compose up -d
 
 down:
-	@echo -e "$(YELLOW)🛑 Stopping Local Cloud...$(NC)"
+	@echo -e "$(YELLOW)[Infra] Stopping Local Cloud...$(NC)"
 	docker-compose down
 
 clean:
-	@echo -e "$(YELLOW)🧹 Cleaning up system & generated code...$(NC)"
+	@echo -e "$(YELLOW)[Infra] Cleaning up system & generated code...$(NC)"
 	docker-compose down -v
 	rm -rf api/gen
 
@@ -86,58 +86,67 @@ clean:
 # ----------------------------------------------------------
 
 run-go:
-	@echo -e "$(GREEN)🐹 Starting Go Control Plane...$(NC)"
+	@echo -e "$(GREEN)[Go] Starting Control Plane...$(NC)"
 	cd apps/control-plane && go run cmd/server/main.go
 
 run-python:
-	@echo -e "$(GREEN)🐍 Starting Python Execution Worker...$(NC)"
+	@echo -e "$(GREEN)[Python] Starting Execution Worker...$(NC)"
 	cd apps/execution-plane && ./venv/bin/python src/worker.py
 
 # ----------------------------------------------------------
-# 4. LEVEL 5 ENTERPRISE - SECURITY & TESTING
+# 4. ENTERPRISE - SECURITY & TESTING
 # ----------------------------------------------------------
 
-# 🛡️ Security Audit
+# Security Audit
 audit:
-	@echo -e "$(BLUE)🛡️ Running Security Audit...$(NC)"
-	@echo -e "$(YELLOW)→ Scanning Python code...$(NC)"
+	@echo -e "$(BLUE)[Audit] Running Security Scan...$(NC)"
+	@echo -e "$(YELLOW)[Audit] Scanning Python code...$(NC)"
 	@cd apps/execution-plane && python3 -m bandit -r src/ -f json -o security-report.json || true
 	@cd apps/execution-plane && python3 -m bandit -r src/
 	@echo ""
-	@echo -e "$(YELLOW)→ Scanning Go code...$(NC)"
+	@echo -e "$(YELLOW)[Audit] Scanning Go code...$(NC)"
 	@cd apps/control-plane && gosec -fmt=json -out=security-report.json ./... || true
 	@cd apps/control-plane && gosec ./...
-	@echo -e "$(GREEN)✅ Security scan complete. Check security-report.json files.$(NC)"
+	@echo -e "$(GREEN)[Audit] Security scan complete. Check security-report.json files.$(NC)"
 
-# 🧪 Run Tests
+# Run Tests
 test:
-	@echo -e "$(BLUE)🧪 Running tests...$(NC)"
-	@echo -e "$(YELLOW)→ Go tests...$(NC)"
+	@echo -e "$(BLUE)[Test] Running tests...$(NC)"
+	@echo -e "$(YELLOW)[Test] Go tests...$(NC)"
 	@cd apps/control-plane && go test -v -cover ./...
 	@echo ""
-	@echo -e "$(YELLOW)→ Python tests...$(NC)"
+	@echo -e "$(YELLOW)[Test] Python tests...$(NC)"
 	@cd apps/execution-plane && pytest tests/ -v --cov=src --cov-report=term-missing
-	@echo -e "$(GREEN)✅ Tests complete.$(NC)"
+	@echo -e "$(GREEN)[Test] Tests complete.$(NC)"
 
-# 📦 Install Dependencies
+# Install Dependencies
 install-deps:
-	@echo -e "$(BLUE)📦 Installing Dependencies...$(NC)"
-	@echo -e "$(YELLOW)→ Python dependencies...$(NC)"
+	@echo -e "$(BLUE)[Setup] Installing Dependencies...$(NC)"
+	@echo -e "$(YELLOW)[Setup] Python dependencies...$(NC)"
 	@cd apps/execution-plane && pip3 install -r requirements.txt
 	@cd apps/execution-plane && pip3 install -r requirements-dev.txt
-	@echo -e "$(YELLOW)→ Playwright browsers...$(NC)"
+	@echo -e "$(YELLOW)[Setup] Playwright browsers...$(NC)"
 	@playwright install chromium
-	@echo -e "$(YELLOW)→ Go dependencies...$(NC)"
+	@echo -e "$(YELLOW)[Setup] Go dependencies...$(NC)"
 	@cd apps/control-plane && go mod download
-	@echo -e "$(YELLOW)→ Security tools...$(NC)"
+	@echo -e "$(YELLOW)[Setup] Security tools...$(NC)"
 	@pip3 install bandit
 	@go install github.com/securego/gosec/v2/cmd/gosec@latest
-	@echo -e "$(GREEN)✅ All dependencies installed.$(NC)"
+	@echo -e "$(GREEN)[Setup] All dependencies installed.$(NC)"
 
-# 🐳 Build Docker Images
+# Build Docker Images
 docker-build:
-	@echo -e "$(BLUE)🐳 Building Docker images...$(NC)"
+	@echo -e "$(BLUE)[Docker] Building Docker images...$(NC)"
 	@docker build -t e2e-control-plane:prod apps/control-plane
 	@docker build -t e2e-execution-plane:prod apps/execution-plane
 	@docker images | grep e2e
-	@echo -e "$(GREEN)✅ Docker images built.$(NC)"
+	@echo -e "$(GREEN)[Docker] Docker images built.$(NC)"
+
+# Database Migration
+migrate:
+	@echo -e "$(BLUE)[DB] Running migrations...$(NC)"
+	@for f in migrations/*.sql; do \
+		echo -e "$(YELLOW)[DB] Applying $$f...$(NC)"; \
+		cockroach sql --insecure --host=localhost:26257 < $$f; \
+	done
+	@echo -e "$(GREEN)[DB] Migrations complete.$(NC)"

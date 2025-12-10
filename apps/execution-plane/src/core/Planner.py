@@ -20,7 +20,7 @@ class TheCortex:
     """
 
     def __init__(self):
-        logger.info("🧠 Initializing TheCortex (Vector Edition)...")
+        logger.info("Initializing TheCortex (Vector Edition)...")
 
         # Initialize Tensor Engine (Singleton)
         self.tensor = TensorEngine()
@@ -111,10 +111,10 @@ class TheCortex:
 
             # Step 4: Apply Threshold
             if best_score > 0.25:
-                logger.info(f"🧠 Context: {best_context} (Score: {best_score:.4f})")
+                logger.info(f"Context detected: {best_context} (Score: {best_score:.4f})")
                 return best_context
             else:
-                logger.info(f"🧠 Context: GENERIC (Best score: {best_score:.4f} < 0.25 threshold)")
+                logger.info(f"Context detected: GENERIC (Best score: {best_score:.4f} < 0.25 threshold)")
                 return "GENERIC"
 
         except Exception as e:
@@ -240,8 +240,8 @@ if __name__ == "__main__":
     # Initialize Cortex
     print("\n[Test 1] Initialization...")
     cortex = TheCortex()
-    print(f"✅ Archetypes loaded: {list(cortex.archetype_vectors.keys())}")
-    print(f"✅ Vector dimensions: {cortex.archetype_vectors['AUTH'].shape[0]}")
+    print(f"Archetypes loaded: {list(cortex.archetype_vectors.keys())}")
+    print(f"Vector dimensions: {cortex.archetype_vectors['AUTH'].shape[0]}")
 
     # Test Archetype Similarity (Mock)
     print("\n[Test 2] Archetype Vector Similarity...")
@@ -272,9 +272,9 @@ if __name__ == "__main__":
         # Classify
         best = max(scores, key=scores.get)
         if scores[best] > 0.25:
-            print(f"     ✅ Classification: {best}")
+            print(f"     Classification: {best}")
         else:
-            print(f"     ✅ Classification: GENERIC (max score: {scores[best]:.4f})")
+            print(f"     Classification: GENERIC (max score: {scores[best]:.4f})")
 
     # Test Intent Validation (Mock)
     print("\n[Test 3] Intent Validation Logic...")
@@ -284,5 +284,5 @@ if __name__ == "__main__":
         print(f"  Intent: '{intent}' → Zones: {zones[:2] if zones else 'None'}")
 
     print("\n" + "=" * 60)
-    print("ALL TESTS PASSED ✅")
+    print("All tests passed")
     print("=" * 60)

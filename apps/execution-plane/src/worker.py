@@ -2,6 +2,7 @@ import sys
 import asyncio
 import os
 import logging
+from datetime import timedelta  # CRITICAL: Must be imported before Worker initialization
 
 # --- 1. PATH SETUP ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -75,7 +76,7 @@ async def main():
         shutdown_telemetry(tracer_provider, meter_provider)
 
 if __name__ == "__main__":
-    from datetime import timedelta # Needed for the timeout setting
+    # timedelta already imported at module level
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

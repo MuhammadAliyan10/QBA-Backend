@@ -49,7 +49,7 @@ func (lc *LedgerConsumer) Start() error {
 		return err
 	}
 
-	log.Println("📒 Ledger Consumer started. Listening for billing events...")
+	log.Println("[Ledger] Ledger Consumer started. Listening for billing events...")
 	return nil
 }
 
@@ -59,7 +59,7 @@ func (lc *LedgerConsumer) handleBillingEvent(msg *nats.Msg) {
 
 	// Parse event
 	if err := json.Unmarshal(msg.Data, &event); err != nil {
-		log.Printf("❌ Failed to parse billing event: %v", err)
+		log.Printf("[ERROR] Failed to parse billing event: %v", err)
 		return
 	}
 
@@ -70,12 +70,12 @@ func (lc *LedgerConsumer) handleBillingEvent(msg *nats.Msg) {
 
 	// Write to ledger
 	if err := lc.writeLedgerEntry(context.Background(), &event); err != nil {
-		log.Printf("❌ Failed to write ledger entry for user %s: %v", event.UserID, err)
+		log.Printf("[ERROR] Failed to write ledger entry for user %s: %v", event.UserID, err)
 		// TODO: Add retry logic or dead letter queue
 		return
 	}
 
-	log.Printf("📝 Ledger entry written for user %s (amount: %d, balance: %d)",
+	log.Printf("[Ledger] Ledger entry written for user %s (amount: %d, balance: %d)",
 		event.UserID, event.Amount, event.BalanceAfter)
 }
 
@@ -111,7 +111,7 @@ func (lc *LedgerConsumer) Stop() error {
 		}
 	}
 
-	log.Println("📒 Ledger Consumer stopped.")
+	log.Println("[Ledger] Ledger Consumer stopped.")
 	return nil
 }
 

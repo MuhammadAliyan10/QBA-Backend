@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 class LLMClient:
     def __init__(self):
-        logger.info("🧠 LLM Client Initialized (MOCK MODE)")
+        logger.info("LLM Client initialized (MOCK MODE)")
 
     def find_element(self, html_chunk: str, intent: str) -> Dict[str, float]:
         """
@@ -16,7 +16,7 @@ class LLMClient:
         In a real implementation, this would call OpenAI/Gemini.
         For now, we use simple heuristics to 'fake' intelligence for the test case.
         """
-        logger.debug(f"🧠 Brain processing intent: '{intent}' on {len(html_chunk)} chars of HTML...")
+        logger.debug(f"Processing intent: '{intent}' on {len(html_chunk)} chars of HTML...")
 
         # Mock Logic - Updated to match actual example.com structure
         if "more information" in intent.lower() or "information" in intent.lower():

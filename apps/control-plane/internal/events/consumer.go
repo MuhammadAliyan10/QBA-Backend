@@ -40,7 +40,7 @@ func (c *Consumer) StartListening() {
 	})
 
 	if err != nil {
-		log.Fatalf("❌ Failed to subscribe to NATS: %v", err)
+		log.Fatalf("[ERROR] Failed to subscribe to NATS: %v", err)
 	}
 
 	log.Println("👂 Listening for Job Updates on NATS...")

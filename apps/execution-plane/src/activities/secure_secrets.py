@@ -200,14 +200,14 @@ if __name__ == "__main__":
 
     # Test 1: Resolve from secrets (should NOT log value)
     result = resolve_param_securely("{password}", params, secrets)
-    print(f"✅ Password resolved (redacted): {'*' * len(result)}")
+    print(f"Password resolved (redacted): {'*' * len(result)}")
 
     # Test 2: Resolve from params (safe to log)
     result = resolve_param_securely("{url}", params, secrets)
-    print(f"✅ URL resolved: {result}")
+    print(f"URL resolved: {result}")
 
     # Test 3: Non-template value
     result = resolve_param_securely("Click here", params, secrets)
-    print(f"✅ Static value: {result}")
+    print(f"Static value: {result}")
 
     print("=" * 60)

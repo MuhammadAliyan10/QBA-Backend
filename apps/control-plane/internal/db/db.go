@@ -23,18 +23,18 @@ func Init() {
 	var err error
 	Conn, err = sql.Open("postgres", dsn)
 	if err != nil {
-		log.Fatalf("❌ Failed to open DB connection: %v", err)
+		log.Fatalf("[ERROR] Failed to open DB connection: %v", err)
 	}
 
 	if err = Conn.Ping(); err != nil {
-		log.Fatalf("❌ DB Unreachable: %v", err)
+		log.Fatalf("[ERROR] DB Unreachable: %v", err)
 	}
 
 	log.Println("[Database] Successfully connected to CockroachDB")
 
 	// Run Auto-Migration
 	if err := createTables(); err != nil {
-		log.Fatalf("❌ Migration Failed: %v", err)
+		log.Fatalf("[ERROR] Migration Failed: %v", err)
 	}
 }
 
@@ -59,7 +59,28 @@ func createTables() error {
         created_at TIMESTAMP DEFAULT now()
     );
 
-    -- 3. SEED USER (For Local Dev only)
+    -- 3. JOBS TABLE (Workflow Execution Tracking)
+    -- CRITICAL: This table is required for webhook dispatch in main.go
+    CREATE TABLE IF NOT EXISTS jobs (
+        id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL,
+        user_id UUID REFERENCES users(id),
+        status TEXT DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'PAUSED')),
+        webhook_url TEXT,
+        params JSONB DEFAULT '{}',
+        result JSONB DEFAULT '{}',
+        error_message TEXT,
+        created_at TIMESTAMP DEFAULT now(),
+        updated_at TIMESTAMP DEFAULT now(),
+        completed_at TIMESTAMP
+    );
+
+    -- INDEX: Optimize status polling and webhook queries
+    CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+    CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
+    CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
+
+    -- 4. SEED USER (For Local Dev only)
     INSERT INTO users (id, email, api_key)
     VALUES ('00000000-0000-0000-0000-000000000000', 'dev@local', 'sk_test_123')
     ON CONFLICT (id) DO NOTHING;

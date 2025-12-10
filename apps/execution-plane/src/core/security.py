@@ -283,6 +283,6 @@ if __name__ == "__main__":
         print(f"Decrypted: {decrypted}")
         
         assert decrypted == secret, "Encryption/decryption failed!"
-        print("✅ Encryption/decryption test passed!")
+        print("Encryption/decryption test passed!")
     
     asyncio.run(demo())

@@ -21,6 +21,7 @@ Usage:
 import os
 import logging
 import time
+import hashlib
 from typing import Dict, List, Optional
 from functools import lru_cache
 from qdrant_client import QdrantClient
@@ -51,9 +52,15 @@ class RecipeManager:
             cache_size: Maximum number of recipes to cache in RAM
             cache_ttl: Cache time-to-live in seconds (default: 1 hour)
         """
-        # Connect to Qdrant
+        # Connect to Qdrant with timeout to prevent indefinite hangs
         qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
-        self.client = QdrantClient(url=qdrant_url)
+        qdrant_timeout = int(os.getenv("QDRANT_TIMEOUT", "10"))  # Default: 10 seconds
+
+        self.client = QdrantClient(
+            url=qdrant_url,
+            timeout=qdrant_timeout,  # CRITICAL: Prevents worker from hanging if Qdrant is slow/down
+            prefer_grpc=False  # Use REST for better timeout handling
+        )
 
         # Collection name for recipes
         self.collection_name = "recipes"
@@ -90,7 +97,7 @@ class RecipeManager:
                         distance=Distance.COSINE
                     )
                 )
-                logger.info(f"📦 Created Qdrant collection: {self.collection_name}")
+                logger.info(f"Created Qdrant collection: {self.collection_name}")
             else:
                 logger.debug(f"Collection '{self.collection_name}' already exists")
 
@@ -136,8 +143,11 @@ class RecipeManager:
             ).tolist()
 
             # Create point for Qdrant
+            # Use SHA256 for collision-resistant ID (Python's hash() is unstable and can collide)
+            point_id = int(hashlib.sha256(name.encode()).hexdigest()[:15], 16)
+
             point = PointStruct(
-                id=hash(name) % (10 ** 8),  # Use hash of name as ID
+                id=point_id,
                 vector=vector,
                 payload={
                     "name": name,
@@ -198,7 +208,7 @@ class RecipeManager:
                 # Check if cache entry is still valid (TTL)
                 if (time.time() - cached_time) < self.cache_ttl:
                     recipe = cached_entry['recipe']
-                    logger.info(f"🚀 Cache HIT: '{recipe['name']}' (age: {int(time.time() - cached_time)}s)")
+                    logger.info(f"Cache hit: '{recipe['name']}' (age: {int(time.time() - cached_time)}s)")
                     return recipe
                 else:
                     # Cache expired, remove it
@@ -348,7 +358,8 @@ class RecipeManager:
             True if successful
         """
         try:
-            point_id = hash(name) % (10 ** 8)
+            # Use same SHA256-based ID generation as save_recipe
+            point_id = int(hashlib.sha256(name.encode()).hexdigest()[:15], 16)
 
             self.client.delete(
                 collection_name=self.collection_name,
@@ -389,23 +400,23 @@ if __name__ == "__main__":
             {"action": "CLICK", "params": {"intent": "Explore"}},
         ]
     )
-    print(f"✅ Save result: {success}")
+    print(f"Save result: {success}")
 
     # Test 2: Find recipe by exact match
     print("\n[Test 2] Finding recipe (exact)...")
     recipe = mgr.find_recipe("explore github repositories")
     if recipe:
-        print(f"✅ Found: {recipe['name']} (score: {recipe['score']:.3f})")
+        print(f"Found: {recipe['name']} (score: {recipe['score']:.3f})")
     else:
-        print("❌ No match found")
+        print("No match found")
 
     # Test 3: Find recipe by semantic match
     print("\n[Test 3] Finding recipe (semantic)...")
     recipe = mgr.find_recipe("browse github projects")
     if recipe:
-        print(f"✅ Found: {recipe['name']} (score: {recipe['score']:.3f})")
+        print(f"Found: {recipe['name']} (score: {recipe['score']:.3f})")
     else:
-        print("❌ No match found")
+        print("No match found")
 
     # Test 4: List all recipes
     print("\n[Test 4] Listing all recipes...")
