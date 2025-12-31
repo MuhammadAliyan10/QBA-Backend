@@ -147,6 +147,6 @@ migrate:
 	@echo -e "$(BLUE)[DB] Running migrations...$(NC)"
 	@for f in migrations/*.sql; do \
 		echo -e "$(YELLOW)[DB] Applying $$f...$(NC)"; \
-		cockroach sql --insecure --host=localhost:26257 < $$f; \
+		PGPASSWORD=postgres psql -h localhost -p 5433 -U postgres -d quanta < $$f; \
 	done
 	@echo -e "$(GREEN)[DB] Migrations complete.$(NC)"

@@ -14,6 +14,7 @@ import (
 
 	// 1. Internal Modules
 	"e2e-platform/apps/control-plane/internal/db"
+	"e2e-platform/apps/control-plane/internal/health"
 	"e2e-platform/apps/control-plane/internal/metrics"
 	"e2e-platform/apps/control-plane/internal/middleware"
 	"e2e-platform/apps/control-plane/internal/webhook"
@@ -145,7 +146,7 @@ func main() {
 		log.Println("[System] No .env file found, relying on system environment")
 	}
 
-	// 2. Initialize Database (CockroachDB/Postgres)
+	// 2. Initialize Database (PostgreSQL via Supabase)
 	db.Init()
 
 	// 3. Initialize Redis (Rate Limiting & Caching)
@@ -168,13 +169,22 @@ func main() {
 	// 4. Initialize Prometheus Metrics
 	metrics.InitMetrics()
 
-	// 5. Connect to NATS (The Nervous System)
+	// 5. Connect to NATS (The Nervous System) - INDUSTRIAL GRADE
 	natsURL := os.Getenv("NATS_URL")
 	if natsURL == "" {
 		natsURL = nats.DefaultURL
 	}
 	log.Printf("[System] Connecting to NATS at %s", natsURL)
-	nc, err := nats.Connect(natsURL)
+	nc, err := nats.Connect(natsURL,
+		nats.ReconnectWait(2*time.Second),
+		nats.MaxReconnects(-1), // Retry forever
+		nats.DisconnectErrHandler(func(_ *nats.Conn, err error) {
+			log.Printf("[NATS] Disconnected: %v", err)
+		}),
+		nats.ReconnectHandler(func(_ *nats.Conn) {
+			log.Printf("[NATS] Reconnected successfully")
+		}),
+	)
 	if err != nil {
 		log.Fatalf("[Error] Failed to connect to NATS: %v", err)
 	}
@@ -214,9 +224,11 @@ func main() {
 		metrics.APIRequestDuration.WithLabelValues(c.Request.Method, c.Request.URL.Path).Observe(duration.Seconds())
 	})
 
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "alive", "service": "control-plane"})
-	})
+	// Health Check Endpoints (For Azure Container Apps, Kubernetes, etc.)
+	healthHandler := health.NewHealthHandler(redisClient, nc)
+	r.GET("/health", healthHandler.HandleHealth)           // Full health check (DB, Redis, NATS)
+	r.GET("/health/live", healthHandler.HandleLiveness)     // Liveness probe (fast)
+	r.GET("/health/ready", healthHandler.HandleReadiness)   // Readiness probe (full)
 
 	// Prometheus metrics endpoint
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
@@ -281,8 +293,11 @@ func main() {
 			TaskQueue: "e2e-browser-tasks",
 		}
 
-		// C. Start the Workflow
-		we, err := temporalClient.ExecuteWorkflow(context.Background(), workflowOptions, "BrowserWorkflow", workflowPayload)
+		// C. Start the Workflow (with timeout to prevent hanging)
+		execCtx, execCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer execCancel()
+
+		we, err := temporalClient.ExecuteWorkflow(execCtx, workflowOptions, "BrowserWorkflow", workflowPayload)
 		if err != nil {
 			log.Printf("[Error] Temporal workflow start failed: %v", err)
 			c.JSON(500, gin.H{"error": "Failed to start workflow"})
@@ -325,8 +340,12 @@ func main() {
 
 		log.Printf("[Signal] Sending signal to workflow %s with data: %v", workflowID, req.Data)
 
+		// Context with timeout to prevent hanging
+		signalCtx, signalCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer signalCancel()
+
 		err := temporalClient.SignalWorkflow(
-			context.Background(),
+			signalCtx,
 			workflowID,
 			"",                 // Empty RunID = use the currently running execution
 			"USER_INTERACTION", // Signal name (Matches Python @workflow.signal)

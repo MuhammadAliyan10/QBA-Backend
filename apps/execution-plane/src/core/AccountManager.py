@@ -38,7 +38,7 @@ class AccountManager:
         Initialize AccountManager with database connection and encryption.
 
         Requires environment variables:
-            - DATABASE_URL: PostgreSQL/CockroachDB connection string
+            - DATABASE_URL: PostgreSQL (Supabase) connection string
             - FERNET_KEY: Encryption key (generate with Fernet.generate_key())
         """
         # Database connection

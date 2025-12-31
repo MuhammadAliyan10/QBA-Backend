@@ -28,7 +28,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install minimal runtime dependencies for Playwright
+# Install minimal runtime dependencies for Playwright + tini for proper process management
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libglib2.0-0 \
@@ -51,6 +51,7 @@ RUN apt-get update && apt-get install -y \
     libpango-1.0-0 \
     libcairo2 \
     libasound2 \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Python dependencies from builder
@@ -72,5 +73,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD python3 -c "import sys; sys.path.insert(0, 'src'); from workflows import BrowserWorkflow; sys.exit(0)" || exit 1
 
-# Run worker
+# CRITICAL: Use tini as init process to reap zombie processes
+# This prevents PID exhaustion from orphaned Playwright browser children
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["python3", "src/worker.py"]

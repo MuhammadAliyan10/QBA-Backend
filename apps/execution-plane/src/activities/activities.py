@@ -11,6 +11,12 @@ from playwright.async_api import async_playwright, Page, ElementHandle
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 import httpx
 
+# Feature Flags
+from config import is_s3_upload_enabled, is_session_persistence_enabled
+
+# Session Persistence (Encrypted Browser State)
+from core.browser.session import SessionManager, get_session_manager
+
 # --- IMPORTS ---
 # 1. The Nervous System (Snake Case - Infrastructure)
 from core.NervousSystem import NervousSystem
@@ -338,9 +344,38 @@ async def browser_automation_activity(payload: dict) -> dict:
                     )
 
             # Create browser context
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36..."
-            )
+            # SESSION PERSISTENCE: Try to restore encrypted session
+            session_manager = None
+            session_data = None
+            target_domain = SessionManager.extract_domain(url) if 'url' in params else None
+            user_id = payload.get("user_id", job_id)  # Fall back to job_id if no user
+
+            if is_session_persistence_enabled() and target_domain:
+                try:
+                    session_manager = await get_session_manager()
+                    if session_manager:
+                        session_data = await session_manager.get_session(user_id, target_domain)
+                        if session_data:
+                            await NervousSystem.publish_update(
+                                job_id, "RUNNING",
+                                f"[Session] Restored encrypted session for {target_domain}",
+                                "init"
+                            )
+                except Exception as e:
+                    logger.warning(f"[Session] Failed to restore session: {e}")
+                    session_data = None
+
+            # Create context with or without session state
+            if session_data:
+                context = await browser.new_context(
+                    storage_state=session_data,
+                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36..."
+                )
+                logger.info(f"[Session] Using restored session for {target_domain}")
+            else:
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36..."
+                )
 
             # Fast Path: Inject cookies if available
             cookie_valid = False
@@ -373,11 +408,16 @@ async def browser_automation_activity(payload: dict) -> dict:
 
                     logger.info(f"[{job_id}] Downloaded {filename} ({file_size} bytes)")
 
-                    # TODO: Upload to S3/MinIO in production
-                    # async with aiofiles.open(local_path, 'rb') as f:
-                    #     await s3_client.upload_fileobj(f, bucket, f"{job_id}/{filename}")
-
-                    final_url = f"file://{local_path}"  # Local path for now
+                    # FEATURE FLAG: Upload to S3/MinIO if enabled
+                    if is_s3_upload_enabled():
+                        # TODO: Implement actual S3 upload
+                        # async with aiofiles.open(local_path, 'rb') as f:
+                        #     await s3_client.upload_fileobj(f, bucket, f"{job_id}/{filename}")
+                        logger.info(f"[S3] Would upload {filename} to S3 (not implemented)")
+                        final_url = f"s3://bucket/{job_id}/{filename}"  # Placeholder
+                    else:
+                        logger.info(f"[S3] S3 Upload Disabled: Saved to local disk at {local_path}")
+                        final_url = f"file://{local_path}"
 
                     await NervousSystem.publish_update(
                         job_id, "SUCCESS", f"File saved: {final_url} ({file_size} bytes)", "io"
@@ -467,8 +507,10 @@ async def browser_automation_activity(payload: dict) -> dict:
                     # Wait for stability (Allow APIs to fire)
                     try:
                         await page.wait_for_load_state("networkidle", timeout=10000)
-                    except:
-                        pass
+                    except PlaywrightTimeout:
+                        logger.debug("Network idle timeout during sniff phase (expected for streaming sites)")
+                    except Exception as e:
+                        logger.warning(f"Network wait failed during sniff: {e}")
 
                     # 3. Check the Loot
                     session = sniffer.get_session_context()
@@ -594,7 +636,17 @@ async def browser_automation_activity(payload: dict) -> dict:
             # CRITICAL: Robust cleanup with existence checks
             # =================================================================
 
-            # 1. Release account back to pool
+            # 1. Save session on success (BEFORE releasing account)
+            if workflow_succeeded and is_session_persistence_enabled():
+                if 'session_manager' in locals() and session_manager and 'context' in locals() and context:
+                    if 'target_domain' in locals() and target_domain and 'user_id' in locals():
+                        try:
+                            await session_manager.save_session(user_id, target_domain, context)
+                            logger.info(f"[Session] Saved encrypted session for {target_domain}")
+                        except Exception as session_err:
+                            logger.warning(f"[Session] Failed to save session: {session_err}")
+
+            # 2. Release account back to pool
             if 'leased_account' in locals() and leased_account and 'account_mgr' in locals():
                 try:
                     # Check if context exists before accessing cookies

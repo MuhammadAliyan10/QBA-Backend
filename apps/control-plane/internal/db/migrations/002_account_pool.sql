@@ -1,6 +1,6 @@
 -- Migration: Account Pool for Session Rehydration
 -- Purpose: Store shared accounts with encrypted passwords and session cookies
--- Database: CockroachDB / PostgreSQL
+-- Database: PostgreSQL (Supabase)
 
 -- Create account_pool table
 CREATE TABLE IF NOT EXISTS account_pool (

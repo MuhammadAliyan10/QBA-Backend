@@ -18,8 +18,8 @@ import (
 )
 
 func main() {
-	// 1. Connect to CockroachDB
-	dbDSN := os.Getenv("DB_DSN")
+	// 1. Connect to PostgreSQL (Supabase)
+	dbDSN := os.Getenv("DATABASE_URL")
 	db, err := sql.Open("postgres", dbDSN)
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)

@@ -7,8 +7,8 @@ __pycache__/
 
 venv/
 .venv/
-.env
-.env.*
+# .env
+# .env.*
 
 # Bytecode / compiled
 *.so

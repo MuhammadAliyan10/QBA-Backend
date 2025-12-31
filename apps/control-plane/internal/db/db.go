@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
+	"time"
 
 	// Import Postgres Driver
 	_ "github.com/lib/pq"
@@ -12,30 +14,54 @@ import (
 
 var Conn *sql.DB
 
-// Init connects to CockroachDB and runs migrations
+// Init connects to PostgreSQL (Supabase) and runs migrations
+// EXPLICIT: This driver ONLY supports PostgreSQL - not CockroachDB or other variants.
 func Init() {
-	dsn := os.Getenv("DB_DSN")
+	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		// Fallback for local development (matches docker-compose)
-		dsn = "postgresql://root@localhost:26257/defaultdb?sslmode=disable"
+		// Fallback for local development (matches docker-compose PostgreSQL)
+		dsn = "postgresql://postgres:postgres@localhost:5433/quanta?sslmode=disable"
+		log.Println("[Database] Using default local PostgreSQL DSN")
+	}
+
+	// Validate DSN format (must be PostgreSQL)
+	if !strings.HasPrefix(dsn, "postgresql://") && !strings.HasPrefix(dsn, "postgres://") {
+		log.Fatalf("[ERROR] Invalid DATABASE_URL: must start with postgresql:// or postgres://")
 	}
 
 	var err error
+	// EXPLICIT: Use lib/pq PostgreSQL driver only
 	Conn, err = sql.Open("postgres", dsn)
 	if err != nil {
-		log.Fatalf("[ERROR] Failed to open DB connection: %v", err)
+		log.Fatalf("[ERROR] Failed to open PostgreSQL connection: %v", err)
 	}
 
+	// CRITICAL: Configure connection pool to prevent exhaustion
+	// Supabase free tier has ~60 connections, pro has ~500
+	Conn.SetMaxOpenConns(20)                 // Prevent exhaustion
+	Conn.SetMaxIdleConns(5)                  // Keep some warm connections
+	Conn.SetConnMaxLifetime(5 * time.Minute) // Recycle connections
+
+	// Verify connection is alive
 	if err = Conn.Ping(); err != nil {
-		log.Fatalf("[ERROR] DB Unreachable: %v", err)
+		log.Fatalf("[ERROR] PostgreSQL Unreachable: %v", err)
 	}
 
-	log.Println("[Database] Successfully connected to CockroachDB")
+	log.Println("[Database] Successfully connected to PostgreSQL (pool: 20 max, 5 idle)")
 
 	// Run Auto-Migration
 	if err := createTables(); err != nil {
 		log.Fatalf("[ERROR] Migration Failed: %v", err)
 	}
+}
+
+// Ping checks if the database connection is healthy.
+// Used by health check endpoints.
+func Ping() error {
+	if Conn == nil {
+		return fmt.Errorf("database connection not initialized")
+	}
+	return Conn.Ping()
 }
 
 // createTables ensures the schema exists (Idempotent)

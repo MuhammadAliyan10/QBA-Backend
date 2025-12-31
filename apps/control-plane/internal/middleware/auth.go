@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -52,7 +53,7 @@ func AuthMiddleware(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Query database to validate API key
+		// Query database to validate API key (with timeout to prevent hanging)
 		var userID string
 		var active bool
 
@@ -63,7 +64,10 @@ func AuthMiddleware(db *sql.DB) gin.HandlerFunc {
 			AND active = true
 		`
 
-		err := db.QueryRowContext(context.Background(), query, apiKey).Scan(&userID, &active)
+		queryCtx, queryCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer queryCancel()
+
+		err := db.QueryRowContext(queryCtx, query, apiKey).Scan(&userID, &active)
 
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusUnauthorized, gin.H{

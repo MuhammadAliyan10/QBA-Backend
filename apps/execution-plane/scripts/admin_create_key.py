@@ -1,7 +1,7 @@
 """
 Admin Script: Generate and Store API Key
 
-Creates a new API key with SHA-256 hashing and stores it in CockroachDB.
+Creates a new API key with SHA-256 hashing and stores it in PostgreSQL.
 The plaintext key is shown ONCE and should be given to the user immediately.
 
 Usage:
@@ -17,7 +17,7 @@ import psycopg2
 from datetime import datetime
 
 # Database connection (use environment variable or default)
-DB_DSN = os.getenv("DATABASE_URL", "postgresql://root@localhost:26257/defaultdb?sslmode=disable")
+DB_DSN = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/quanta")
 
 
 def generate_api_key(prefix="sk_live"):

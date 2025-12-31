@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"e2e-platform/apps/control-plane/internal/config"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -51,6 +52,13 @@ func NewPolarWebhookHandler(redisClient *redis.Client, natsConn *nats.Conn) *Pol
 
 // HandleWebhook is the Gin handler for /webhooks/polar
 func (pwh *PolarWebhookHandler) HandleWebhook(c *gin.Context) {
+	// FEATURE FLAG: Skip billing processing if disabled
+	if !config.IsBillingEnabled() {
+		log.Println("[Billing] Feature disabled - webhook ignored")
+		c.JSON(http.StatusOK, gin.H{"received": true, "status": "ignored", "reason": "billing_disabled"})
+		return
+	}
+
 	// Read request body
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {

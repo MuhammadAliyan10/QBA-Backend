@@ -19,7 +19,7 @@ def seed():
         username="admin",
         password="password123"
     )
-    print("✅ Account for 'httpbin.org' added to CockroachDB.")
+    print("✅ Account for 'httpbin.org' added to PostgreSQL.")
 
 if __name__ == "__main__":
     seed()
