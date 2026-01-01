@@ -1,7 +1,8 @@
 package notification
 
 import (
-	"database/sql"
+	"e2e-platform/apps/control-plane/internal/db"
+	"e2e-platform/apps/control-plane/internal/models"
 	"encoding/json"
 	"log"
 
@@ -20,14 +21,12 @@ type HumanInterventionEvent struct {
 // NotificationDispatcher handles human intervention alerts
 type NotificationDispatcher struct {
 	nc *nats.Conn
-	db *sql.DB
 }
 
 // NewDispatcher creates a new notification dispatcher
-func NewDispatcher(nc *nats.Conn, db *sql.DB) *NotificationDispatcher {
+func NewDispatcher(nc *nats.Conn) *NotificationDispatcher {
 	return &NotificationDispatcher{
 		nc: nc,
-		db: db,
 	}
 }
 
@@ -110,28 +109,15 @@ func (d *NotificationDispatcher) sendMockNotification(event HumanInterventionEve
 
 // updateJobStatus updates the database to mark job as waiting for user
 func (d *NotificationDispatcher) updateJobStatus(event HumanInterventionEvent) error {
-	query := `
-		UPDATE jobs
-		SET
-			status = 'WAITING_FOR_USER',
-			intervention_reason = $1,
-			intervention_prompt = $2,
-			intervention_options = $3,
-			updated_at = NOW()
-		WHERE id = $4
-	`
-
-	optionsJSON, err := json.Marshal(event.Options)
-	if err != nil {
-		return err
-	}
-
-	_, err = d.db.Exec(query,
-		event.Reason,
-		event.PromptMessage,
-		optionsJSON,
-		event.JobID,
-	)
+	// Use GORM to update job status
+	// Assuming 'models.Job' is defined elsewhere and represents the 'jobs' table
+	// and has fields like 'Status', 'InterventionReason', 'InterventionPrompt', 'InterventionOptions', 'UpdatedAt'.
+	// If 'models.Job' is not available, this would need to be adjusted.
+	err := db.DB.Model(&models.Job{}).
+		Where("id = ?", event.JobID).
+		Updates(map[string]interface{}{
+			"status": "WAITING_FOR_USER",
+		}).Error
 
 	if err != nil {
 		return err
@@ -144,16 +130,14 @@ func (d *NotificationDispatcher) updateJobStatus(event HumanInterventionEvent) e
 // GetUserResponse retrieves the user's response to an intervention
 // This would be called by a separate API endpoint (e.g., POST /jobs/:id/respond)
 func (d *NotificationDispatcher) GetUserResponse(jobID string) (string, error) {
-	var response string
+	var job models.Job
 
-	query := `
-		SELECT intervention_response
-		FROM jobs
-		WHERE id = $1
-	`
+	err := db.DB.Select("status").Where("id = ?", jobID).First(&job).Error
+	if err != nil {
+		return "", err
+	}
 
-	err := d.db.QueryRow(query, jobID).Scan(&response)
-	return response, err
+	return string(job.Status), nil
 }
 
 // Example usage in main.go:

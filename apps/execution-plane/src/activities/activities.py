@@ -33,6 +33,9 @@ from core.AccountManager import AccountManager
 # 5. The Recipe Manager (Dynamic RAG)
 from core.RecipeManager import RecipeManager
 
+# 6. User-Facing Logger (The Voice of the Glass Box)
+from core.UserFacingLogger import UserFriendlyLogger
+
 logger = logging.getLogger("activity")
 
 # =============================================================================
@@ -268,13 +271,11 @@ async def browser_automation_activity(payload: dict) -> dict:
     # The 'config' dictionary contains our Glass Box settings
     config = payload.get("config", {})
 
-    # 2. Notify Nervous System: START
-    await NervousSystem.publish_update(
-        job_id=job_id,
-        status="RUNNING",
-        message=f"[System] Initializing Glass Box for workflow: {workflow_id}",
-        node_id="init"
-    )
+    # 2. Initialize User Logger
+    user_logger = UserFriendlyLogger(job_id)
+
+    # 3. Notify Nervous System: START
+    await user_logger.info("PROCESSING_RAG") # "Thinking about the next step..."
 
     # 3. Load Recipe (DYNAMIC - From Qdrant Vector Search)
     recipe_mgr = get_recipe_manager()
@@ -382,7 +383,7 @@ async def browser_automation_activity(payload: dict) -> dict:
             if leased_account and leased_account['cookies']:
                 try:
                     await context.add_cookies(leased_account['cookies'])
-                    await NervousSystem.publish_update(job_id, "RUNNING", "[Security] Cookies injected (Fast Path)", "init")
+                    await user_logger.info("FOUND_ELEMENT", element="Saved Session")
                     cookie_valid = True
                 except Exception as e:
                     logger.warning(f"Cookie injection failed: {e}")
@@ -397,9 +398,7 @@ async def browser_automation_activity(payload: dict) -> dict:
                 safe_filename = "".join(c for c in filename if c.isalnum() or c in '._-')
                 local_path = os.path.join(DOWNLOAD_DIR, f"{job_id}_{safe_filename}")
 
-                await NervousSystem.publish_update(
-                    job_id, "RUNNING", f"Downloading: {filename}", "io"
-                )
+                await user_logger.info("DOWNLOAD_START", filename=filename)
 
                 try:
                     # Save to local filesystem
@@ -419,15 +418,11 @@ async def browser_automation_activity(payload: dict) -> dict:
                         logger.info(f"[S3] S3 Upload Disabled: Saved to local disk at {local_path}")
                         final_url = f"file://{local_path}"
 
-                    await NervousSystem.publish_update(
-                        job_id, "SUCCESS", f"File saved: {final_url} ({file_size} bytes)", "io"
-                    )
+                    await user_logger.info("DOWNLOAD_COMPLETE", filename=filename)
 
                 except Exception as e:
                     logger.error(f"Download failed for {filename}: {e}")
-                    await NervousSystem.publish_update(
-                        job_id, "FAILED", f"Download failed: {filename} - {e}", "io"
-                    )
+                    await user_logger.error("GENERIC_ERROR", error_details=str(e))
                     raise  # Don't silently continue
 
             page.on("download", handle_download)
@@ -471,9 +466,115 @@ async def browser_automation_activity(payload: dict) -> dict:
                         )
 
                     # INDUSTRIAL: Use robust click with retry and overlay dismissal
-                    await click_with_retry(finder, page, intent, job_id)
+                    # SELF-HEALING: Capture result to check for healing
+                    # Note: click_with_retry needs update to return result, or we use finder directly here
+                    # For now, we'll use finder directly to enable healing logic
 
-                    await NervousSystem.publish_update(job_id, "RUNNING", f"Clicked '{intent}'", node_id)
+                    # 1. Find Element (with healing)
+                    find_result = await finder.find(
+                        intent,
+                        metadata=step_params.get("metadata"),
+                        container_selector=step_params.get("container")
+                    )
+
+                    if not find_result.found:
+                        raise Exception(f"Element not found: {intent}")
+
+                    # 2. Heal if needed (Write-Back)
+                    if find_result.needs_healing and find_result.new_signature:
+                        logger.info(f"[{job_id}] 🩹 Healing recipe for '{intent}'")
+                        # Update RAG
+                        await finder.vector_db.store(
+                            intent,
+                            find_result.new_signature["selector"],
+                            find_result.new_signature.get("attributes")
+                        )
+                        # Update In-Memory Recipe (if running from recipe)
+                        if 'recipe_mgr' in locals() and recipe:
+                            # TODO: Implement recipe_mgr.update_step(workflow_id, i, find_result.new_signature)
+                            pass
+
+                        await user_logger.info("GENERIC_ERROR", error_details=f"Self-healed selector for {intent}")
+
+                    # 3. Interact
+                    element = find_result.element
+                    await element.scroll_into_view_if_needed()
+                    await element.click(timeout=5000)
+
+                    await user_logger.info("CLICKED_ELEMENT", element=intent)
+
+                elif action == "HOVER":
+                    intent = step_params["intent"]
+                    element = await finder.find(page, intent)
+                    await element.hover()
+                    await user_logger.info("FOUND_ELEMENT", element=f"Hovered {intent}")
+
+                elif action == "PRESS_KEY":
+                    key = step_params["key"]
+                    await page.keyboard.press(key)
+                    await user_logger.progress(f"Pressed key: {key}")
+
+                elif action == "UPLOAD_FILE":
+                    intent = step_params["intent"]
+                    file_path = step_params["file_path"]
+                    # Ensure absolute path
+                    if not os.path.isabs(file_path):
+                        file_path = os.path.join(DOWNLOAD_DIR, file_path)
+
+                    element = await finder.find(page, intent)
+                    await element.set_input_files(file_path)
+                    await user_logger.info("FOUND_ELEMENT", element=f"Uploaded {os.path.basename(file_path)}")
+
+                elif action == "SCROLL":
+                    # Scroll to element OR by pixels
+                    if "intent" in step_params:
+                        intent = step_params["intent"]
+                        element = await finder.find(page, intent)
+                        await element.scroll_into_view_if_needed()
+                    elif "delta_y" in step_params:
+                        delta_y = int(step_params["delta_y"])
+                        await page.mouse.wheel(0, delta_y)
+                    await user_logger.progress("Scrolled page")
+
+                elif action == "DRAG_AND_DROP":
+                    source_intent = step_params["source"]
+                    target_intent = step_params["target"]
+
+                    source = await finder.find(page, source_intent)
+                    target = await finder.find(page, target_intent)
+
+                    await source.drag_to(target)
+                    await user_logger.progress(f"Dragged {source_intent} to {target_intent}")
+
+                elif action == "WAIT_FOR":
+                    # Wait for selector, network, or timeout
+                    if "selector" in step_params:
+                        state = step_params.get("state", "visible")
+                        timeout = int(step_params.get("timeout_ms", 10000))
+                        await page.wait_for_selector(step_params["selector"], state=state, timeout=timeout)
+                    elif "event" in step_params:
+                        event = step_params["event"]
+                        if event == "network_idle":
+                            await safe_wait_for_network_idle(page)
+                    elif "timeout_ms" in step_params:
+                        await asyncio.sleep(int(step_params["timeout_ms"]) / 1000)
+
+                    await user_logger.info("WAITING_NETWORK")
+
+                elif action == "EXTRACT":
+                    intent = step_params["intent"]
+                    attr = step_params.get("attribute") # None = text content
+
+                    element = await finder.find(page, intent)
+
+                    if attr:
+                        value = await element.get_attribute(attr)
+                    else:
+                        value = await element.text_content()
+
+                    # Store in job results (could be passed to next steps via context)
+                    logger.info(f"[{job_id}] Extracted '{intent}': {value}")
+                    await user_logger.info("FOUND_ELEMENT", element=f"Extracted data from {intent}")
 
                 elif action == "TYPE":
                     intent = step_params["intent"]

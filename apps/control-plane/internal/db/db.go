@@ -1,21 +1,21 @@
 package db
 
 import (
-	"database/sql"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 	"time"
 
-	// Import Postgres Driver
-	_ "github.com/lib/pq"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
-var Conn *sql.DB
+var DB *gorm.DB
 
-// Init connects to PostgreSQL (Supabase) and runs migrations
-// EXPLICIT: This driver ONLY supports PostgreSQL - not CockroachDB or other variants.
+// Init connects to PostgreSQL (Supabase) using GORM
+// CRITICAL: PrepareStmt is disabled for Supabase PgBouncer compatibility
 func Init() {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -30,24 +30,31 @@ func Init() {
 	}
 
 	var err error
-	// EXPLICIT: Use lib/pq PostgreSQL driver only
-	Conn, err = sql.Open("postgres", dsn)
+	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
+		// CRITICAL: Disable prepared statements for Supabase Transaction Pooler (Port 6543)
+		// PgBouncer in Transaction Mode does NOT support prepared statements
+		PrepareStmt: false,
+
+		Logger: logger.Default.LogMode(logger.Info),
+	})
+
 	if err != nil {
-		log.Fatalf("[ERROR] Failed to open PostgreSQL connection: %v", err)
+		log.Fatalf("[ERROR] Failed to connect to PostgreSQL: %v", err)
+	}
+
+	// Configure connection pool
+	sqlDB, err := DB.DB()
+	if err != nil {
+		log.Fatalf("[ERROR] Failed to get underlying SQL.DB: %v", err)
 	}
 
 	// CRITICAL: Configure connection pool to prevent exhaustion
 	// Supabase free tier has ~60 connections, pro has ~500
-	Conn.SetMaxOpenConns(20)                 // Prevent exhaustion
-	Conn.SetMaxIdleConns(5)                  // Keep some warm connections
-	Conn.SetConnMaxLifetime(5 * time.Minute) // Recycle connections
+	sqlDB.SetMaxOpenConns(20)                 // Prevent exhaustion
+	sqlDB.SetMaxIdleConns(5)                  // Keep some warm connections
+	sqlDB.SetConnMaxLifetime(5 * time.Minute) // Recycle connections
 
-	// Verify connection is alive
-	if err = Conn.Ping(); err != nil {
-		log.Fatalf("[ERROR] PostgreSQL Unreachable: %v", err)
-	}
-
-	log.Println("[Database] Successfully connected to PostgreSQL (pool: 20 max, 5 idle)")
+	log.Println("[Database] ✓ Connected to PostgreSQL (GORM with PrepareStmt=false)")
 
 	// Run Auto-Migration
 	if err := createTables(); err != nil {
@@ -58,10 +65,14 @@ func Init() {
 // Ping checks if the database connection is healthy.
 // Used by health check endpoints.
 func Ping() error {
-	if Conn == nil {
+	if DB == nil {
 		return fmt.Errorf("database connection not initialized")
 	}
-	return Conn.Ping()
+	sqlDB, err := DB.DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.Ping()
 }
 
 // createTables ensures the schema exists (Idempotent)
@@ -111,21 +122,21 @@ func createTables() error {
     VALUES ('00000000-0000-0000-0000-000000000000', 'dev@local', 'sk_test_123')
     ON CONFLICT (id) DO NOTHING;
     `
-	_, err := Conn.Exec(schema)
+	err := DB.Exec(schema).Error
 	if err != nil {
 		return err
 	}
 
 	// 4. SEED CREDIT (Separate insert to avoid FK issues)
 	// Only insert if balance is 0 (idempotent)
-	_, err = Conn.Exec(`
+	err = DB.Exec(`
 		INSERT INTO ledger (user_id, amount, description)
 		SELECT '00000000-0000-0000-0000-000000000000', 10.00, 'Initial Grant'
 		WHERE NOT EXISTS (
 			SELECT 1 FROM ledger
 			WHERE user_id = '00000000-0000-0000-0000-000000000000'
 		);
-	`)
+	`).Error
 	return err
 }
 
@@ -135,7 +146,7 @@ func createTables() error {
 func GetBalance(userID string) (float64, error) {
 	var balance float64
 	// In Double-Entry, Balance = Sum of all transactions
-	err := Conn.QueryRow("SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE user_id = $1", userID).Scan(&balance)
+	err := DB.Raw("SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE user_id = ?", userID).Scan(&balance).Error
 	return balance, err
 }
 
@@ -145,9 +156,14 @@ func ChargeUser(userID string, amount float64, jobID string) error {
 		return fmt.Errorf("invalid charge amount: %f", amount)
 	}
 	// We insert a NEGATIVE amount for a charge
-	_, err := Conn.Exec(
-		"INSERT INTO ledger (user_id, amount, job_id, description) VALUES ($1, $2, $3, 'Compute Cost')",
+	err := DB.Exec(
+		"INSERT INTO ledger (user_id, amount, job_id, description) VALUES (?, ?, ?, 'Compute Cost')",
 		userID, -amount, jobID,
-	)
+	).Error
 	return err
+}
+
+// GetDB returns the global GORM database instance
+func GetDB() *gorm.DB {
+	return DB
 }

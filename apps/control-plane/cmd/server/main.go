@@ -91,10 +91,10 @@ func (c *Consumer) StartListening() {
 		if event.Status == "COMPLETED" || event.Status == "FAILED" {
 			// Query webhook_url from jobs table
 			var webhookURL sql.NullString
-			err := db.Conn.QueryRow(
-				"SELECT webhook_url FROM jobs WHERE id = $1",
+			err := db.DB.Raw(
+				"SELECT webhook_url FROM jobs WHERE id = ?",
 				jobID,
-			).Scan(&webhookURL)
+			).Scan(&webhookURL).Error
 
 			// If webhook URL exists, dispatch notification
 			if err == nil && webhookURL.Valid {

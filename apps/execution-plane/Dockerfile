@@ -61,6 +61,10 @@ COPY --from=builder /root/.cache/ms-playwright /root/.cache/ms-playwright
 # Copy application code from execution-plane directory
 COPY apps/execution-plane/src/ ./src/
 
+# Copy Prisma schema and generate client (CRITICAL for ORM)
+COPY frontend/prisma/schema.prisma ./prisma/schema.prisma
+RUN python3 -m prisma generate --schema=prisma/schema.prisma
+
 # Copy proto gen files
 COPY api/gen/python/ ./api/gen/python/
 

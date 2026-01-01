@@ -2,10 +2,14 @@ package middleware
 
 import (
 	"context"
-	"database/sql"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strings"
 	"time"
+
+	"e2e-platform/apps/control-plane/internal/db"
+	"e2e-platform/apps/control-plane/internal/models"
 
 	"github.com/gin-gonic/gin"
 )
@@ -20,7 +24,7 @@ const (
 
 // AuthMiddleware validates API keys from the Authorization header
 // Expected format: Authorization: Bearer sk_live_xxx or sk_test_xxx
-func AuthMiddleware(db *sql.DB) gin.HandlerFunc {
+func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Extract Authorization header
 		authHeader := c.GetHeader("Authorization")
@@ -53,23 +57,18 @@ func AuthMiddleware(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		// Query database to validate API key (with timeout to prevent hanging)
-		var userID string
-		var active bool
+		// Hash the API key (SHA-256)
+		hash := sha256.Sum256([]byte(apiKey))
+		keyHash := hex.EncodeToString(hash[:])
 
-		query := `
-			SELECT user_id, active
-			FROM api_keys
-			WHERE key_hash = encode(sha256($1::bytea), 'hex')
-			AND active = true
-		`
+		// Query database to validate API key using GORM (with timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 
-		queryCtx, queryCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer queryCancel()
+		var apiKeyRecord models.ApiKey
+		err := db.DB.WithContext(ctx).Where("key_hash = ? AND is_active = ?", keyHash, true).First(&apiKeyRecord).Error
 
-		err := db.QueryRowContext(queryCtx, query, apiKey).Scan(&userID, &active)
-
-		if err == sql.ErrNoRows {
+		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": "Invalid API key",
 			})
@@ -77,15 +76,7 @@ func AuthMiddleware(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Database error during authentication",
-			})
-			c.Abort()
-			return
-		}
-
-		if !active {
+		if !apiKeyRecord.IsActive {
 			c.JSON(http.StatusUnauthorized, gin.H{
 				"error": "API key has been deactivated",
 			})
@@ -94,7 +85,7 @@ func AuthMiddleware(db *sql.DB) gin.HandlerFunc {
 		}
 
 		// Store user ID in context for downstream handlers
-		c.Set(string(UserIDKey), userID)
+		c.Set(string(UserIDKey), apiKeyRecord.UserID)
 
 		// Continue to next handler
 		c.Next()
