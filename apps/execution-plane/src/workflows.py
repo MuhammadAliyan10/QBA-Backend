@@ -2,8 +2,25 @@ from datetime import timedelta
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from temporalio.exceptions import ActivityError, ApplicationError
+
 # DO NOT import activities here - it triggers ML library imports (sentence_transformers)
 # Activities are referenced by string name and registered in worker.py
+
+# Import timeout configuration (safe - no ML imports)
+# Note: In Temporal workflows, we use workflow.info().unsafe to call non-deterministic code
+# For now, we use sensible defaults that match config.py values
+
+
+# =============================================================================
+# DEFAULT TIMEOUT VALUES (mirrors config.py for workflow determinism)
+# =============================================================================
+# Temporal workflows must be deterministic, so we can't call os.getenv directly.
+# These defaults match config.py. For production tuning, update both places.
+DEFAULT_ACTIVITY_TIMEOUT_SEC = 300  # 5 minutes
+DEFAULT_HUMAN_WAIT_TIMEOUT_SEC = 86400  # 24 hours
+DEFAULT_MAX_RETRY_ATTEMPTS = 3
+DEFAULT_INITIAL_RETRY_INTERVAL_SEC = 2
+DEFAULT_RETRY_BACKOFF_COEFFICIENT = 2.0
 
 
 @workflow.defn
@@ -13,6 +30,11 @@ class BrowserWorkflow:
 
     This workflow executes browser automation activities and can hibernate
     (zero CPU cost) when human intervention is required (CAPTCHA, 2FA, etc.).
+
+    Timeout Configuration:
+    - Activity timeout: DEFAULT_ACTIVITY_TIMEOUT_SEC (5 min)
+    - Human wait timeout: DEFAULT_HUMAN_WAIT_TIMEOUT_SEC (24 hours)
+    - Retry attempts: DEFAULT_MAX_RETRY_ATTEMPTS (3)
 
     Signal Handling:
     - Listens for "USER_INTERACTION" signals via submit_user_input()
@@ -55,15 +77,21 @@ class BrowserWorkflow:
         Returns:
             dict: Activity result
         """
+        # =====================================================================
+        # RETRY POLICY (uses centralized defaults)
+        # =====================================================================
         # Non-retryable error prevents Temporal from auto-retrying before workflow catches
         # Without this, activity would retry 3 times before bubbling up to workflow
         retry_policy = RetryPolicy(
-            maximum_attempts=3,
-            initial_interval=timedelta(seconds=2),
-            backoff_coefficient=2.0,
+            maximum_attempts=DEFAULT_MAX_RETRY_ATTEMPTS,
+            initial_interval=timedelta(seconds=DEFAULT_INITIAL_RETRY_INTERVAL_SEC),
+            backoff_coefficient=DEFAULT_RETRY_BACKOFF_COEFFICIENT,
             non_retryable_error_types=["HumanInterventionRequired"]
         )
 
+        # =====================================================================
+        # MAIN EXECUTION LOOP
+        # =====================================================================
         # Loop to handle multiple interventions (e.g., CAPTCHA on page 1, then 2FA on page 2)
         while True:
             try:
@@ -77,7 +105,7 @@ class BrowserWorkflow:
                 return await workflow.execute_activity(
                     "browser_automation_activity",  # String reference, not function
                     payload,
-                    start_to_close_timeout=timedelta(minutes=5),
+                    start_to_close_timeout=timedelta(seconds=DEFAULT_ACTIVITY_TIMEOUT_SEC),
                     retry_policy=retry_policy,
                 )
 
@@ -96,7 +124,7 @@ class BrowserWorkflow:
                     # Worker process frees this workflow from memory until signal arrives
                     await workflow.wait_condition(
                         lambda: self.user_input is not None,
-                        timeout=timedelta(hours=24)  # Max wait time
+                        timeout=timedelta(seconds=DEFAULT_HUMAN_WAIT_TIMEOUT_SEC)
                     )
 
                     workflow.logger.info("[Workflow] Resuming with Human Signal...")

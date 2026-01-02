@@ -23,6 +23,7 @@ import (
 	// 2. Third-Party Libraries
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid" // INDUSTRIAL: UUID v4 for collision-free IDs
 	"github.com/joho/godotenv"
 	"github.com/nats-io/nats.go"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -90,47 +91,64 @@ func (c *Consumer) StartListening() {
 		// Only dispatch webhooks for terminal states
 		if event.Status == "COMPLETED" || event.Status == "FAILED" {
 			// Query webhook_url from jobs table
+			// INDUSTRIAL: Explicit error handling - do not proceed with empty data
 			var webhookURL sql.NullString
 			err := db.DB.Raw(
 				"SELECT webhook_url FROM jobs WHERE id = ?",
 				jobID,
 			).Scan(&webhookURL).Error
 
-			// If webhook URL exists, dispatch notification
-			if err == nil && webhookURL.Valid {
-				// Build webhook payload
-				payload := webhook.WebhookPayload{
-					JobID:     jobID,
-					Status:    event.Status,
-					Data: map[string]interface{}{
-						"message": event.Message,
-						"node_id": event.NodeId,
-					},
-					Timestamp: time.Now().UTC().Format(time.RFC3339),
+			// TASK 3 FIX: Explicit error handling instead of silent failure
+			if err != nil {
+				if err == sql.ErrNoRows {
+					// Job not found - this is expected for jobs without webhook config
+					log.Printf("[Webhook] Job %s has no webhook configured (not in DB)", jobID)
+				} else {
+					// Actual database error - log with ERROR level
+					log.Printf("[ERROR] Database query failed for webhook_url (job=%s): %v", jobID, err)
+					// Record metric for monitoring
+					metrics.RecordAPIRequest("WEBHOOK_DB_ERROR", "internal", "500")
 				}
-
-				// PRODUCTION GATE: Enforce secure configuration in release mode
-				secret := os.Getenv("WEBHOOK_SECRET")
-				if secret == "" {
-					// Check if running in production (Gin release mode)
-					ginMode := os.Getenv("GIN_MODE")
-					if ginMode == "release" {
-						// CRITICAL: Do not allow insecure production deployment
-						log.Fatal("[SECURITY] WEBHOOK_SECRET must be set in production. Refusing to start.")
-					} else {
-						// Development mode: Allow with loud warning and temporary secret
-						log.Println("[WARNING] WEBHOOK_SECRET not set. Using temporary dev secret. DO NOT USE IN PRODUCTION!")
-						secret = fmt.Sprintf("dev_temp_secret_%d", time.Now().UnixNano())
-					}
-				}
-
-				// Dispatch webhook asynchronously (non-blocking)
-				go webhook.Dispatch(webhookURL.String, payload, secret)
-
-				log.Printf("[Webhook] Dispatching webhook for job %s to %s", jobID, webhookURL.String)
-			} else if err != nil && err != sql.ErrNoRows {
-				log.Printf("[Webhook] Database error querying webhook_url for job %s: %v", jobID, err)
+				// Do not proceed - we cannot dispatch webhook without valid data
+				return
 			}
+
+			// Only dispatch if webhook URL is configured and non-empty
+			if !webhookURL.Valid || webhookURL.String == "" {
+				log.Printf("[Webhook] Job %s completed but no webhook URL configured", jobID)
+				return
+			}
+
+			// Build webhook payload
+			payload := webhook.WebhookPayload{
+				JobID:     jobID,
+				Status:    event.Status,
+				Data: map[string]interface{}{
+					"message": event.Message,
+					"node_id": event.NodeId,
+				},
+				Timestamp: time.Now().UTC().Format(time.RFC3339),
+			}
+
+			// PRODUCTION GATE: Enforce secure configuration in release mode
+			secret := os.Getenv("WEBHOOK_SECRET")
+			if secret == "" {
+				// Check if running in production (Gin release mode)
+				ginMode := os.Getenv("GIN_MODE")
+				if ginMode == "release" {
+					// CRITICAL: Do not allow insecure production deployment
+					log.Fatal("[SECURITY] WEBHOOK_SECRET must be set in production. Refusing to start.")
+				} else {
+					// Development mode: Allow with loud warning and temporary secret
+					log.Println("[WARNING] WEBHOOK_SECRET not set. Using temporary dev secret. DO NOT USE IN PRODUCTION!")
+					secret = fmt.Sprintf("dev_temp_secret_%d", time.Now().UnixNano())
+				}
+			}
+
+			// Dispatch webhook asynchronously (non-blocking)
+			go webhook.Dispatch(webhookURL.String, payload, secret)
+
+			log.Printf("[Webhook] Dispatching webhook for job %s to %s", jobID, webhookURL.String)
 		}
 	})
 
@@ -271,8 +289,10 @@ func main() {
 			return
 		}
 
-		// Generate a Unique Job ID
-		jobID := fmt.Sprintf("job-%d", time.Now().Unix())
+		// TASK 1 FIX: Generate UUID v4 to prevent identity collisions at scale
+		// Old: fmt.Sprintf("job-%d", time.Now().Unix()) - collision risk at high throughput
+		// New: UUID v4 provides 122 bits of randomness (collision probability: 1 in 2^61)
+		jobID := uuid.New().String()
 
 		// B. Prepare Data for Temporal
 		// We package everything into a generic map because Python receives it as a dict.

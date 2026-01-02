@@ -1,16 +1,119 @@
-__pycache__/
+# =============================================================================
+# Docker Build Ignore File
+# Excludes unnecessary files from Docker build context
+# Estimated savings: ~625MB
+# =============================================================================
+
+# -----------------------------
+# PYTHON VIRTUAL ENVIRONMENTS
+# -----------------------------
+venv/
+.venv/
+env/
+.env/
+ENV/
 *.pyc
+__pycache__/
 *.pyo
 *.pyd
-.pytest_cache/
-tests/
-.env
-.venv/
-venv/
-*.log
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+# -----------------------------
+# NODE.JS (Prisma leftover)
+# -----------------------------
+node_modules/
+package-lock.json
+package.json
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+
+# -----------------------------
+# IDE & EDITOR
+# -----------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
 .DS_Store
+Thumbs.db
+
+# -----------------------------
+# GIT
+# -----------------------------
+.git/
+.gitignore
+.gitattributes
+
+# -----------------------------
+# TESTING
+# -----------------------------
+tests/
+test/
+*_test.py
+test_*.py
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# -----------------------------
+# BUILD ARTIFACTS
+# -----------------------------
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+*.whl
+MANIFEST
+
+# -----------------------------
+# DOCUMENTATION
+# -----------------------------
+docs/
+*.md
+LICENSE
+CHANGELOG*
+
+# -----------------------------
+# LOCAL CONFIG
+# -----------------------------
+.env
+.env.*
+*.local
+config.local.*
+
+# -----------------------------
+# JUPYTER NOTEBOOKS
+# -----------------------------
+*.ipynb
+.ipynb_checkpoints/
+
+# -----------------------------
+# LOGS & TEMP FILES
+# -----------------------------
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# -----------------------------
+# DATABASE FILES
+# -----------------------------
 *.db
 patterns.db
-.git/
-*.md
-*.ipynb
+
+# -----------------------------
+# MISC
+# -----------------------------
+*.bak
+*.orig
+*~

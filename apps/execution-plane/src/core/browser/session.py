@@ -112,22 +112,97 @@ class SessionManager:
     @staticmethod
     def extract_domain(url: str) -> str:
         """
-        Extract the domain from a URL.
+        Extract and normalize the domain from a URL.
 
-        Example:
-            "https://www.linkedin.com/in/profile" -> "linkedin.com"
+        TASK 4 FIX: Robust input validation with edge case handling.
+
+        Handles:
+        - Standard URLs: "https://www.linkedin.com/in/profile" -> "linkedin.com"
+        - Missing protocols: "google.com" -> "google.com"
+        - Subdomains: "www.example.com" -> "example.com"
+        - Ports: "localhost:8080" -> "localhost"
+        - IP addresses: "192.168.1.1" -> "192.168.1.1"
+        - Trailing slashes: "https://example.com/" -> "example.com"
+
+        Blocks:
+        - javascript: URLs -> ""
+        - data: URLs -> ""
+        - file: URLs -> ""
+        - Empty/None input -> ""
+
+        Returns:
+            Normalized domain string, or empty string if invalid/unsafe
         """
-        parsed = urlparse(url)
-        domain = parsed.netloc or parsed.path
+        # Handle None/empty input
+        if not url or not isinstance(url, str):
+            return ""
 
-        # Remove www. prefix
-        if domain.startswith("www."):
-            domain = domain[4:]
+        # Strip whitespace
+        url = url.strip()
 
-        # Remove port if present
-        domain = domain.split(":")[0]
+        if not url:
+            return ""
 
-        return domain.lower()
+        # Security: Block dangerous URL schemes
+        BLOCKED_SCHEMES = {"javascript", "data", "file", "vbscript", "about"}
+
+        # Check for blocked schemes (case-insensitive)
+        lower_url = url.lower()
+        for scheme in BLOCKED_SCHEMES:
+            if lower_url.startswith(f"{scheme}:"):
+                logger.warning(f"[Session] Blocked dangerous URL scheme: {scheme}")
+                return ""
+
+        # Add protocol if missing (needed for urlparse to work correctly)
+        # urlparse treats "google.com" as a path, not netloc
+        if not url.startswith(("http://", "https://")):
+            # Check if it looks like a domain (contains at least one dot or is localhost)
+            if "." in url or url.startswith("localhost"):
+                url = f"https://{url}"
+            else:
+                # Single word without protocol - could be a local path, not a domain
+                logger.warning(f"[Session] Ambiguous URL without protocol: {url}")
+                return ""
+
+        try:
+            parsed = urlparse(url)
+
+            # Extract netloc (domain with optional port)
+            domain = parsed.netloc or parsed.path.split("/")[0]
+
+            if not domain:
+                return ""
+
+            # Remove port if present (e.g., "localhost:8080" -> "localhost")
+            domain = domain.split(":")[0]
+
+            # Remove www. prefix
+            if domain.startswith("www."):
+                domain = domain[4:]
+
+            # Normalize to lowercase
+            domain = domain.lower()
+
+            # Final validation: domain should have at least one character
+            # and not contain special characters except dots and hyphens
+            if not domain:
+                return ""
+
+            # Validate domain characters (letters, digits, dots, hyphens)
+            for char in domain:
+                if not (char.isalnum() or char in ".-"):
+                    logger.warning(f"[Session] Invalid character in domain: {char}")
+                    return ""
+
+            # Domain shouldn't start or end with hyphen or dot
+            if domain.startswith(("-", ".")) or domain.endswith(("-", ".")):
+                return ""
+
+            return domain
+
+        except Exception as e:
+            logger.error(f"[Session] Failed to parse URL '{url}': {e}")
+            return ""
 
     async def get_session(
         self,

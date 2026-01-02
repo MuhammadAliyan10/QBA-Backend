@@ -83,3 +83,63 @@ func GetString(key, defaultVal string) string {
 	}
 	return val
 }
+
+// =============================================================================
+// CENTRALIZED TIMEOUT CONFIGURATION
+// =============================================================================
+// All timeouts in one place for easy tuning and visibility.
+// Override via environment variables for production tuning.
+// These values mirror the Python config.py for consistency.
+// =============================================================================
+
+// TimeoutConfig holds all timeout values for the control plane
+type TimeoutConfig struct {
+	// WorkflowStartTimeoutSec is the timeout for starting a Temporal workflow
+	WorkflowStartTimeoutSec int
+
+	// SignalWorkflowTimeoutSec is the timeout for sending signals to workflows
+	SignalWorkflowTimeoutSec int
+
+	// HTTPRequestTimeoutSec is the timeout for outgoing HTTP requests (webhooks)
+	HTTPRequestTimeoutSec int
+
+	// WebSocketPingIntervalSec is the interval for WebSocket ping messages
+	WebSocketPingIntervalSec int
+
+	// GracefulShutdownSec is the timeout for graceful server shutdown
+	GracefulShutdownSec int
+}
+
+// timeouts is the singleton instance
+var timeouts *TimeoutConfig
+
+// GetTimeouts returns the timeout configuration singleton
+func GetTimeouts() *TimeoutConfig {
+	if timeouts == nil {
+		timeouts = &TimeoutConfig{
+			WorkflowStartTimeoutSec:  GetInt("TIMEOUT_WORKFLOW_START_SEC", 30),
+			SignalWorkflowTimeoutSec: GetInt("TIMEOUT_SIGNAL_WORKFLOW_SEC", 30),
+			HTTPRequestTimeoutSec:    GetInt("TIMEOUT_HTTP_REQUEST_SEC", 30),
+			WebSocketPingIntervalSec: GetInt("TIMEOUT_WS_PING_SEC", 30),
+			GracefulShutdownSec:      GetInt("TIMEOUT_GRACEFUL_SHUTDOWN_SEC", 15),
+		}
+	}
+	return timeouts
+}
+
+// Convenience getters
+func GetWorkflowStartTimeout() int {
+	return GetTimeouts().WorkflowStartTimeoutSec
+}
+
+func GetSignalWorkflowTimeout() int {
+	return GetTimeouts().SignalWorkflowTimeoutSec
+}
+
+func GetHTTPRequestTimeout() int {
+	return GetTimeouts().HTTPRequestTimeoutSec
+}
+
+func GetGracefulShutdownTimeout() int {
+	return GetTimeouts().GracefulShutdownSec
+}

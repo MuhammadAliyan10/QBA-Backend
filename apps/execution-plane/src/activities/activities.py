@@ -17,6 +17,9 @@ from config import is_s3_upload_enabled, is_session_persistence_enabled
 # Session Persistence (Encrypted Browser State)
 from core.browser.session import SessionManager, get_session_manager
 
+# TASK 2 FIX: Import Universal Storage for actual S3/MinIO uploads
+from core.storage import get_storage, is_storage_available, StorageUploadError
+
 # --- IMPORTS ---
 # 1. The Nervous System (Snake Case - Infrastructure)
 from core.NervousSystem import NervousSystem
@@ -243,19 +246,48 @@ def get_proxy_config(region="us"):
     """
     Constructs the Proxy dictionary for Playwright.
     Supports BrightData / Smartproxy / IPRoyal formats.
-    """
-    server = os.getenv("PROXY_SERVER") # e.g., "http://brd.superproxy.io:22225"
-    username = os.getenv("PROXY_USER")
-    password = os.getenv("PROXY_PASSWORD")
 
-    if not server or not username:
+    TASK 5 FIX: Returns None if PROXY_SERVER is not configured.
+    This allows running without a proxy provider to save costs.
+
+    Returns:
+        dict: Playwright proxy config, or None if proxy is not configured
+    """
+    server = os.getenv("PROXY_SERVER")  # e.g., "http://brd.superproxy.io:22225"
+
+    # TASK 5 FIX: If no proxy server configured, return None (don't crash)
+    if not server:
+        logger.info("[Proxy] PROXY_SERVER not set - running without proxy")
         return None
 
+    username = os.getenv("PROXY_USER", "")
+    password = os.getenv("PROXY_PASSWORD", "")
+
+    # If server is set but credentials are missing, log warning but still try
+    # Some proxies (like SOCKS5) don't require auth
+    if not username:
+        logger.warning("[Proxy] PROXY_USER not set - attempting connection without auth")
+        return {
+            "server": server
+        }
+
+    # Full proxy config with region support
     return {
         "server": server,
-        "username": f"{username}-country-{region}", # Most providers use this format
+        "username": f"{username}-country-{region}",  # Most providers use this format
         "password": password
     }
+
+
+def is_proxy_available() -> bool:
+    """
+    Check if proxy is configured.
+
+    Returns:
+        bool: True if PROXY_SERVER environment variable is set
+    """
+    return bool(os.getenv("PROXY_SERVER"))
+
 
 @activity.defn
 async def browser_automation_activity(payload: dict) -> dict:
@@ -306,16 +338,37 @@ async def browser_automation_activity(payload: dict) -> dict:
             "args": ["--no-sandbox", "--disable-setuid-sandbox"]
         }
 
-        # PROXY LOGIC (The "Warden")
+        # TASK 5 FIX: Optional Proxy Logic (The "Warden")
+        # Only attempt to configure proxy if:
+        # 1. User requested premium proxy in config
+        # 2. AND proxy server is actually configured in environment
         if config.get("use_premium_proxy"):
-            region = config.get("region", "us")
-            proxy_conf = get_proxy_config(region)
+            if is_proxy_available():
+                region = config.get("region", "us")
+                proxy_conf = get_proxy_config(region)
 
-            if proxy_conf:
-                launch_args["proxy"] = proxy_conf
-                await NervousSystem.publish_update(job_id, "RUNNING", f"[Network] Routing via residential proxy ({region})", "init")
+                if proxy_conf:
+                    launch_args["proxy"] = proxy_conf
+                    await NervousSystem.publish_update(
+                        job_id, "RUNNING",
+                        f"[Network] Routing via residential proxy ({region})",
+                        "init"
+                    )
+                else:
+                    # This shouldn't happen if is_proxy_available() is True
+                    await NervousSystem.publish_update(
+                        job_id, "WARNING",
+                        "Proxy configuration error. Using direct connection.",
+                        "init"
+                    )
             else:
-                await NervousSystem.publish_update(job_id, "WARNING", "Proxy credentials missing! Using Datacenter IP.", "init")
+                # TASK 5 FIX: Gracefully skip proxy when not configured
+                await NervousSystem.publish_update(
+                    job_id, "INFO",
+                    "[Network] Proxy not configured. Using direct connection (cost-saving mode).",
+                    "init"
+                )
+                logger.info(f"[{job_id}] Premium proxy requested but PROXY_SERVER not set. Continuing without proxy.")
 
         # STATE FLAG: Track workflow success for account release logic
         # This replaces the fragile 'e' not in locals() hack
@@ -392,8 +445,11 @@ async def browser_automation_activity(payload: dict) -> dict:
             page = await context.new_page()
 
             # --- DOWNLOAD HANDLER (Industrial-Grade) ---
+            # TASK 2 FIX: Real blob storage implementation
+            storage = get_storage()  # Get singleton storage client
+
             async def handle_download(download):
-                """Handles file downloads with actual storage."""
+                """Handles file downloads with actual storage upload."""
                 filename = download.suggested_filename
                 safe_filename = "".join(c for c in filename if c.isalnum() or c in '._-')
                 local_path = os.path.join(DOWNLOAD_DIR, f"{job_id}_{safe_filename}")
@@ -401,24 +457,59 @@ async def browser_automation_activity(payload: dict) -> dict:
                 await user_logger.info("DOWNLOAD_START", filename=filename)
 
                 try:
-                    # Save to local filesystem
+                    # Save to local filesystem first
                     await download.save_as(local_path)
                     file_size = os.path.getsize(local_path)
 
                     logger.info(f"[{job_id}] Downloaded {filename} ({file_size} bytes)")
 
-                    # FEATURE FLAG: Upload to S3/MinIO if enabled
-                    if is_s3_upload_enabled():
-                        # TODO: Implement actual S3 upload
-                        # async with aiofiles.open(local_path, 'rb') as f:
-                        #     await s3_client.upload_fileobj(f, bucket, f"{job_id}/{filename}")
-                        logger.info(f"[S3] Would upload {filename} to S3 (not implemented)")
-                        final_url = f"s3://bucket/{job_id}/{filename}"  # Placeholder
+                    # TASK 2 FIX: Actually upload to S3/MinIO
+                    if is_s3_upload_enabled() and storage:
+                        try:
+                            # Read file content
+                            with open(local_path, 'rb') as f:
+                                file_data = f.read()
+
+                            # Determine MIME type
+                            content_type = "application/octet-stream"
+                            lower_filename = filename.lower()
+                            if lower_filename.endswith('.pdf'):
+                                content_type = "application/pdf"
+                            elif lower_filename.endswith('.csv'):
+                                content_type = "text/csv"
+                            elif lower_filename.endswith('.json'):
+                                content_type = "application/json"
+                            elif lower_filename.endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                                content_type = f"image/{lower_filename.split('.')[-1]}"
+
+                            # Upload to storage and get presigned URL
+                            storage_key = f"{job_id}/downloads/{safe_filename}"
+                            final_url = await storage.upload(file_data, storage_key, content_type)
+
+                            logger.info(f"[Storage] Uploaded {filename} to {storage_key}")
+                            logger.info(f"[Storage] Presigned URL: {final_url[:80]}...")
+
+                            # Clean up local file after successful upload
+                            os.remove(local_path)
+
+                        except StorageUploadError as e:
+                            logger.error(f"[Storage] Upload failed for {filename}: {e}")
+                            # Fall back to local path
+                            final_url = f"file://{local_path}"
+                        except Exception as e:
+                            logger.error(f"[Storage] Unexpected error uploading {filename}: {e}")
+                            final_url = f"file://{local_path}"
                     else:
-                        logger.info(f"[S3] S3 Upload Disabled: Saved to local disk at {local_path}")
+                        if not storage:
+                            logger.warning(f"[Storage] Storage not configured. Saved to local disk: {local_path}")
+                        else:
+                            logger.info(f"[Storage] S3 Upload Disabled. Saved to local disk: {local_path}")
                         final_url = f"file://{local_path}"
 
                     await user_logger.info("DOWNLOAD_COMPLETE", filename=filename)
+
+                    # Store the URL in job context for later retrieval
+                    logger.info(f"[{job_id}] Final download URL: {final_url}")
 
                 except Exception as e:
                     logger.error(f"Download failed for {filename}: {e}")
@@ -694,9 +785,22 @@ async def browser_automation_activity(payload: dict) -> dict:
                     animations="disabled",
                     caret="hide"
                 )
-                # Resize logic would go here with Pillow if needed to save more bandwidth
+
+                # TASK 2 FIX: Upload screenshot to storage if enabled
+                screenshot_url = None
+                if is_s3_upload_enabled() and storage:
+                    try:
+                        screenshot_url = await storage.upload_screenshot(
+                            screenshot, job_id, i + 1
+                        )
+                        logger.debug(f"[Storage] Screenshot uploaded: {screenshot_url[:60]}...")
+                    except Exception as e:
+                        logger.warning(f"[Storage] Screenshot upload failed: {e}")
+                        # Continue with embedded screenshot fallback
 
                 # Send the visual proof to the dashboard
+                # If storage upload succeeded, we could send URL instead of bytes
+                # For now, still embed for real-time preview
                 await NervousSystem.publish_update(
                     job_id, "RUNNING", "Step Verified", node_id, screenshot=screenshot
                 )

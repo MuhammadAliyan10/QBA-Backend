@@ -1,74 +1,119 @@
-# -----------------------------
-# PYTHON
-# -----------------------------
+# =======================================================
+# 🐍 PYTHON (Execution Plane)
+# =======================================================
 __pycache__/
 *.py[cod]
 *$py.class
-
 venv/
 .venv/
-# .env
-# .env.*
+.pytest_cache/
+htmlcov/
+.coverage
+*.egg-info/
+develop-eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
 
-# Bytecode / compiled
-*.so
-*.dll
-*.dylib
+# Playwright / Browsers (These are massive!)
+test-results/
+playwright-report/
+blob-report/
+.ms-playwright/
+/tmp/test_*.png
+/tmp/test_*.mp4
 
-# -----------------------------
-# GO
-# -----------------------------
+# =======================================================
+# 🐹 GO (Control Plane)
+# =======================================================
 bin/
 dist/
 *.exe
 *.test
-
-# Go build cache
 *.out
+vendor/
 
-# -----------------------------
-# NODE / NEXT.JS
-# -----------------------------
+# Specific Binary Names (Linux/Mac don't use .exe)
+main
+server
+control-plane
+app
+execution-plane
+
+# =======================================================
+# ⚛️ NODE / NEXT.JS (Frontend)
+# =======================================================
 node_modules/
 .next/
 dist/
 build/
-
-# Local environment files
-*.local
-
-# Next.js output
-.next/
 out/
+.vercel/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
 
-# -----------------------------
-# IDE / EDITOR
-# -----------------------------
+# =======================================================
+# 🏗️ TERRAFORM (Infra) - CRITICAL SECURITY
+# =======================================================
+# .tfstate contains your DB passwords in plain text!
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Exclude sensitive variables
+*.tfvars
+*.tfvars.json
+
+# Ignore the .terraform folder (plugins)
+.terraform/
+.terraform.lock.hcl
+
+# =======================================================
+# 🐳 DOCKER & LOCAL DEV
+# =======================================================
+docker-compose.override.yml
+.data/
+.minio-data/
+postgres_data/
+redis_data/
+nats_data/
+qdrant_data/
+
+# =======================================================
+# 🔐 SECRETS & ENV
+# =======================================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+
+# =======================================================
+# 🖥️ IDE / EDITOR
+# =======================================================
 .vscode/
 .idea/
 *.swp
 *.swo
 .DS_Store
 *.log
-
-# JetBrains
 *.iml
 
-# -----------------------------
-# SYSTEM / OS
-# -----------------------------
-Thumbs.db
-ehthumbs.db
-
-# -----------------------------
-# PROJECT SPECIFIC
-# -----------------------------
-# Database files
+# =======================================================
+# 📂 PROJECT SPECIFIC
+# =======================================================
 *.db
+*.sqlite3
 patterns.db
-
-# Security reports
 security-report.json
+backend/infra/terraform.tfvars
 
-# Local test artifacts
-/tmp/test_*.png
