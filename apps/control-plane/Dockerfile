@@ -3,7 +3,8 @@
 # Go Multi-Stage Build for Azure Container Apps
 # =============================================================================
 #
-# Build: docker build -t control-plane:latest .
+# BUILD CONTEXT: Must be run from the backend root (not apps/control-plane)
+# Build: docker build -f apps/control-plane/Dockerfile -t control-plane:latest .
 # Run:   docker run -p 8080:8080 control-plane:latest
 #
 # =============================================================================
@@ -13,22 +14,23 @@
 # ==================================================
 FROM golang:1.24-alpine AS builder
 
-WORKDIR /build
+# Set workspace root (monorepo-aware)
+WORKDIR /workspace
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
 
-# Copy go mod files first (for layer caching)
-COPY go.mod go.sum ./
+# Copy the api folder first (shared proto gen files)
+COPY api/ ./api/
 
-# Download dependencies
+# Copy the control-plane app
+COPY apps/control-plane/ ./apps/control-plane/
+
+# Change to app directory for go mod operations
+WORKDIR /workspace/apps/control-plane
+
+# Download dependencies (go.mod uses replace => ../../api)
 RUN go mod download && go mod verify
-
-# Copy source code
-COPY . .
-
-# Note: Proto gen files should be in the build context
-# The CI/CD workflow sets the correct context that includes api/gen/go/
 
 # Build the binary with optimizations
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
@@ -55,7 +57,7 @@ RUN apk --no-cache add \
     tzdata
 
 # Copy binary from builder
-COPY --from=builder /build/server .
+COPY --from=builder /workspace/apps/control-plane/server .
 
 # Set ownership
 RUN chown -R quanta:quanta /app

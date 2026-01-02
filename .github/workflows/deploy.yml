@@ -165,7 +165,7 @@ jobs:
       - name: "🔨 Build & Push Control Plane (Go)"
         uses: docker/build-push-action@v5
         with:
-          context: ./apps/control-plane
+          context: . # Root context needed for monorepo (api/ + apps/control-plane/)
           file: ./apps/control-plane/Dockerfile
           push: true
           tags: |
