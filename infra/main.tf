@@ -111,6 +111,10 @@ resource "azurerm_container_app" "nats" {
     target_port      = 4222
     exposed_port     = 4222
     transport        = "tcp"
+    traffic_weight {
+      percentage      = 100
+      latest_revision = true
+    }
   }
 }
 
@@ -136,6 +140,10 @@ resource "azurerm_container_app" "redis" {
     target_port      = 6379
     exposed_port     = 6379
     transport        = "tcp"
+    traffic_weight {
+      percentage      = 100
+      latest_revision = true
+    }
   }
 }
 
