@@ -106,7 +106,7 @@ jobs:
           ACR_NAME=$(az acr list --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "[0].name" -o tsv)
 
           if [ -z "$ACR_NAME" ]; then
-            echo "❌ No ACR found in resource group ${{ env.AZURE_RESOURCE_GROUP }}"
+            echo "No ACR found in resource group ${{ env.AZURE_RESOURCE_GROUP }}"
             exit 1
           fi
 
@@ -124,7 +124,7 @@ jobs:
           echo "acr_username=$ACR_USERNAME" >> $GITHUB_OUTPUT
           echo "acr_password=$ACR_PASSWORD" >> $GITHUB_OUTPUT
 
-          echo "✅ ACR: $ACR_LOGIN_SERVER"
+          echo "CR: $ACR_LOGIN_SERVER"
 
       # -----------------------------------------------------------------------
       # 4. SET UP DOCKER BUILDX (Required for registry caching)
@@ -135,7 +135,7 @@ jobs:
       # -----------------------------------------------------------------------
       # 5. DOCKER LOGIN TO ACR
       # -----------------------------------------------------------------------
-      - name: "🐳 Docker Login to ACR"
+      - name: "Docker Login to ACR"
         uses: docker/login-action@v3
         with:
           registry: ${{ steps.acr.outputs.acr_login_server }}
@@ -145,7 +145,7 @@ jobs:
       # -----------------------------------------------------------------------
       # 5. SET IMAGE TAGS
       # -----------------------------------------------------------------------
-      - name: "🏷️ Set Image Tags"
+      - name: "Set Image Tags"
         id: tags
         run: |
           # Use commit SHA for immutable tags
@@ -162,7 +162,7 @@ jobs:
       # -----------------------------------------------------------------------
       # 6. BUILD & PUSH CONTROL PLANE (Go)
       # -----------------------------------------------------------------------
-      - name: "🔨 Build & Push Control Plane (Go)"
+      - name: "Build & Push Control Plane (Go)"
         uses: docker/build-push-action@v5
         with:
           context: . # Root context needed for monorepo (api/ + apps/control-plane/)
@@ -171,13 +171,13 @@ jobs:
           tags: |
             ${{ steps.tags.outputs.control_plane_tag }}
             ${{ steps.acr.outputs.acr_login_server }}/control-plane:latest
-          cache-from: type=registry,ref=${{ steps.acr.outputs.acr_login_server }}/control-plane:cache
+          # Note: cache-from removed for first build, add back after first successful build
           cache-to: type=registry,ref=${{ steps.acr.outputs.acr_login_server }}/control-plane:cache,mode=max
 
       # -----------------------------------------------------------------------
       # 7. BUILD & PUSH EXECUTION PLANE (Python)
       # -----------------------------------------------------------------------
-      - name: "🔨 Build & Push Execution Plane (Python)"
+      - name: "Build & Push Execution Plane (Python)"
         uses: docker/build-push-action@v5
         with:
           context: . # Build context is the backend root (needed for prisma schema)
@@ -186,13 +186,13 @@ jobs:
           tags: |
             ${{ steps.tags.outputs.execution_plane_tag }}
             ${{ steps.acr.outputs.acr_login_server }}/execution-plane:latest
-          cache-from: type=registry,ref=${{ steps.acr.outputs.acr_login_server }}/execution-plane:cache
+          # Note: cache-from removed for first build, add back after first successful build
           cache-to: type=registry,ref=${{ steps.acr.outputs.acr_login_server }}/execution-plane:cache,mode=max
 
       # -----------------------------------------------------------------------
       # 8. DEPLOY CONTROL PLANE TO CONTAINER APPS
       # -----------------------------------------------------------------------
-      - name: "🚀 Deploy Control Plane"
+      - name: "Deploy Control Plane"
         uses: azure/container-apps-deploy-action@v1
         with:
           resourceGroup: ${{ env.AZURE_RESOURCE_GROUP }}
@@ -219,7 +219,7 @@ jobs:
       # -----------------------------------------------------------------------
       # 9. SET CONTROL PLANE SECRETS
       # -----------------------------------------------------------------------
-      - name: "🔒 Set Control Plane Secrets"
+      - name: "Set Control Plane Secrets"
         run: |
           az containerapp secret set \
             --name ${{ env.CONTROL_PLANE_APP_NAME }} \
@@ -237,7 +237,7 @@ jobs:
       # -----------------------------------------------------------------------
       # 10. DEPLOY EXECUTION PLANE TO CONTAINER APPS
       # -----------------------------------------------------------------------
-      - name: "🚀 Deploy Execution Plane"
+      - name: "Deploy Execution Plane"
         uses: azure/container-apps-deploy-action@v1
         with:
           resourceGroup: ${{ env.AZURE_RESOURCE_GROUP }}
@@ -263,7 +263,7 @@ jobs:
       # -----------------------------------------------------------------------
       # 11. SET EXECUTION PLANE SECRETS
       # -----------------------------------------------------------------------
-      - name: "🔒 Set Execution Plane Secrets"
+      - name: "Set Execution Plane Secrets"
         run: |
           az containerapp secret set \
             --name ${{ env.EXECUTION_PLANE_APP_NAME }} \
@@ -282,7 +282,7 @@ jobs:
       # -----------------------------------------------------------------------
       # 12. VERIFY DEPLOYMENT
       # -----------------------------------------------------------------------
-      - name: "✅ Verify Deployment"
+      - name: "Verify Deployment"
         run: |
           echo "🔍 Checking Control Plane status..."
           CONTROL_PLANE_URL=$(az containerapp show \
@@ -290,7 +290,7 @@ jobs:
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --query "properties.configuration.ingress.fqdn" -o tsv)
 
-          echo "🌐 Control Plane URL: https://$CONTROL_PLANE_URL"
+          echo "Control Plane URL: https://$CONTROL_PLANE_URL"
 
           # Wait for the app to be ready
           sleep 30
@@ -299,16 +299,16 @@ jobs:
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://$CONTROL_PLANE_URL/health/live" || echo "000")
 
           if [ "$HTTP_STATUS" == "200" ]; then
-            echo "✅ Control Plane is healthy!"
+            echo "Control Plane is healthy!"
           else
-            echo "⚠️ Control Plane health check returned: $HTTP_STATUS"
+            echo "Control Plane health check returned: $HTTP_STATUS"
             echo "Please check logs: az containerapp logs show --name ${{ env.CONTROL_PLANE_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }}"
           fi
 
       # -----------------------------------------------------------------------
       # 13. DEPLOYMENT SUMMARY
       # -----------------------------------------------------------------------
-      - name: "📊 Deployment Summary"
+      - name: "Deployment Summary"
         run: |
           CONTROL_PLANE_URL=$(az containerapp show \
             --name ${{ env.CONTROL_PLANE_APP_NAME }} \
@@ -316,19 +316,19 @@ jobs:
             --query "properties.configuration.ingress.fqdn" -o tsv)
 
           echo "=============================================="
-          echo "🎉 DEPLOYMENT COMPLETE"
+          echo "DEPLOYMENT COMPLETE"
           echo "=============================================="
           echo ""
-          echo "📦 Images Deployed:"
+          echo "Images Deployed:"
           echo "   - control-plane:${{ steps.tags.outputs.short_sha }}"
           echo "   - execution-plane:${{ steps.tags.outputs.short_sha }}"
           echo ""
-          echo "🌐 Endpoints:"
+          echo "Endpoints:"
           echo "   - API: https://$CONTROL_PLANE_URL"
           echo "   - Health: https://$CONTROL_PLANE_URL/health"
           echo "   - WebSocket: wss://$CONTROL_PLANE_URL/ws"
           echo "   - Metrics: https://$CONTROL_PLANE_URL/metrics"
           echo ""
-          echo "📝 Commit: ${{ github.sha }}"
-          echo "👤 Triggered by: ${{ github.actor }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Triggered by: ${{ github.actor }}"
           echo "=============================================="

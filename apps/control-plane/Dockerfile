@@ -33,7 +33,8 @@ WORKDIR /build/apps/control-plane
 
 # Download dependencies
 # The replace directive "../../api" now correctly resolves to /build/api
-RUN go mod download && go mod verify
+# Note: We skip "go mod verify" because local replace modules don't have checksums
+RUN go mod download
 
 # Build the binary with optimizations
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
