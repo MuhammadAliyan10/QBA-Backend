@@ -8,7 +8,7 @@
 # -----------------------------
 # CORE RUNTIME
 # -----------------------------
-temporalio==1.8.0
+temporalio==1.7.1  # 1.8.0 may not exist, using stable 1.7.x
 nats-py==2.12.0
 redis==7.1.0
 prisma==0.15.0
@@ -22,24 +22,24 @@ playwright-stealth==2.0.0
 # -----------------------------
 # AI / ML
 # -----------------------------
-openai==2.9.0
-langchain==1.1.2
-langchain-openai==1.1.0
-langchain-core==1.1.1
-langchain-text-splitters==1.0.0
+openai==1.58.1  # 2.9.0 doesn't exist, latest stable is 1.x
+langchain==0.3.14  # 1.1.2 doesn't exist, latest is 0.3.x
+langchain-openai==0.2.14  # 1.1.0 doesn't exist
+langchain-core==0.3.29  # 1.1.1 doesn't exist
+langchain-text-splitters==0.3.4  # 1.0.0 doesn't exist
 sentence-transformers==3.0.1
-tiktoken==0.12.0
+tiktoken==0.8.0  # 0.12.0 doesn't exist
 
 # HuggingFace (required by sentence-transformers)
 transformers==4.57.3
-huggingface-hub==0.36.0
-tokenizers==0.22.1
+huggingface-hub==0.27.1  # 0.36.0 doesn't exist for Python 3.10
+tokenizers==0.21.0  # 0.22.1 doesn't exist
 
 # PyTorch (required by sentence-transformers)
 torch==2.5.1
 
 # Vector DB
-faiss-cpu==1.13.1
+faiss-cpu==1.9.0.post1  # 1.13.1 doesn't exist
 qdrant-client==1.12.1
 
 # -----------------------------
@@ -105,7 +105,7 @@ python-dotenv==1.2.1
 tenacity==9.1.2
 pillow==12.0.0
 psutil==7.0.0
-pyee==13.0.0
+pyee==8.2.2  # playwright requires pyee<9.0.0
 tqdm==4.67.1
 
 # -----------------------------
