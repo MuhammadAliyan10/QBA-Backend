@@ -34,8 +34,8 @@ COPY apps/execution-plane/requirements.txt .
 # Install Python dependencies to user site-packages
 RUN pip install --user --no-cache-dir -r requirements.txt
 
-# Install Playwright browsers (Chromium only for smaller image)
-RUN python -m playwright install --with-deps chromium
+# Install Playwright browsers (Chromium only, skip deps - they're already in runtime stage)
+RUN python -m playwright install chromium
 
 # ==================================================
 # Stage 2: Production Runtime
