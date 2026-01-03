@@ -14,22 +14,25 @@
 # ==================================================
 FROM golang:1.24-alpine AS builder
 
-# Set workspace root (monorepo-aware)
-WORKDIR /workspace
-
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
 
-# Copy the api folder first (shared proto gen files)
-COPY api/ ./api/
+# Create the EXACT same folder structure as the monorepo
+# so that "replace => ../../api" works correctly
+WORKDIR /build
+
+# Copy the api folder to the correct relative location
+# From apps/control-plane, ../../api points to /build/api
+COPY api/ /build/api/
 
 # Copy the control-plane app
-COPY apps/control-plane/ ./apps/control-plane/
+COPY apps/control-plane/ /build/apps/control-plane/
 
 # Change to app directory for go mod operations
-WORKDIR /workspace/apps/control-plane
+WORKDIR /build/apps/control-plane
 
-# Download dependencies (go.mod uses replace => ../../api)
+# Download dependencies
+# The replace directive "../../api" now correctly resolves to /build/api
 RUN go mod download && go mod verify
 
 # Build the binary with optimizations
@@ -57,7 +60,7 @@ RUN apk --no-cache add \
     tzdata
 
 # Copy binary from builder
-COPY --from=builder /workspace/apps/control-plane/server .
+COPY --from=builder /build/apps/control-plane/server .
 
 # Set ownership
 RUN chown -R quanta:quanta /app
