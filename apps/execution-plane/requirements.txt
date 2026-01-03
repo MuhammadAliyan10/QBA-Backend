@@ -45,7 +45,7 @@ qdrant-client==1.12.1
 # -----------------------------
 # DATA PROCESSING
 # -----------------------------
-numpy==2.3.5
+numpy==1.26.4
 Levenshtein==0.27.3
 python-Levenshtein==0.27.3
 RapidFuzz==3.14.3

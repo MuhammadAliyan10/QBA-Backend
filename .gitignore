@@ -115,5 +115,5 @@ qdrant_data/
 *.sqlite3
 patterns.db
 security-report.json
-backend/infra/terraform.tfvars
+infra/terraform.tfvars
 
