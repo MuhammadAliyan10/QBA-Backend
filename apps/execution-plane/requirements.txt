@@ -27,7 +27,7 @@ langchain==1.1.2
 langchain-openai==1.1.0
 langchain-core==1.1.1
 langchain-text-splitters==1.0.0
-sentence-transformers==3.3.1.0
+sentence-transformers==3.0.1
 tiktoken==0.12.0
 
 # HuggingFace (required by sentence-transformers)
@@ -155,8 +155,8 @@ python-dateutil==2.9.0.post0
 pytz==2025.2
 regex==2025.11.3
 safetensors==0.7.0
-scikit-learn==1.7.2
-scipy==1.16.3
+scikit-learn==1.5.2
+scipy==1.11.4
 six==1.17.0
 sniffio==1.3.1
 symplaywright==1.49.1
