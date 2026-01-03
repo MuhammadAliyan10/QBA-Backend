@@ -16,7 +16,7 @@ prisma==0.15.0
 # -----------------------------
 # BROWSER AUTOMATION
 # -----------------------------
-playwright==1.56.0
+playwright==1.48.0
 playwright-stealth==2.0.0
 
 # -----------------------------
@@ -36,7 +36,7 @@ huggingface-hub==0.36.0
 tokenizers==0.22.1
 
 # PyTorch (required by sentence-transformers)
-torch==2.9.1
+torch==2.5.1
 
 # Vector DB
 faiss-cpu==1.13.1
@@ -113,7 +113,7 @@ tqdm==4.67.1
 # -----------------------------
 grpcio==1.76.0
 grpcio-tools==1.76.0
-protobuf==6.33.1
+protobuf==5.28.3
 googleapis-common-protos==1.72.0
 
 # -----------------------------
@@ -146,7 +146,7 @@ marshmallow==3.26.1
 mpmath==1.3.0
 multidict==6.7.0
 mypy_extensions==1.1.0
-networkx==3.6
+networkx==3.4.2
 packaging==25.0
 propcache==0.4.1
 pycparser==2.23
