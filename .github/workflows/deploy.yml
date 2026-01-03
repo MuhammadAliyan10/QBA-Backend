@@ -205,7 +205,25 @@ jobs:
           cache-to: type=registry,ref=${{ steps.acr.outputs.acr_login_server }}/execution-plane:cache,mode=max
 
       # -----------------------------------------------------------------------
-      # 8. DEPLOY CONTROL PLANE TO CONTAINER APPS
+      # 8. SET CONTROL PLANE SECRETS (MUST be before deploy)
+      # -----------------------------------------------------------------------
+      - name: "Set Control Plane Secrets"
+        run: |
+          az containerapp secret set \
+            --name ${{ env.CONTROL_PLANE_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --secrets \
+              database-url="${{ secrets.PROD_DATABASE_URL }}" \
+              nats-url="${{ secrets.PROD_NATS_URL }}" \
+              redis-url="${{ secrets.PROD_REDIS_URL }}" \
+              temporal-host="${{ secrets.PROD_TEMPORAL_HOST }}" \
+              clerk-publishable-key="${{ secrets.CLERK_PUBLISHABLE_KEY }}" \
+              clerk-secret-key="${{ secrets.CLERK_SECRET_KEY }}" \
+              polar-access-token="${{ secrets.POLAR_ACCESS_TOKEN }}" \
+              polar-webhook-secret="${{ secrets.POLAR_WEBHOOK_SECRET }}"
+
+      # -----------------------------------------------------------------------
+      # 9. DEPLOY CONTROL PLANE TO CONTAINER APPS
       # -----------------------------------------------------------------------
       - name: "Deploy Control Plane"
         uses: azure/container-apps-deploy-action@v1
@@ -232,25 +250,26 @@ jobs:
             PORT_GO_API=8080
 
       # -----------------------------------------------------------------------
-      # 9. SET CONTROL PLANE SECRETS
+      # 10. SET EXECUTION PLANE SECRETS (MUST be before deploy)
       # -----------------------------------------------------------------------
-      - name: "Set Control Plane Secrets"
+      - name: "Set Execution Plane Secrets"
         run: |
           az containerapp secret set \
-            --name ${{ env.CONTROL_PLANE_APP_NAME }} \
+            --name ${{ env.EXECUTION_PLANE_APP_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --secrets \
               database-url="${{ secrets.PROD_DATABASE_URL }}" \
               nats-url="${{ secrets.PROD_NATS_URL }}" \
-              redis-url="${{ secrets.PROD_REDIS_URL }}" \
               temporal-host="${{ secrets.PROD_TEMPORAL_HOST }}" \
-              clerk-publishable-key="${{ secrets.CLERK_PUBLISHABLE_KEY }}" \
-              clerk-secret-key="${{ secrets.CLERK_SECRET_KEY }}" \
-              polar-access-token="${{ secrets.POLAR_ACCESS_TOKEN }}" \
-              polar-webhook-secret="${{ secrets.POLAR_WEBHOOK_SECRET }}"
+              openai-api-key="${{ secrets.OPENAI_API_KEY }}" \
+              r2-bucket-name="${{ secrets.R2_BUCKET_NAME }}" \
+              r2-endpoint-url="${{ secrets.R2_ENDPOINT_URL }}" \
+              r2-access-key-id="${{ secrets.R2_ACCESS_KEY_ID }}" \
+              r2-secret-access-key="${{ secrets.R2_SECRET_ACCESS_KEY }}" \
+              fernet-key="${{ secrets.FERNET_KEY }}"
 
       # -----------------------------------------------------------------------
-      # 10. DEPLOY EXECUTION PLANE TO CONTAINER APPS
+      # 11. DEPLOY EXECUTION PLANE TO CONTAINER APPS
       # -----------------------------------------------------------------------
       - name: "Deploy Execution Plane"
         uses: azure/container-apps-deploy-action@v1
@@ -274,25 +293,6 @@ jobs:
             AWS_ACCESS_KEY_ID=secretref:r2-access-key-id
             AWS_SECRET_ACCESS_KEY=secretref:r2-secret-access-key
             FERNET_KEY=secretref:fernet-key
-
-      # -----------------------------------------------------------------------
-      # 11. SET EXECUTION PLANE SECRETS
-      # -----------------------------------------------------------------------
-      - name: "Set Execution Plane Secrets"
-        run: |
-          az containerapp secret set \
-            --name ${{ env.EXECUTION_PLANE_APP_NAME }} \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --secrets \
-              database-url="${{ secrets.PROD_DATABASE_URL }}" \
-              nats-url="${{ secrets.PROD_NATS_URL }}" \
-              temporal-host="${{ secrets.PROD_TEMPORAL_HOST }}" \
-              openai-api-key="${{ secrets.OPENAI_API_KEY }}" \
-              r2-bucket-name="${{ secrets.R2_BUCKET_NAME }}" \
-              r2-endpoint-url="${{ secrets.R2_ENDPOINT_URL }}" \
-              r2-access-key-id="${{ secrets.R2_ACCESS_KEY_ID }}" \
-              r2-secret-access-key="${{ secrets.R2_SECRET_ACCESS_KEY }}" \
-              fernet-key="${{ secrets.FERNET_KEY }}"
 
       # -----------------------------------------------------------------------
       # 12. VERIFY DEPLOYMENT
