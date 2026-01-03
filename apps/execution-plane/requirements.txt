@@ -121,7 +121,7 @@ googleapis-common-protos==1.72.0
 anyio==4.12.0
 aiohappyeyeballs==2.6.1
 aiosignal==1.4.0
-async-timeout==5.0.1
+async-timeout  # Let pip resolve compatible version
 frozenlist==1.8.0
 nest-asyncio==1.6.0
 
