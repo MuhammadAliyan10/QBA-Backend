@@ -107,6 +107,7 @@ func createTables() error {
         params JSONB DEFAULT '{}',
         result JSONB DEFAULT '{}',
         error_message TEXT,
+        run_id TEXT,
         created_at TIMESTAMP DEFAULT now(),
         updated_at TIMESTAMP DEFAULT now(),
         completed_at TIMESTAMP
@@ -116,6 +117,9 @@ func createTables() error {
     CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
     CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
     CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
+
+    -- MIGRATION: Ensure run_id exists for existing tables
+    ALTER TABLE jobs ADD COLUMN IF NOT EXISTS run_id TEXT;
 
     -- 4. SEED USER (For Local Dev only)
     INSERT INTO users (id, email, api_key)

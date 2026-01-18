@@ -231,7 +231,13 @@ func main() {
 
 	// 8. Setup Gin Router
 	r := gin.Default()
-	r.Use(cors.Default())
+
+	// CORS Configuration - Allow Authorization header
+	config := cors.DefaultConfig()
+	config.AllowAllOrigins = true
+	config.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type", "Authorization"}
+	config.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+	r.Use(cors.New(config))
 
 	// Add metrics middleware to track all requests
 	r.Use(func(c *gin.Context) {
@@ -258,7 +264,16 @@ func main() {
 
 	// --- [ENDPOINT 0] GENERATE WORKFLOW (AI) ---
 	generatorCtrl := controllers.NewGeneratorController()
-	r.POST("/api/v1/workflow/generate", generatorCtrl.HandleGenerate)
+	r.POST("/api/v1/workflow/generate", generatorCtrl.HandleGenerate)       // Async - returns job_id
+	r.POST("/api/v1/workflow/generate/sync", generatorCtrl.HandleGenerateSync) // Sync - waits for result
+
+	// --- [ENDPOINT 0.5] WORKFLOW MANAGEMENT ---
+	workflowCtrl := controllers.NewWorkflowController()
+	r.POST("/api/v1/workflow/save", workflowCtrl.HandleSave)
+	r.POST("/api/v1/workflow/status", workflowCtrl.HandleStatus)
+	r.POST("/api/v1/workflow/execute", workflowCtrl.HandleExecute)
+	r.DELETE("/api/v1/workflow/:id", workflowCtrl.HandleDelete)
+	r.GET("/v1/jobs", workflowCtrl.HandleListJobs)
 
 	// --- [ENDPOINT 1] START AUTOMATION JOB ---
 	// Create protected route group with rate limiting

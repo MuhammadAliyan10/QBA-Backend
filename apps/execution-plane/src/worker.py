@@ -16,8 +16,13 @@ from temporalio.contrib.opentelemetry import TracingInterceptor
 from dotenv import load_dotenv
 
 # Import Business Logic
-from workflows import BrowserWorkflow
+from workflows import BrowserWorkflow, GenerateWorkflowRecipe
 from activities.activities import browser_automation_activity
+from activities.discoveryActivities import (
+    plan_recipe_from_prompt,
+    discover_element_activity,
+    generate_react_flow_node
+)
 from telemetry import init_telemetry, shutdown_telemetry
 
 # --- 2. LOGGING ---
@@ -51,8 +56,17 @@ async def main():
         worker = Worker(
             client,
             task_queue=task_queue,
-            workflows=[BrowserWorkflow],
-            activities=[browser_automation_activity],
+            workflows=[
+                BrowserWorkflow,
+                GenerateWorkflowRecipe  # NEW: Verified workflow generation
+            ],
+            activities=[
+                browser_automation_activity,
+                # NEW: Discovery activities for verified generation
+                plan_recipe_from_prompt,
+                discover_element_activity,
+                generate_react_flow_node
+            ],
             # CRITICAL: Allow enough time for Browser to close gracefully
             graceful_shutdown_timeout=timedelta(seconds=15)
         )

@@ -28,13 +28,13 @@ from core.recipe.recipeEngine import (
 from core.recipe.recipeValidator import RecipeValidator
 
 from core.recipe.recipeSchema import (
-    RecipeModel,
-    NodeModel,
-    EdgeModel,
-    ActionModel,
-    ConditionModel,
-    MetadataModel,
-    ExecutionConfigModel,
+    Recipe as RecipeModel,
+    Node as NodeModel,
+    Edge as EdgeModel,
+    Action as ActionModel,
+    Condition as ConditionModel,
+    RecipeMetadata as MetadataModel,
+    ExecutionConfig as ExecutionConfigModel,
 )
 
 __all__ = [

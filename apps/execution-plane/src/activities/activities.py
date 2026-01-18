@@ -25,7 +25,7 @@ from core.storage import get_storage, is_storage_available, StorageUploadError
 from core.NervousSystem import NervousSystem
 
 # 2. The Glass Box Engine (Camel Case - Logic)
-from core.SmartFinder import SmartFinder
+from core.selector.smartFinder import SmartFinder
 
 # 3. The Network Sniffer (Level 5 - Protocol Reverse Engineering)
 from core.NetworkSniffer import NetworkSniffer
@@ -34,7 +34,7 @@ from core.NetworkSniffer import NetworkSniffer
 from core.AccountManager import AccountManager
 
 # 5. The Recipe Manager (Dynamic RAG)
-from core.RecipeManager import RecipeManager
+from core.recipe.recipeManager import RecipeManager
 
 # 6. User-Facing Logger (The Voice of the Glass Box)
 from core.UserFacingLogger import UserFriendlyLogger

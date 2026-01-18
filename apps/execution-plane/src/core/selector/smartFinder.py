@@ -147,6 +147,24 @@ class QdrantVectorDB:
                     api_key=self.api_key,
                     timeout=5.0  # Fast timeout for element finding
                 )
+
+                # Check if collection exists, create if not
+                try:
+                    collections = self._client.get_collections().collections
+                    exists = any(c.name == self.collection_name for c in collections)
+
+                    if not exists:
+                        logger.info(f"[VectorDB] Creating collection '{self.collection_name}'")
+                        self._client.create_collection(
+                            collection_name=self.collection_name,
+                            vectors_config=models.VectorParams(
+                                size=384,  # all-MiniLM-L6-v2 dimension
+                                distance=models.Distance.COSINE
+                            )
+                        )
+                except Exception as e:
+                    logger.warning(f"[VectorDB] Failed to ensure collection exists: {e}")
+
                 self._initialized = True
                 logger.info(f"[VectorDB] Connected to Qdrant at {self.url}")
             except ImportError:
