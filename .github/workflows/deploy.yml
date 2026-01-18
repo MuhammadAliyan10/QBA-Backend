@@ -205,7 +205,50 @@ jobs:
           cache-to: type=registry,ref=${{ steps.acr.outputs.acr_login_server }}/execution-plane:cache,mode=max
 
       # -----------------------------------------------------------------------
-      # 8. SET CONTROL PLANE SECRETS (MUST be before deploy)
+      # 8. CREATE CONTAINER APPS IF NOT EXISTS (First-time deployment)
+      # -----------------------------------------------------------------------
+      - name: "Create Container Apps (if not exists)"
+        run: |
+          echo "Checking if container apps exist..."
+
+          # Check and create Control Plane
+          if ! az containerapp show --name ${{ env.CONTROL_PLANE_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} > /dev/null 2>&1; then
+            echo "Creating control-plane container app..."
+            az containerapp create \
+              --name ${{ env.CONTROL_PLANE_APP_NAME }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --environment ${{ env.CONTAINER_APP_ENVIRONMENT }} \
+              --image ${{ steps.tags.outputs.control_plane_tag }} \
+              --target-port 8080 \
+              --ingress external \
+              --registry-server ${{ steps.acr.outputs.acr_login_server }} \
+              --registry-username ${{ steps.acr.outputs.acr_username }} \
+              --registry-password ${{ steps.acr.outputs.acr_password }} \
+              --min-replicas 0 \
+              --max-replicas 1
+          else
+            echo "control-plane already exists"
+          fi
+
+          # Check and create Execution Plane
+          if ! az containerapp show --name ${{ env.EXECUTION_PLANE_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} > /dev/null 2>&1; then
+            echo "Creating execution-plane container app..."
+            az containerapp create \
+              --name ${{ env.EXECUTION_PLANE_APP_NAME }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --environment ${{ env.CONTAINER_APP_ENVIRONMENT }} \
+              --image ${{ steps.tags.outputs.execution_plane_tag }} \
+              --registry-server ${{ steps.acr.outputs.acr_login_server }} \
+              --registry-username ${{ steps.acr.outputs.acr_username }} \
+              --registry-password ${{ steps.acr.outputs.acr_password }} \
+              --min-replicas 0 \
+              --max-replicas 1
+          else
+            echo "execution-plane already exists"
+          fi
+
+      # -----------------------------------------------------------------------
+      # 9. SET CONTROL PLANE SECRETS
       # -----------------------------------------------------------------------
       - name: "Set Control Plane Secrets"
         run: |

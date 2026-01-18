@@ -13,6 +13,7 @@ import (
 	"time"
 
 	// 1. Internal Modules
+	"e2e-platform/apps/control-plane/internal/controllers"
 	"e2e-platform/apps/control-plane/internal/db"
 	"e2e-platform/apps/control-plane/internal/health"
 	"e2e-platform/apps/control-plane/internal/metrics"
@@ -254,6 +255,10 @@ func main() {
 	r.GET("/ws", func(c *gin.Context) {
 		wsManager.HandleRequest(c)
 	})
+
+	// --- [ENDPOINT 0] GENERATE WORKFLOW (AI) ---
+	generatorCtrl := controllers.NewGeneratorController()
+	r.POST("/api/v1/workflow/generate", generatorCtrl.HandleGenerate)
 
 	// --- [ENDPOINT 1] START AUTOMATION JOB ---
 	// Create protected route group with rate limiting
