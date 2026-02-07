@@ -153,10 +153,11 @@ def compute_simhash(
         features.append(("class", cls.lower(), 1))
 
     # Key attributes (weight: 2) - Most reliable identifiers
-    for attr_name in ["id", "name", "placeholder", "aria-label", "data-testid"]:
+    # AUDIT FIX: Expanded attribute list for better identity resolution
+    for attr_name in ["id", "name", "placeholder", "aria-label", "data-testid", "href", "src", "alt", "title", "value", "type"]:
         if attr_name in attributes:
             value = str(attributes[attr_name]).lower().strip()
-            if value and len(value) < 100:  # Avoid huge values
+            if value and len(value) < 200:  # Increased limit slightly for URLs
                 features.append(("attr", f"{attr_name}={value}", 2))
 
     # Compute weighted hash vector
@@ -416,9 +417,9 @@ def hybrid_similarity(s1: str, s2: str, weights: dict = None) -> float:
         Weighted similarity score (0.0 - 1.0)
     """
     weights = weights or {
-        "levenshtein": 0.4,
+        "levenshtein": 0.2,
         "ngram": 0.3,
-        "word_overlap": 0.3
+        "word_overlap": 0.5
     }
 
     lev = levenshtein_ratio(s1, s2)
@@ -426,9 +427,9 @@ def hybrid_similarity(s1: str, s2: str, weights: dict = None) -> float:
     word = word_overlap_ratio(s1, s2)
 
     score = (
-        weights.get("levenshtein", 0.4) * lev +
+        weights.get("levenshtein", 0.2) * lev +
         weights.get("ngram", 0.3) * ngram +
-        weights.get("word_overlap", 0.3) * word
+        weights.get("word_overlap", 0.5) * word
     )
 
     return round(score, 4)
@@ -452,8 +453,9 @@ def normalize_text(text: str) -> str:
     # Collapse whitespace
     text = re.sub(r'\s+', ' ', text)
 
-    # Remove non-alphanumeric except spaces
-    text = re.sub(r'[^\w\s]', '', text)
+    # Remove non-alphanumeric except spaces and important punctuation/currency
+    # AUDIT FIX: Preserving $, %, ., #, @ for data extraction
+    text = re.sub(r'[^\w\s$€£%.,#@\-\/]', '', text)
 
     return text.strip()
 

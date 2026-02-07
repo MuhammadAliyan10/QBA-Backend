@@ -461,18 +461,28 @@ class SmartFinder:
     """
 
     # AUDIT FIX: Performance limits
-    MAX_CANDIDATES = 100  # Cap element scanning to prevent freeze
+    MAX_CANDIDATES = 1000  # Cap element scanning to prevent freeze
     MAX_IFRAME_DEPTH = 3  # Limit iframe recursion
 
-    # Interactive element selectors - AUDIT FIX: Simplified for performance
-    INTERACTIVE_SELECTORS = [
-        "button:visible",
-        "a:visible",
-        "input:visible",
-        "select:visible",
-        "textarea:visible",
-        "[role='button']:visible",
-        "[role='link']:visible",
+    # Relevant element selectors - AUDIT FIX: Expanded to catch semantic & data tags
+    RELEVANT_SELECTORS = [
+        # Interactive
+        "button:visible", "a:visible", "input:visible", "select:visible", "textarea:visible",
+        "[role='button']:visible", "[role='link']:visible", "[onclick]:visible",
+        "div[class*='btn']:visible", "div[class*='button']:visible",
+        "span[class*='btn']:visible", "span[class*='button']:visible",
+
+        # Semantic / Content
+        "h1:visible", "h2:visible", "h3:visible", "h4:visible", "h5:visible", "h6:visible",
+        "p:visible", "article:visible", "section:visible", "label:visible",
+
+        # Data / Structure
+        "table:visible", "tr:visible", "td:visible", "th:visible",
+        "ul:visible", "ol:visible", "li:visible",
+        "[data-testid]:visible", "[data-cy]:visible", "[data-qa]:visible",
+
+        # Visual
+        "img:visible", "svg:visible",
     ]
 
     # Shadow DOM piercing selectors (Playwright >>> combinator)
@@ -506,6 +516,17 @@ class SmartFinder:
         self.vector_db = vector_db or MockVectorDB()
         self.ai_agent = ai_agent or MockAIAgent()
 
+        # Heuristic Intent Map (Synonyms)
+        self.INTENT_SYNONYMS = {
+            "buy": ["add to cart", "checkout", "purchase", "order", "subscribe"],
+            "login": ["sign in", "log in", "next", "continue", "submit", "auth"],
+            "register": ["sign up", "join", "create account", "start"],
+            "search": ["find", "query", "lookup"],
+            "delete": ["remove", "trash", "cancel", "clear"],
+            "edit": ["change", "update", "modify"],
+            "save": ["submit", "apply", "confirm", "done"],
+        }
+
         # Cache for element signatures (avoid recomputing)
         self._signature_cache: Dict[str, Dict] = {}
 
@@ -513,17 +534,21 @@ class SmartFinder:
         self,
         intent: str,
         metadata: Optional[Dict] = None,
-        container_selector: Optional[str] = None
+        container_selector: Optional[str] = None,
+        scan_mode: str = "auto",  # "interactive", "all", or "auto"
+        timeout: int = 3000,      # NEW: Timeout in ms
+        interval: int = 500       # NEW: Polling interval in ms
     ) -> FindResult:
         """
-        Find an element using the 4-layer fallback system.
-
-        AUDIT FIX: Added container_selector for contextual scoping.
+        Find an element using the 4-layer fallback system with Smart Wait.
 
         Args:
             intent: Natural language description (e.g., "Login Button")
             metadata: Optional metadata with 'simhash' for Layer 1
-            container_selector: Optional CSS selector to scope search (e.g., ".login-modal")
+            container_selector: Optional CSS selector to scope search
+            scan_mode: "interactive" (faster) or "all" (deeper)
+            timeout: Max time to wait for element (ms)
+            interval: Time between retries (ms)
 
         Returns:
             FindResult with element, layer used, and healing info
@@ -531,86 +556,112 @@ class SmartFinder:
         metadata = metadata or {}
         start_time = time.time()
 
+        # AUDIT FIX: Adaptive Scan Mode
+        if scan_mode == "auto":
+            # Switch to "all" if intent implies data extraction
+            extraction_keywords = ["read", "get", "verify", "extract", "check", "text", "price", "status"]
+            if any(k in intent.lower() for k in extraction_keywords):
+                scan_mode = "all"
+            else:
+                scan_mode = "interactive"
+
         # Parse container hint from intent (e.g., "Login Button in the header")
         container_hint = self._parse_container_hint(intent)
         if container_hint and not container_selector:
             container_selector = container_hint
 
-        logger.info(f"[SmartFinder] Searching for: '{intent}'" +
+        logger.info(f"[SmartFinder] Searching for: '{intent}' (mode: {scan_mode}, timeout: {timeout}ms)" +
                     (f" in container: {container_selector}" if container_selector else ""))
 
-        # =====================================================================
-        # LAYER 1: REFLEX (SimHash Matching) - <10ms
-        # =====================================================================
-        if metadata.get("simhash"):
-            logger.debug("[Layer 1] REFLEX: Checking SimHash fingerprint...")
-            layer1_start = time.time()
+        # SMART WAIT LOOP
+        iteration = 0
+        while (time.time() - start_time) * 1000 < timeout:
+            iteration += 1
+            if iteration > 1:
+                logger.debug(f"[SmartFinder] ⏳ Retry #{iteration} for '{intent}'...")
+
+            # =====================================================================
+            # LAYER 1: REFLEX (SimHash Matching) - <10ms
+            # =====================================================================
+            if metadata.get("simhash"):
+                logger.debug("[Layer 1] REFLEX: Checking SimHash fingerprint...")
+                layer1_start = time.time()
+
+                try:
+                    result = await self._layer1_reflex(intent, metadata["simhash"], container_selector)
+                    if result.found:
+                        result.duration_ms = int((time.time() - start_time) * 1000)
+                        logger.info(
+                            f"[Layer 1] ✅ REFLEX HIT in {time.time() - layer1_start:.3f}s "
+                            f"(confidence: {result.confidence:.2f})"
+                        )
+                        return result
+                    else:
+                        logger.info("[Layer 1] ❌ REFLEX MISS: SimHash not found, falling back...")
+                except Exception as e:
+                    logger.warning(f"[Layer 1] ⚠️ REFLEX ERROR: {e}")
+            else:
+                logger.debug("[Layer 1] SKIPPED: No SimHash in metadata")
+
+            # =====================================================================
+            # LAYER 2: HEURISTIC (Levenshtein Matching) - ~50ms
+            # =====================================================================
+            logger.debug("[Layer 2] HEURISTIC: Scanning interactive elements...")
+            layer2_start = time.time()
 
             try:
-                result = await self._layer1_reflex(intent, metadata["simhash"], container_selector)
+                result = await self._layer2_heuristic(intent, container_selector)
                 if result.found:
+                    # Self-healing: Compute new signature for the found element
+                    result.new_signature = await self._compute_element_signature(result.element)
                     result.duration_ms = int((time.time() - start_time) * 1000)
                     logger.info(
-                        f"[Layer 1] ✅ REFLEX HIT in {time.time() - layer1_start:.3f}s "
+                        f"[Layer 2] ✅ HEURISTIC HIT in {time.time() - layer2_start:.3f}s "
+                        f"(score: {result.confidence:.2f}, checked: {result.candidates_checked})"
+                    )
+                    return result
+                else:
+                    logger.info(
+                        f"[Layer 2] ❌ HEURISTIC MISS: No match > {self.LAYER2_THRESHOLD} "
+                        f"(checked: {result.candidates_checked})"
+                    )
+            except Exception as e:
+                logger.warning(f"[Layer 2] ⚠️ HEURISTIC ERROR: {e}")
+
+            # =====================================================================
+            # LAYER 3: SEMANTIC (Vector DB) - ~200ms
+            # =====================================================================
+            logger.debug("[Layer 3] SEMANTIC: Querying vector database...")
+            layer3_start = time.time()
+
+            try:
+                result = await self._layer3_semantic(intent)
+                if result.found:
+                    result.new_signature = await self._compute_element_signature(result.element)
+                    result.duration_ms = int((time.time() - start_time) * 1000)
+                    logger.info(
+                        f"[Layer 3] ✅ SEMANTIC HIT in {time.time() - layer3_start:.3f}s "
                         f"(confidence: {result.confidence:.2f})"
                     )
                     return result
                 else:
-                    logger.info("[Layer 1] ❌ REFLEX MISS: SimHash not found, falling back...")
+                    logger.info("[Layer 3] ❌ SEMANTIC MISS: No vector match found")
             except Exception as e:
-                logger.warning(f"[Layer 1] ⚠️ REFLEX ERROR: {e}")
-        else:
-            logger.debug("[Layer 1] SKIPPED: No SimHash in metadata")
+                logger.warning(f"[Layer 3] ⚠️ SEMANTIC ERROR: {e}")
 
-        # =====================================================================
-        # LAYER 2: HEURISTIC (Levenshtein Matching) - ~50ms
-        # =====================================================================
-        logger.debug("[Layer 2] HEURISTIC: Scanning interactive elements...")
-        layer2_start = time.time()
-
-        try:
-            result = await self._layer2_heuristic(intent, container_selector)
-            if result.found:
-                # Self-healing: Compute new signature for the found element
-                result.new_signature = await self._compute_element_signature(result.element)
-                result.duration_ms = int((time.time() - start_time) * 1000)
-                logger.info(
-                    f"[Layer 2] ✅ HEURISTIC HIT in {time.time() - layer2_start:.3f}s "
-                    f"(score: {result.confidence:.2f}, checked: {result.candidates_checked})"
-                )
-                return result
+            # WAIT BEFORE RETRY
+            elapsed = (time.time() - start_time) * 1000
+            remaining = timeout - elapsed
+            if remaining > 100:  # Only sleep if meaningful time left
+                sleep_time = min(interval, remaining) / 1000
+                await asyncio.sleep(sleep_time)
             else:
-                logger.info(
-                    f"[Layer 2] ❌ HEURISTIC MISS: No match > {self.LAYER2_THRESHOLD} "
-                    f"(checked: {result.candidates_checked})"
-                )
-        except Exception as e:
-            logger.warning(f"[Layer 2] ⚠️ HEURISTIC ERROR: {e}")
+                break
 
         # =====================================================================
-        # LAYER 3: SEMANTIC (Vector DB) - ~200ms
+        # LAYER 4: COGNITIVE (AI Recovery) - Slow (Run ONLY after timeout)
         # =====================================================================
-        logger.debug("[Layer 3] SEMANTIC: Querying vector database...")
-        layer3_start = time.time()
-
-        try:
-            result = await self._layer3_semantic(intent)
-            if result.found:
-                result.new_signature = await self._compute_element_signature(result.element)
-                result.duration_ms = int((time.time() - start_time) * 1000)
-                logger.info(
-                    f"[Layer 3] ✅ SEMANTIC HIT in {time.time() - layer3_start:.3f}s "
-                    f"(confidence: {result.confidence:.2f})"
-                )
-                return result
-            else:
-                logger.info("[Layer 3] ❌ SEMANTIC MISS: No vector match found")
-        except Exception as e:
-            logger.warning(f"[Layer 3] ⚠️ SEMANTIC ERROR: {e}")
-
-        # =====================================================================
-        # LAYER 4: COGNITIVE (AI Recovery) - Slow
-        # =====================================================================
+        logger.info(f"[SmartFinder] ⚠️ Timeout ({timeout}ms) reached. Invoking AI recovery...")
         logger.debug("[Layer 4] COGNITIVE: Invoking AI agent...")
         layer4_start = time.time()
 
@@ -678,15 +729,16 @@ class SmartFinder:
         self,
         intent: str,
         target_simhash: str,
-        container_selector: Optional[str] = None
+        container_selector: Optional[str] = None,
+        scan_mode: str = "interactive"
     ) -> FindResult:
         """
         Layer 1: Find element by SimHash fingerprint.
-
-        This is the fastest path - if we've seen this element before
-        and computed its fingerprint, we can find it instantly.
         """
-        candidates = await self._get_interactive_elements(container_selector=container_selector)
+        candidates = await self._get_interactive_elements(
+            container_selector=container_selector,
+            scan_mode=scan_mode
+        )
 
         best_match: Optional[ElementCandidate] = None
         best_similarity = 0.0
@@ -728,23 +780,28 @@ class SmartFinder:
     async def _layer2_heuristic(
         self,
         intent: str,
-        container_selector: Optional[str] = None
+        container_selector: Optional[str] = None,
+        scan_mode: str = "interactive"
     ) -> FindResult:
         """
         Layer 2: Find element by fuzzy text matching.
-
-        Scans all interactive elements and compares their text/aria-label
-        against the intent using Levenshtein distance.
-
-        AUDIT FIX: Now accepts container_selector for contextual scoping.
         """
-        candidates = await self._get_interactive_elements(container_selector=container_selector)
+        candidates = await self._get_interactive_elements(
+            container_selector=container_selector,
+            scan_mode=scan_mode
+        )
 
         best_match: Optional[ElementCandidate] = None
         best_score = 0.0
 
         # Normalize intent for comparison
         intent_normalized = normalize_text(intent).lower()
+
+        # Check for synonyms
+        synonyms = []
+        for key, syn_list in self.INTENT_SYNONYMS.items():
+            if key in intent_normalized or intent_normalized in key:
+                synonyms.extend(syn_list)
 
         for candidate in candidates:
             # Compare against inner text
@@ -762,20 +819,42 @@ class SmartFinder:
             value = candidate.attributes.get("value", "")
             value_score = hybrid_similarity(intent_normalized, value.lower())
 
-            # Take best score across all attributes
+            # Take best base score
             candidate.score = max(text_score, aria_score, placeholder_score, value_score)
+
+            # SYNONYM BOOST: If text matches a synonym, boost score
+            if synonyms:
+                candidate_text = candidate.text.lower()
+                for syn in synonyms:
+                    if syn in candidate_text:
+                        candidate.score += 0.2
+                        break
+
+            # Cap score at 1.0
+            candidate.score = min(candidate.score, 1.0)
 
             if candidate.score > best_score:
                 best_score = candidate.score
                 best_match = candidate
 
-        # Check if best match exceeds threshold
+        # Check if best match exceeds strict threshold
         if best_match and best_score >= self.LAYER2_THRESHOLD:
             return FindResult(
                 element=best_match.handle,
                 layer=FinderLayer.HEURISTIC,
                 confidence=best_score,
                 candidates_checked=len(candidates)
+            )
+
+        # FALLBACK: Check for "Best Effort" match (> 0.65)
+        if best_match and best_score >= 0.65:
+            logger.info(f"[Layer 2] ⚠️ BEST EFFORT MATCH: {best_score:.2f} (threshold: {self.LAYER2_THRESHOLD})")
+            return FindResult(
+                element=best_match.handle,
+                layer=FinderLayer.HEURISTIC,
+                confidence=best_score,
+                candidates_checked=len(candidates),
+                error="Low confidence match (Best Effort)"
             )
 
         return FindResult(
@@ -865,27 +944,11 @@ class SmartFinder:
         container_selector: Optional[str] = None,
         include_shadow_dom: bool = True,
         include_iframes: bool = True,
-        iframe_depth: int = 0
+        iframe_depth: int = 0,
+        scan_mode: str = "interactive"
     ) -> List[ElementCandidate]:
         """
-        Get all interactive elements on the page.
-
-        AUDIT FIXES:
-        - MAX_CANDIDATES cap to prevent performance bomb
-        - Shadow DOM piercing via >>> combinator
-        - iFrame recursion (depth-limited)
-        - Container scoping for contextual search
-        - Early exit when limit reached
-        - Position index tracking for disambiguation
-
-        Args:
-            container_selector: Optional CSS selector to scope search
-            include_shadow_dom: Whether to pierce Shadow DOM
-            include_iframes: Whether to search in iframes
-            iframe_depth: Current iframe recursion depth
-
-        Returns:
-            List of ElementCandidate objects (max MAX_CANDIDATES)
+        Get relevant elements on the page.
         """
         candidates: List[ElementCandidate] = []
         position_index = 0
@@ -901,11 +964,18 @@ class SmartFinder:
             except:
                 pass  # Fall back to full page
 
-        # Build selector - use simpler visibility checks for performance
-        combined_selector = ", ".join([
-            "button", "a", "input", "select", "textarea",
-            "[role='button']", "[role='link']"
-        ])
+        # Build selector based on scan_mode
+        if scan_mode == "all":
+            # join all relevant selectors
+            combined_selector = ", ".join(self.RELEVANT_SELECTORS)
+        else:
+            # interactive mode (filter definition of 'interactive')
+            interactive_only = [
+                s for s in self.RELEVANT_SELECTORS
+                if not any(tag in s for tag in ["h1", "h2", "p", "table", "div", "span", "section", "article", "img"])
+                or "btn" in s or "button" in s or "onclick" in s
+            ]
+            combined_selector = ", ".join(interactive_only)
 
         try:
             # Query main page
@@ -993,7 +1063,12 @@ class SmartFinder:
 
             # Get text (avoid for input/select)
             text = ""
-            if tag not in ["input", "select"]:
+            if tag in ["input", "textarea"]:
+                # specific handling for input values
+                val = await element.get_attribute("value")
+                if val:
+                    text = val
+            elif tag != "select":
                 try:
                     text = await element.inner_text()
                 except:
@@ -1003,15 +1078,33 @@ class SmartFinder:
             class_str = await element.get_attribute("class") or ""
             classes = class_str.split() if class_str else []
 
-            # Get key attributes
+            # Get key attributes - AUDIT FIX: Blacklist approach to capture all useful data
             attributes = {"_position": str(position_index)}
-            for attr in ["id", "name", "aria-label", "placeholder", "value", "data-testid", "type"]:
-                try:
-                    val = await element.get_attribute(attr)
-                    if val:
-                        attributes[attr] = val
-                except:
-                    pass
+
+            # Attributes to EXCLUDE (noise)
+            ignored_attrs = {
+                "style", "class", "width", "height", "tabindex", "spellcheck",
+                "autocorrect", "autocapitalize", "action", "method"
+            }
+
+            # Get all attributes via JS evaluation (Playwright doesn't expose .attrs directly on handle)
+            all_attrs = await element.evaluate("""el => {
+                const attrs = {};
+                for (const attr of el.attributes) {
+                    attrs[attr.name] = attr.value;
+                }
+                return attrs;
+            }""")
+
+            for name, val in all_attrs.items():
+                name_lower = name.lower()
+                # Skip event handlers (on*) and ignored attributes
+                if name_lower.startswith("on") or name_lower in ignored_attrs or name_lower.startswith("min-") or name_lower.startswith("max-"):
+                    continue
+
+                attributes[name_lower] = val
+
+            return ElementCandidate(
 
             return ElementCandidate(
                 handle=element,
