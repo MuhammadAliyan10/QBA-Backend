@@ -251,9 +251,9 @@ func main() {
 
 	// Health Check Endpoints (For Azure Container Apps, Kubernetes, etc.)
 	healthHandler := health.NewHealthHandler(redisClient, nc)
-	r.GET("/health", healthHandler.HandleHealth)           // Full health check (DB, Redis, NATS)
-	r.GET("/health/live", healthHandler.HandleLiveness)     // Liveness probe (fast)
-	r.GET("/health/ready", healthHandler.HandleReadiness)   // Readiness probe (full)
+	r.Match([]string{"GET", "HEAD"}, "/health", healthHandler.HandleHealth)           // Full health check (DB, Redis, NATS)
+	r.Match([]string{"GET", "HEAD"}, "/health/live", healthHandler.HandleLiveness)     // Liveness probe (fast)
+	r.Match([]string{"GET", "HEAD"}, "/health/ready", healthHandler.HandleReadiness)   // Readiness probe (full)
 
 	// Prometheus metrics endpoint
 	r.GET("/metrics", gin.WrapH(promhttp.Handler()))

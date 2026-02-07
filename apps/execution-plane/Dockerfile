@@ -113,14 +113,14 @@ RUN /root/.local/bin/prisma generate --schema=prisma/schema.prisma
 COPY apps/execution-plane/src/ ./src/
 
 # Create directories for optional files
-RUN mkdir -p ./api/gen/python ./scripts
+RUN mkdir -p ./scripts
 
 # Copy config.py if it exists (use a RUN command with shell for optional copy)
 # Note: If config.py doesn't exist in the build context, this will be skipped
 RUN if [ -f ./apps/execution-plane/config.py ]; then cp ./apps/execution-plane/config.py ./config.py; fi || true
 
-# Copy proto gen files (optional - may not exist in all builds)
-COPY api/gen/python/ ./api/gen/python/
+# Copy the entire api folder to ensure __init__.py files are included
+COPY api/ ./api/
 
 # Copy sync script for debugging (optional)
 COPY scripts/ ./scripts/
@@ -129,8 +129,9 @@ COPY scripts/ ./scripts/
 # Environment Configuration
 # ==================================================
 
-# Add local bin to PATH
+# Add local bin to PATH and set PYTHONPATH so 'api' and 'src' can be found
 ENV PATH=/root/.local/bin:$PATH
+ENV PYTHONPATH=/app:/app/src
 
 # Python optimizations
 ENV PYTHONUNBUFFERED=1
