@@ -537,7 +537,8 @@ class SmartFinder:
         container_selector: Optional[str] = None,
         scan_mode: str = "auto",  # "interactive", "all", or "auto"
         timeout: int = 3000,      # NEW: Timeout in ms
-        interval: int = 500       # NEW: Polling interval in ms
+        interval: int = 500,      # NEW: Polling interval in ms
+        position: Optional[int] = None  # NEW: Index for list items (0=first, 1=second)
     ) -> FindResult:
         """
         Find an element using the 4-layer fallback system with Smart Wait.
@@ -610,7 +611,7 @@ class SmartFinder:
             layer2_start = time.time()
 
             try:
-                result = await self._layer2_heuristic(intent, container_selector)
+                result = await self._layer2_heuristic(intent, container_selector, position=position)
                 if result.found:
                     # Self-healing: Compute new signature for the found element
                     result.new_signature = await self._compute_element_signature(result.element)
@@ -781,7 +782,8 @@ class SmartFinder:
         self,
         intent: str,
         container_selector: Optional[str] = None,
-        scan_mode: str = "interactive"
+        scan_mode: str = "interactive",
+        position: Optional[int] = None
     ) -> FindResult:
         """
         Layer 2: Find element by fuzzy text matching.
@@ -830,12 +832,68 @@ class SmartFinder:
                         candidate.score += 0.2
                         break
 
+            # FUNCTIONAL KEYWORD BOOST: Boost if intent implies tag
+            # If intent says "Search Input" and element is <input>, boost +0.3
+            if "input" in intent_normalized and (candidate.tag == "input" or candidate.tag == "textarea"):
+                candidate.score += 0.3
+            elif "button" in intent_normalized and (candidate.tag == "button" or "btn" in candidate.classes):
+                candidate.score += 0.2
+            elif "link" in intent_normalized and candidate.tag == "a":
+                candidate.score += 0.2
+            elif "select" in intent_normalized and candidate.tag == "select":
+                candidate.score += 0.3
+
+            # LIST ITEM HEURISTICS: Boost content tags if intent implies list item
+            list_keywords = ["repository", "article", "item", "result", "post", "product"]
+            if any(k in intent_normalized for k in list_keywords):
+                if candidate.tag in ["h1", "h2", "h3", "h4", "h5", "a"]:
+                    candidate.score += 0.15
+
             # Cap score at 1.0
             candidate.score = min(candidate.score, 1.0)
 
             if candidate.score > best_score:
                 best_score = candidate.score
                 best_match = candidate
+
+        # ---------------------------------------------------------------------
+        # VISUAL SORT & POSITION SELECTION
+        # ---------------------------------------------------------------------
+        if position is not None:
+            # 1. Collect all "Loose Matches" (score > 0.4)
+            potential_matches = [c for c in candidates if c.score >= 0.4]
+
+            if potential_matches:
+                logger.debug(f"[Visual Sort] Found {len(potential_matches)} candidates for position {position}")
+
+                # 2. Enrich with Y-coordinates (Bounding Box)
+                enriched_matches = []
+                for pm in potential_matches[:20]: # Limit to top 20 to avoid slow async calls
+                    try:
+                        box = await pm.handle.bounding_box()
+                        if box:
+                            enriched_matches.append((pm, box['y'], box['x']))
+                    except:
+                        pass
+
+                # 3. Sort by Y (top-to-bottom), then X (left-to-right)
+                enriched_matches.sort(key=lambda item: (item[1], item[2]))
+
+                # 4. Select by index
+                try:
+                    selected_match, y, x = enriched_matches[position]
+                    logger.info(f"[Visual Sort] Selected item {position} at Y={y} (score: {selected_match.score:.2f})")
+                    return FindResult(
+                        element=selected_match.handle,
+                        layer=FinderLayer.HEURISTIC,
+                        confidence=selected_match.score, # Use original score
+                        candidates_checked=len(candidates)
+                    )
+                except IndexError:
+                    logger.warning(f"[Visual Sort] Position {position} out of range (found {len(enriched_matches)})")
+                    # Fallback to normal best match logic below
+
+        # Check if best match exceeds strict threshold
 
         # Check if best match exceeds strict threshold
         if best_match and best_score >= self.LAYER2_THRESHOLD:
@@ -1103,8 +1161,6 @@ class SmartFinder:
                     continue
 
                 attributes[name_lower] = val
-
-            return ElementCandidate(
 
             return ElementCandidate(
                 handle=element,

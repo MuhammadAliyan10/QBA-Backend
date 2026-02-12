@@ -2,7 +2,7 @@ services:
   # --- 1. THE NERVOUS SYSTEM (NATS JETSTREAM) ---
   nats:
     image: nats:latest
-    container_name: e2e_nats
+    container_name: quanta_nats
     restart: unless-stopped
     ports:
       - "4222:4222" # Client Port
@@ -14,7 +14,7 @@ services:
       # - ./config/nats.conf:/etc/nats/nats-server.conf
       - nats_data:/data
     networks:
-      - e2e-net
+      - quanta-net
     # healthcheck:
     #   test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/varz"]
     #   interval: 5s
@@ -24,13 +24,13 @@ services:
   # --- 2. THE ORCHESTRATOR (TEMPORAL) ---
   temporal:
     image: temporalio/auto-setup:latest
-    container_name: e2e_temporal
+    container_name: quanta_temporal
     restart: unless-stopped
     ports:
       - "7233:7233" # gRPC Port
     environment:
       - DB=postgres12
-      - POSTGRES_SEEDS=e2e_postgres
+      - POSTGRES_SEEDS=quanta_postgres
       - POSTGRES_USER=temporal
       - POSTGRES_PWD=temporal
       - POSTGRES_DB=temporal
@@ -40,11 +40,11 @@ services:
       postgres:
         condition: service_healthy
     networks:
-      - e2e-net
+      - quanta-net
 
   temporal-ui:
     image: temporalio/ui:latest
-    container_name: e2e_temporal_ui
+    container_name: quanta_temporal_ui
     restart: unless-stopped
     ports:
       - "8088:8080"
@@ -54,11 +54,11 @@ services:
     depends_on:
       - temporal
     networks:
-      - e2e-net
+      - quanta-net
 
   postgres:
     image: postgres:15-alpine
-    container_name: e2e_postgres
+    container_name: quanta_postgres
     restart: unless-stopped
     environment:
       - POSTGRES_USER=temporal
@@ -67,7 +67,7 @@ services:
     volumes:
       - temporal_db_data:/var/lib/postgresql/data
     networks:
-      - e2e-net
+      - quanta-net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U temporal"]
       interval: 5s
@@ -78,7 +78,7 @@ services:
   # NOTE: In production, use Supabase DATABASE_URL directly
   app_postgres:
     image: postgres:15-alpine
-    container_name: e2e_app_db
+    container_name: quanta_app_db
     restart: unless-stopped
     environment:
       - POSTGRES_USER=postgres
@@ -89,7 +89,7 @@ services:
     volumes:
       - app_db_data:/var/lib/postgresql/data
     networks:
-      - e2e-net
+      - quanta-net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -99,7 +99,7 @@ services:
   # --- 4. THE CACHE (REDIS) ---
   redis:
     image: redis:alpine
-    container_name: e2e_redis
+    container_name: quanta_redis
     restart: unless-stopped
     ports:
       - "6379:6379"
@@ -107,12 +107,12 @@ services:
     volumes:
       - redis_data:/data
     networks:
-      - e2e-net
+      - quanta-net
 
   # --- 5. THE STORAGE (MINIO - LOCAL S3) ---
   minio:
     image: minio/minio:latest
-    container_name: e2e_minio
+    container_name: quanta_minio
     restart: unless-stopped
     ports:
       - "9000:9000" # API
@@ -124,7 +124,7 @@ services:
     volumes:
       - minio_data:/data
     networks:
-      - e2e-net
+      - quanta-net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
@@ -140,17 +140,17 @@ services:
     entrypoint: >
       /bin/sh -c "
       /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
-      /usr/bin/mc mb myminio/e2e-local-bucket;
-      /usr/bin/mc anonymous set public myminio/e2e-local-bucket;
+      /usr/bin/mc mb myminio/quanta-local-bucket;
+      /usr/bin/mc anonymous set public myminio/quanta-local-bucket;
       exit 0;
       "
     networks:
-      - e2e-net
+      - quanta-net
 
   # --- 6. THE BRAIN (QDRANT VECTOR DB) ---
   qdrant:
     image: qdrant/qdrant:latest
-    container_name: e2e_qdrant
+    container_name: quanta_qdrant
     restart: unless-stopped
     ports:
       - "6333:6333" # REST API
@@ -158,7 +158,7 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     networks:
-      - e2e-net
+      - quanta-net
     # healthcheck:
     #   test: ["CMD", "curl", "-f", "http://localhost:6333/"]
     #   interval: 5s
@@ -168,7 +168,7 @@ services:
   # --- 7. THE LOGS (CLICKHOUSE - Optional) ---
   # clickhouse:
   #   image: clickhouse/clickhouse-server
-  #   container_name: e2e_clickhouse
+  #   container_name: quanta_clickhouse
   #   ports:
   #     - "8123:8123"
   #     - "9000:9000"
@@ -179,14 +179,14 @@ services:
   #   volumes:
   #     - clickhouse_data:/var/lib/clickhouse
   #   networks:
-  #     - e2e-net
+  #     - quanta-net
 
   # --- 8. THE CONTROL PLANE (GO API) ---
   control-plane:
     build:
       context: .
       dockerfile: apps/control-plane/Dockerfile
-    container_name: e2e_control_plane
+    container_name: quanta_control_plane
     restart: unless-stopped
     ports:
       - "8080:8080"
@@ -207,7 +207,7 @@ services:
       app_postgres:
         condition: service_healthy
     networks:
-      - e2e-net
+      - quanta-net
     healthcheck:
       test:
         [
@@ -227,12 +227,14 @@ services:
     build:
       context: .
       dockerfile: apps/execution-plane/Dockerfile
-    container_name: e2e_execution_plane
+    container_name: quanta_execution_plane
     restart: unless-stopped
     environment:
       - TEMPORAL_HOST=temporal:7233
       - NATS_URL=nats://nats:4222
       - QDRANT_URL=http://qdrant:6333
+      # AI Keys (Passed from host .env)
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY}
       # For local dev: use local postgres. For production: use Supabase DATABASE_URL
       - DATABASE_URL=postgresql://postgres:postgres@app_postgres:5432/quanta
     depends_on:
@@ -243,7 +245,7 @@ services:
       qdrant:
         condition: service_started
     networks:
-      - e2e-net
+      - quanta-net
 
 volumes:
   nats_data:
@@ -255,5 +257,5 @@ volumes:
   # clickhouse_data:
 
 networks:
-  e2e-net:
+  quanta-net:
     driver: bridge

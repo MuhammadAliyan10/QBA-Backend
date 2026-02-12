@@ -137,9 +137,9 @@ install-deps:
 # Build Docker Images
 docker-build:
 	@echo -e "$(BLUE)[Docker] Building Docker images...$(NC)"
-	@docker build -t e2e-control-plane:prod apps/control-plane
-	@docker build -t e2e-execution-plane:prod apps/execution-plane
-	@docker images | grep e2e
+	@docker build -t quanta-control-plane:prod apps/control-plane
+	@docker build -t quanta-execution-plane:prod apps/execution-plane
+	@docker images | grep quanta
 	@echo -e "$(GREEN)[Docker] Docker images built.$(NC)"
 
 # Database Migration
