@@ -246,6 +246,9 @@ services:
         condition: service_started
     networks:
       - quanta-net
+    volumes:
+      # DEV: Mount source code so Python changes are picked up on restart (no rebuild needed)
+      - ./apps/execution-plane/src:/app/src
 
 volumes:
   nats_data:

@@ -19,10 +19,11 @@ from dotenv import load_dotenv
 from workflows import BrowserWorkflow, GenerateWorkflowRecipe
 from activities.activities import browser_automation_activity
 from activities.discoveryActivities import (
-    plan_recipe_from_prompt,
-    discover_element_activity,
-    generate_react_flow_node
+    evaluate_next_step_activity,
+    execute_action_activity,
+    cleanup_browser_activity
 )
+from activities.publishActivities import publish_event_activity
 from telemetry import init_telemetry, shutdown_telemetry
 
 # --- 2. LOGGING ---
@@ -62,10 +63,12 @@ async def main():
             ],
             activities=[
                 browser_automation_activity,
-                # NEW: Discovery activities for verified generation
-                plan_recipe_from_prompt,
-                discover_element_activity,
-                generate_react_flow_node
+                # Discovery activities for verified generation
+                evaluate_next_step_activity,
+                execute_action_activity,
+                cleanup_browser_activity,
+                # Event publishing (notify frontend of step results)
+                publish_event_activity,
             ],
             # CRITICAL: Allow enough time for Browser to close gracefully
             graceful_shutdown_timeout=timedelta(seconds=15)

@@ -307,29 +307,50 @@ async def browser_automation_activity(payload: dict) -> dict:
     user_logger = UserFriendlyLogger(job_id)
 
     # 3. Notify Nervous System: START
-    await user_logger.info("PROCESSING_RAG") # "Thinking about the next step..."
+    await user_logger.info("PROCESSING_RAG")  # "Thinking about the next step..."
 
-    # 3. Load Recipe (DYNAMIC - From Qdrant Vector Search)
-    recipe_mgr = get_recipe_manager()
+    # 3. Load Recipe — Priority order:
+    #    a) Editor recipe graph (nodes/edges from frontend via Go controller)
+    #    b) RAG/Qdrant vector search (semantic match)
+    #    c) Raw steps (developer mode / direct API)
+    steps = None
+    recipe_data = payload.get("recipe")
 
-    # Try to find recipe by semantic search
-    recipe = recipe_mgr.find_recipe(workflow_id)
-
-    if recipe:
-        steps = recipe['steps']
-        logger.info(f"[System] Found recipe via vector search:'{recipe['name']}' (score: {recipe['score']:.3f})")
+    if recipe_data and isinstance(recipe_data, dict) and "nodes" in recipe_data:
+        # SOURCE A: Recipe graph from the frontend editor
+        from core.recipe.recipe_converter import convert_graph_to_steps
+        nodes = recipe_data.get("nodes", [])
+        edges = recipe_data.get("edges", [])
+        steps = convert_graph_to_steps(nodes, edges)
+        logger.info(f"[System] Converted editor graph: {len(nodes)} nodes → {len(steps)} steps")
         await NervousSystem.publish_update(
             job_id, "RUNNING",
-            f"[RAG] Loaded workflow: '{recipe['name']}' (semantic match)",
+            f"Loaded workflow from editor ({len(steps)} steps)",
             "init"
         )
-    else:
-        #  Fallback: Check if raw steps were provided (Developer Mode)
+
+    if not steps:
+        # SOURCE B: RAG/Qdrant vector search
+        recipe_mgr = get_recipe_manager()
+        recipe = recipe_mgr.find_recipe(workflow_id)
+
+        if recipe:
+            steps = recipe['steps']
+            logger.info(f"[System] Found recipe via vector search: '{recipe['name']}' (score: {recipe['score']:.3f})")
+            await NervousSystem.publish_update(
+                job_id, "RUNNING",
+                f"[RAG] Loaded workflow: '{recipe['name']}' (semantic match)",
+                "init"
+            )
+
+    if not steps:
+        # SOURCE C: Raw steps (developer mode)
         steps = payload.get("steps", [])
-        if not steps:
-            err = f"[Error] No recipe found for query: '{workflow_id}' (threshold: 0.7)"
-            await NervousSystem.publish_update(job_id, "FAILED", err, "init")
-            return {"status": "FAILED", "error": err}
+
+    if not steps:
+        err = f"[Error] No recipe found for workflow: '{workflow_id}'"
+        await NervousSystem.publish_update(job_id, "FAILED", err, "init")
+        return {"status": "FAILED", "error": err}
 
     async with async_playwright() as p:
         # --- 4. BROWSER LAUNCH STRATEGY ---
@@ -523,7 +544,8 @@ async def browser_automation_activity(payload: dict) -> dict:
 
             # --- 6. EXECUTION LOOP ---
             for i, step in enumerate(steps):
-                node_id = f"step-{i+1}"
+                # Use real node ID from graph converter for frontend event correlation
+                node_id = step.get("node_id", f"step-{i+1}")
                 action = step["action"]
                 raw_params = step.get("params", {})
 
@@ -536,11 +558,17 @@ async def browser_automation_activity(payload: dict) -> dict:
                 if action == "GOTO":
                     url = step_params["url"]
 
-                    # Use configurable timeout
-                    await page.goto(url, timeout=NAVIGATION_TIMEOUT)
+                    # Use configurable timeout. wait_until="domcontentloaded" is
+                    # faster than "load" and enough to unblock Playwright.
+                    await page.goto(url, timeout=NAVIGATION_TIMEOUT, wait_until="domcontentloaded")
 
-                    # Safe network wait (won't swallow critical errors)
+                    # Wait for network to settle (catches lazy-loaded assets)
                     await safe_wait_for_network_idle(page)
+
+                    # ⚡ SPA FIX: After networkidle, JavaScript frameworks (React/Vue/Svelte)
+                    # still need time to execute and paint the final DOM.
+                    # A brief settle window prevents the next step from reading an empty shell.
+                    await asyncio.sleep(1.5)
 
                     # Try to dismiss any popups that appeared on page load
                     await dismiss_overlays(page)

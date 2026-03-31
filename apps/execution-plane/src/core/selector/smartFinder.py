@@ -62,11 +62,12 @@ logger = logging.getLogger("smartFinderV2")
 
 class FinderLayer(Enum):
     """Which layer found the element."""
+    STRUCTURAL = 0  # Keyword→CSS deterministic lookup (<5ms)
     REFLEX = 1      # SimHash match (<10ms)
     HEURISTIC = 2   # Levenshtein match (~50ms)
     SEMANTIC = 3    # Vector DB match (~200ms)
     COGNITIVE = 4   # AI recovery (slow)
-    NONE = 0        # Not found
+    NONE = -1       # Not found
 
 
 @dataclass
@@ -301,9 +302,9 @@ class LLMAgent:
             base_url: API base URL (default: from LLM_BASE_URL env var)
         """
         import os
-        self.model = model or os.getenv("LLM_MODEL", "gpt-4o-mini")
-        self.api_key = api_key or os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
-        self.base_url = base_url or os.getenv("LLM_BASE_URL")
+        self.model = model or os.getenv("LLM_MODEL", "meta/llama-3.3-70b-instruct")
+        self.api_key = api_key or os.getenv("NVIDIA_API_KEY") or os.getenv("OPENAI_API_KEY")
+        self.base_url = base_url or os.getenv("LLM_BASE_URL", "https://integrate.api.nvidia.com/v1")
         self._client = None
         self._initialized = False
 
@@ -330,7 +331,7 @@ class LLMAgent:
     async def recover(
         self,
         intent: str,
-        page_html: str = "",
+        page_context: str = "",
         screenshot: bytes = None
     ) -> Optional[str]:
         """
@@ -386,16 +387,15 @@ class LLMAgent:
             logger.warning(f"[AIAgent] Recovery failed: {e}")
             return None
 
-    def _build_prompt(self, intent: str, page_html: str) -> str:
+    def _build_prompt(self, intent: str, page_context: str) -> str:
         """Build the prompt for the LLM."""
-        # Truncate HTML to avoid token limits
-        html_preview = page_html[:15000] if page_html else "No HTML available"
+        context_preview = page_context[:20000] if page_context else "No Context available"
 
         return f"""Find the element: "{intent}"
 
-HTML (truncated):
-```html
-{html_preview}
+PAGE CONTEXT:
+```
+{context_preview}
 ```
 
 Return a CSS selector that uniquely identifies this element."""
@@ -464,7 +464,7 @@ class SmartFinder:
     MAX_CANDIDATES = 1000  # Cap element scanning to prevent freeze
     MAX_IFRAME_DEPTH = 3  # Limit iframe recursion
 
-    # Relevant element selectors - AUDIT FIX: Expanded to catch semantic & data tags
+    # Relevant element selectors
     RELEVANT_SELECTORS = [
         # Interactive
         "button:visible", "a:visible", "input:visible", "select:visible", "textarea:visible",
@@ -475,11 +475,18 @@ class SmartFinder:
         # Semantic / Content
         "h1:visible", "h2:visible", "h3:visible", "h4:visible", "h5:visible", "h6:visible",
         "p:visible", "article:visible", "section:visible", "label:visible",
+        "span:visible",  # Common for prop values on doc sites
 
         # Data / Structure
         "table:visible", "tr:visible", "td:visible", "th:visible",
         "ul:visible", "ol:visible", "li:visible",
+        "dl:visible", "dt:visible", "dd:visible",  # Definition lists (common in prop docs)
         "[data-testid]:visible", "[data-cy]:visible", "[data-qa]:visible",
+
+        # Code / Documentation
+        "code:visible",   # Inline code (prop values, defaults)
+        "pre:visible",    # Code blocks
+        "kbd:visible",    # Keyboard/key values
 
         # Visual
         "img:visible", "svg:visible",
@@ -527,6 +534,93 @@ class SmartFinder:
             "save": ["submit", "apply", "confirm", "done"],
         }
 
+        # =======================================================================
+        # LAYER 0: STRUCTURAL CSS MAP
+        # =======================================================================
+        # Keyword → ordered list of CSS selectors to try.
+        # Playwright selectors support case-insensitive attribute matching (:i flag).
+        # These are EXACT DOM lookups — pure logic, zero AI, zero fuzzy math.
+        # =======================================================================
+        self.STRUCTURAL_SELECTORS: Dict[str, List[str]] = {
+            # Search
+            "search": [
+                "input[type='search']",
+                "[role='searchbox']",
+                "input[placeholder*='search' i]",
+                "input[aria-label*='search' i]",
+                "input[name*='search' i]",
+                "input[name='q']",
+                "input[name='query']",
+                "[data-testid*='search' i]",
+            ],
+            # Password
+            "password": [
+                "input[type='password']",
+                "input[name*='password' i]",
+                "input[placeholder*='password' i]",
+            ],
+            # Email
+            "email": [
+                "input[type='email']",
+                "input[name*='email' i]",
+                "input[placeholder*='email' i]",
+                "input[autocomplete='email']",
+            ],
+            # Username / Login
+            "username": [
+                "input[name='username']",
+                "input[name='user']",
+                "input[name='login']",
+                "input[placeholder*='username' i]",
+                "input[autocomplete='username']",
+            ],
+            # Submit / Login button
+            "submit": [
+                "[type='submit']",
+                "button[type='submit']",
+            ],
+            "login": [
+                "button[type='submit']",
+                "[type='submit']",
+                "button:has-text('Sign in')",
+                "button:has-text('Log in')",
+                "a:has-text('Sign in')",
+            ],
+            "sign in": [
+                "button:has-text('Sign in')",
+                "a:has-text('Sign in')",
+                "button:has-text('Sign In')",
+                "[type='submit']",
+            ],
+            # Navigation
+            "home": ["a[href='/'], a[href='#home'], [aria-label*='home' i], a:has-text('Home')"],
+            "back": ["[aria-label*='back' i]", "button:has-text('Back')", "a:has-text('Back')"],
+            # Accept / Confirm
+            "accept": [
+                "button:has-text('Accept')",
+                "button:has-text('Allow')",
+                "button:has-text('OK')",
+                "button:has-text('Agree')",
+            ],
+            "close": [
+                "[aria-label*='close' i]",
+                "button:has-text('Close')",
+                "[data-testid*='close' i]",
+                ".close",
+            ],
+            # Cart / Checkout
+            "cart": ["[aria-label*='cart' i]", "a[href*='cart']", "[data-testid*='cart' i]"],
+            "checkout": ["button:has-text('Checkout')", "a:has-text('Checkout')", "a[href*='checkout']"],
+            # Navigation links
+            "next": ["button:has-text('Next')", "a:has-text('Next')", "[aria-label*='next' i]"],
+            "previous": ["button:has-text('Prev')", "button:has-text('Previous')", "[aria-label*='prev' i]"],
+            # Stars / Rating
+            "star": ["[aria-label*='star' i]", "button:has-text('Star')", "[data-testid*='star' i]"],
+            # Text area / Comment
+            "comment": ["textarea[name*='comment' i]", "textarea[placeholder*='comment' i]", "textarea"],
+            "message": ["textarea[name*='message' i]", "textarea[placeholder*='message' i]", "textarea"],
+        }
+
         # Cache for element signatures (avoid recomputing)
         self._signature_cache: Dict[str, Dict] = {}
 
@@ -538,7 +632,8 @@ class SmartFinder:
         scan_mode: str = "auto",  # "interactive", "all", or "auto"
         timeout: int = 3000,      # NEW: Timeout in ms
         interval: int = 500,      # NEW: Polling interval in ms
-        position: Optional[int] = None  # NEW: Index for list items (0=first, 1=second)
+        position: Optional[int] = None,  # NEW: Index for list items (0=first, 1=second)
+        discovery_mode: bool = False  # NEW: Lowers Layer 2 threshold for first-time generation
     ) -> FindResult:
         """
         Find an element using the 4-layer fallback system with Smart Wait.
@@ -557,10 +652,13 @@ class SmartFinder:
         metadata = metadata or {}
         start_time = time.time()
 
-        # AUDIT FIX: Adaptive Scan Mode
+        # AUDIT FIX: Adaptive Scan Mode — includes doc/prop site keywords
         if scan_mode == "auto":
-            # Switch to "all" if intent implies data extraction
-            extraction_keywords = ["read", "get", "verify", "extract", "check", "text", "price", "status"]
+            extraction_keywords = [
+                "read", "get", "verify", "extract", "check", "text", "price", "status",
+                "value", "default", "prop", "color", "parameter", "option", "setting",
+                "find", "what", "which",
+            ]
             if any(k in intent.lower() for k in extraction_keywords):
                 scan_mode = "all"
             else:
@@ -574,8 +672,34 @@ class SmartFinder:
         logger.info(f"[SmartFinder] Searching for: '{intent}' (mode: {scan_mode}, timeout: {timeout}ms)" +
                     (f" in container: {container_selector}" if container_selector else ""))
 
-        # SMART WAIT LOOP
+        # =====================================================================
+        # LAYER 0: STRUCTURAL (Deterministic CSS) - <5ms
+        # =====================================================================
+        # Pure keyword → CSS lookup. No fuzzy math, no AI, no ML.
+        # Handles ~80% of common interactive elements instantly.
+        # =====================================================================
+        logger.debug("[Layer 0] STRUCTURAL: Keyword → CSS lookup...")
+        layer0_start = time.time()
+        try:
+            result = await self._layer0_structural(intent)
+            if result.found:
+                result.duration_ms = int((time.time() - start_time) * 1000)
+                logger.info(
+                    f"[Layer 0] ✅ STRUCTURAL HIT in {time.time() - layer0_start:.3f}s "
+                    f"(confidence: {result.confidence:.2f})"
+                )
+                return result
+            else:
+                logger.debug("[Layer 0] No structural match, falling through to math layers.")
+        except Exception as e:
+            logger.warning(f"[Layer 0] ⚠️ STRUCTURAL ERROR: {e}")
+
+        # SMART WAIT + LAZY-SCROLL LOOP
         iteration = 0
+        scroll_pass = 0
+        MAX_SCROLL_PASSES = 3  # Scroll down at most 3 times to reveal lazy content
+        last_scroll_y = 0
+
         while (time.time() - start_time) * 1000 < timeout:
             iteration += 1
             if iteration > 1:
@@ -611,10 +735,18 @@ class SmartFinder:
             layer2_start = time.time()
 
             try:
-                result = await self._layer2_heuristic(intent, container_selector, position=position)
+                result = await self._layer2_heuristic(intent, container_selector, position=position, discovery_mode=discovery_mode)
                 if result.found:
-                    # Self-healing: Compute new signature for the found element
                     result.new_signature = await self._compute_element_signature(result.element)
+
+                    # LAYER 3 POPULATE: Learn from Layer 2
+                    if result.new_signature and "selector" in result.new_signature:
+                        asyncio.create_task(self.vector_db.store(
+                            intent=intent,
+                            selector=result.new_signature["selector"],
+                            attributes=result.new_signature.get("attributes", {})
+                        ))
+
                     result.duration_ms = int((time.time() - start_time) * 1000)
                     logger.info(
                         f"[Layer 2] ✅ HEURISTIC HIT in {time.time() - layer2_start:.3f}s "
@@ -650,10 +782,28 @@ class SmartFinder:
             except Exception as e:
                 logger.warning(f"[Layer 3] ⚠️ SEMANTIC ERROR: {e}")
 
-            # WAIT BEFORE RETRY
+            # =========================================================================
+            # LAZY-SCROLL FALLBACK: Element may be below viewport (accordion/infinite list)
+            # After each full pass failure, scroll down and re-scan.
+            # =========================================================================
             elapsed = (time.time() - start_time) * 1000
             remaining = timeout - elapsed
-            if remaining > 100:  # Only sleep if meaningful time left
+
+            if scroll_pass < MAX_SCROLL_PASSES and remaining > (interval * 2):
+                try:
+                    page_height = await self.page.evaluate("() => document.body.scrollHeight")
+                    scroll_target = min(last_scroll_y + 600, page_height)
+                    if scroll_target > last_scroll_y:
+                        await self.page.evaluate(f"window.scrollTo(0, {scroll_target})")
+                        last_scroll_y = scroll_target
+                        scroll_pass += 1
+                        logger.debug(f"[SmartFinder] 📜 Lazy-scroll pass {scroll_pass}: scrolled to y={scroll_target}")
+                        await asyncio.sleep(0.5)  # Wait for lazy-loaded elements
+                        continue  # Re-scan immediately without sleeping
+                except Exception as e:
+                    logger.debug(f"[SmartFinder] Scroll failed: {e}")
+
+            if remaining > 100:
                 sleep_time = min(interval, remaining) / 1000
                 await asyncio.sleep(sleep_time)
             else:
@@ -667,7 +817,14 @@ class SmartFinder:
         layer4_start = time.time()
 
         try:
-            result = await self._layer4_cognitive(intent)
+            import json
+            try:
+                tree = await self.page.accessibility.snapshot()
+                tree_context = json.dumps(tree, indent=2)[:20000] if tree and tree.get("children") else None
+            except:
+                tree_context = None
+
+            result = await self._layer4_cognitive(intent, tree_context=tree_context)
             if result.found:
                 result.new_signature = await self._compute_element_signature(result.element)
                 result.duration_ms = int((time.time() - start_time) * 1000)
@@ -693,6 +850,70 @@ class SmartFinder:
             duration_ms=total_duration,
             error=f"Element not found: {intent}"
         )
+
+    def _parse_container_hint(self, intent: str) -> Optional[str]:
+        """
+        Parse container hints from intent string.
+
+        Examples:
+            "Login button in the header" -> "header"
+            "Submit in the modal" -> "[role='dialog'], .modal"
+            "Edit button in row containing John" -> None (complex, handle separately)
+        """
+        intent_lower = intent.lower()
+
+    # -------------------------------------------------------------------------
+    # LAYER 0: STRUCTURAL (Deterministic CSS)
+    # -------------------------------------------------------------------------
+    async def _layer0_structural(self, intent: str) -> FindResult:
+        """
+        Layer 0: Find element via deterministic keyword→CSS lookup.
+
+        This is the FASTEST layer. No fuzzy matching, no AI, no ML.
+        Simply maps known intent keywords to precise CSS attribute selectors
+        and tries them in order. Covers ~80% of common interactive actions.
+
+        Examples:
+            "Search Input" → tries input[type='search'], input[placeholder*='search' i], ...
+            "Password Field" → tries input[type='password']
+            "Sign In Button" → tries button[type='submit'], button:has-text('Sign in'), ...
+        """
+        intent_lower = intent.lower()
+
+        # Tokenize intent into keywords (skip short filler words)
+        stop_words = {"the", "a", "an", "of", "on", "in", "at", "to", "for", "and", "or"}
+        intent_words = [w for w in intent_lower.split() if len(w) > 2 and w not in stop_words]
+
+        # Collect matching selectors from the map
+        selectors_to_try: List[str] = []
+        for keyword, css_list in self.STRUCTURAL_SELECTORS.items():
+            keyword_words = keyword.split()
+            # Match if ALL keyword words are present in the intent
+            if all(kw in intent_lower for kw in keyword_words):
+                selectors_to_try.extend(css_list)
+                logger.debug(f"[Layer 0] Keyword match: '{keyword}' → {len(css_list)} selectors")
+
+        if not selectors_to_try:
+            return FindResult(layer=FinderLayer.STRUCTURAL)
+
+        # Try each selector in order — first visible match wins
+        for selector in selectors_to_try:
+            try:
+                element = await self.page.query_selector(selector)
+                if element:
+                    is_visible = await element.is_visible()
+                    if is_visible:
+                        logger.info(f"[Layer 0] ✅ Match: `{selector}`")
+                        return FindResult(
+                            element=element,
+                            layer=FinderLayer.STRUCTURAL,
+                            confidence=0.95,  # High confidence — this is deterministic
+                            candidates_checked=len(selectors_to_try)
+                        )
+            except Exception as e:
+                logger.debug(f"[Layer 0] Selector `{selector}` failed: {e}")
+
+        return FindResult(layer=FinderLayer.STRUCTURAL, candidates_checked=len(selectors_to_try))
 
     def _parse_container_hint(self, intent: str) -> Optional[str]:
         """
@@ -783,7 +1004,8 @@ class SmartFinder:
         intent: str,
         container_selector: Optional[str] = None,
         scan_mode: str = "interactive",
-        position: Optional[int] = None
+        position: Optional[int] = None,
+        discovery_mode: bool = False
     ) -> FindResult:
         """
         Layer 2: Find element by fuzzy text matching.
@@ -821,8 +1043,40 @@ class SmartFinder:
             value = candidate.attributes.get("value", "")
             value_score = hybrid_similarity(intent_normalized, value.lower())
 
-            # Take best base score
-            candidate.score = max(text_score, aria_score, placeholder_score, value_score)
+            # Icon-only elements: title, data-tooltip, alt, data-label
+            title_score = hybrid_similarity(intent_normalized, candidate.attributes.get("title", "").lower())
+            tooltip_score = hybrid_similarity(intent_normalized, candidate.attributes.get("data-tooltip", "").lower())
+            alt_score = hybrid_similarity(intent_normalized, candidate.attributes.get("alt", "").lower())
+            data_label_score = hybrid_similarity(intent_normalized, candidate.attributes.get("data-label", "").lower())
+            name_score = hybrid_similarity(intent_normalized, candidate.attributes.get("name", "").lower())
+
+            # Take best base score across all text signals
+            base_score = max(
+                text_score, aria_score, placeholder_score, value_score,
+                title_score, tooltip_score, alt_score, data_label_score, name_score
+            )
+
+            # WORD-OVERLAP BOOST (Jaccard similarity on word level)
+            # Character Levenshtein fails on "Search Input" vs "Search or jump to..."
+            # but word overlap catches it: {"search"} ∩ {"search", "or", "jump", "to"} = {"search"}
+            intent_words = set(intent_normalized.split())
+            all_text_signals = " ".join(filter(None, [
+                candidate.text.lower(),
+                candidate.attributes.get("placeholder", "").lower(),
+                candidate.attributes.get("aria-label", "").lower(),
+                candidate.attributes.get("title", "").lower(),
+                candidate.attributes.get("name", "").lower(),
+            ]))
+            element_words = set(all_text_signals.split())
+            if intent_words and element_words:
+                overlap = len(intent_words & element_words)
+                union = len(intent_words | element_words)
+                jaccard = overlap / union if union > 0 else 0.0
+                # Weight: word overlap is a strong signal — treat 0.3 jaccard as 0.6 base
+                word_score = min(jaccard * 2.0, 1.0)
+                candidate.score = max(base_score, word_score)
+            else:
+                candidate.score = base_score
 
             # SYNONYM BOOST: If text matches a synonym, boost score
             if synonyms:
@@ -860,15 +1114,15 @@ class SmartFinder:
         # VISUAL SORT & POSITION SELECTION
         # ---------------------------------------------------------------------
         if position is not None:
-            # 1. Collect all "Loose Matches" (score > 0.4)
-            potential_matches = [c for c in candidates if c.score >= 0.4]
+            # 1. Collect all "Loose Matches" (score > 0.35)
+            potential_matches = [c for c in candidates if c.score >= 0.35]
 
             if potential_matches:
                 logger.debug(f"[Visual Sort] Found {len(potential_matches)} candidates for position {position}")
 
                 # 2. Enrich with Y-coordinates (Bounding Box)
                 enriched_matches = []
-                for pm in potential_matches[:20]: # Limit to top 20 to avoid slow async calls
+                for pm in potential_matches[:20]:  # Limit to top 20
                     try:
                         box = await pm.handle.bounding_box()
                         if box:
@@ -879,24 +1133,26 @@ class SmartFinder:
                 # 3. Sort by Y (top-to-bottom), then X (left-to-right)
                 enriched_matches.sort(key=lambda item: (item[1], item[2]))
 
-                # 4. Select by index
-                try:
-                    selected_match, y, x = enriched_matches[position]
-                    logger.info(f"[Visual Sort] Selected item {position} at Y={y} (score: {selected_match.score:.2f})")
-                    return FindResult(
-                        element=selected_match.handle,
-                        layer=FinderLayer.HEURISTIC,
-                        confidence=selected_match.score, # Use original score
-                        candidates_checked=len(candidates)
-                    )
-                except IndexError:
-                    logger.warning(f"[Visual Sort] Position {position} out of range (found {len(enriched_matches)})")
-                    # Fallback to normal best match logic below
+                # 4. Select by index — SUPPORTS NEGATIVE (-1 = last)
+                if enriched_matches:
+                    try:
+                        # Python natively supports negative indexing but clamp to valid range
+                        idx = position if position >= 0 else max(0, len(enriched_matches) + position)
+                        selected_match, y, x = enriched_matches[idx]
+                        logger.info(f"[Visual Sort] Selected item {idx} (pos={position}) at Y={y} (score: {selected_match.score:.2f})")
+                        return FindResult(
+                            element=selected_match.handle,
+                            layer=FinderLayer.HEURISTIC,
+                            confidence=selected_match.score,
+                            candidates_checked=len(candidates)
+                        )
+                    except IndexError:
+                        logger.warning(f"[Visual Sort] Position {position} out of range (found {len(enriched_matches)})")
+                        # Fallback to normal best match logic below
 
         # Check if best match exceeds strict threshold
-
-        # Check if best match exceeds strict threshold
-        if best_match and best_score >= self.LAYER2_THRESHOLD:
+        threshold = 0.65 if discovery_mode else self.LAYER2_THRESHOLD
+        if best_match and best_score >= threshold:
             return FindResult(
                 element=best_match.handle,
                 layer=FinderLayer.HEURISTIC,
@@ -904,8 +1160,8 @@ class SmartFinder:
                 candidates_checked=len(candidates)
             )
 
-        # FALLBACK: Check for "Best Effort" match (> 0.65)
-        if best_match and best_score >= 0.65:
+        # FALLBACK: Check for "Best Effort" match (> 0.55)
+        if best_match and best_score >= 0.55:
             logger.info(f"[Layer 2] ⚠️ BEST EFFORT MATCH: {best_score:.2f} (threshold: {self.LAYER2_THRESHOLD})")
             return FindResult(
                 element=best_match.handle,
@@ -958,24 +1214,24 @@ class SmartFinder:
     # -------------------------------------------------------------------------
     # LAYER 4: COGNITIVE (AI)
     # -------------------------------------------------------------------------
-    async def _layer4_cognitive(self, intent: str) -> FindResult:
+    async def _layer4_cognitive(self, intent: str, tree_context: str = None) -> FindResult:
         """
         Layer 4: Use AI to recover the element.
 
         Sends page context to an AI agent that analyzes the DOM
         and returns a selector recommendation.
         """
-        # Get page HTML (truncated for AI)
-        try:
-            page_html = await self.page.content()
-            # Truncate to avoid token limits
-            if len(page_html) > 50000:
-                page_html = page_html[:50000] + "\n... (truncated)"
-        except:
-            page_html = ""
+        if tree_context:
+            page_context = f"ACCESSIBILITY TREE:\n{tree_context}"
+        else:
+            try:
+                page_html = await self.page.content()
+                page_context = "HTML:\n" + (page_html[:30000] + "...\n")
+            except:
+                page_context = ""
 
         # Call AI agent
-        selector = await self.ai_agent.recover(intent, page_html)
+        selector = await self.ai_agent.recover(intent, page_context=page_context)
 
         if not selector:
             return FindResult(layer=FinderLayer.COGNITIVE)
@@ -1119,14 +1375,21 @@ class SmartFinder:
             # Extract metadata
             tag = await element.evaluate("el => el.tagName.toLowerCase()")
 
-            # Get text (avoid for input/select)
+            # Get text — input/textarea have no innerText, use placeholder or name instead
             text = ""
             if tag in ["input", "textarea"]:
-                # specific handling for input values
-                val = await element.get_attribute("value")
-                if val:
-                    text = val
-            elif tag != "select":
+                # Priority: value > placeholder > name > id (in order of usefulness)
+                val = await element.get_attribute("value") or ""
+                placeholder = await element.get_attribute("placeholder") or ""
+                name = await element.get_attribute("name") or ""
+                el_id = await element.get_attribute("id") or ""
+                text = val or placeholder or name or el_id
+            elif tag == "select":
+                # Use name or id for select elements
+                name = await element.get_attribute("name") or ""
+                el_id = await element.get_attribute("id") or ""
+                text = name or el_id
+            else:
                 try:
                     text = await element.inner_text()
                 except:

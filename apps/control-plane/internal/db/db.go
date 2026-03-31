@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"e2e-platform/apps/control-plane/internal/models"
+
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -56,9 +58,11 @@ func Init() {
 
 	log.Println("[Database] ✓ Connected to PostgreSQL (GORM with PrepareStmt=false)")
 
-	// Run Auto-Migration
-	if err := createTables(); err != nil {
-		log.Fatalf("[ERROR] Migration Failed: %v", err)
+	// Verify tables exist (Prisma manages the schema via migrations,
+	// we only check connectivity — DO NOT AutoMigrate to avoid conflicts with Prisma)
+	if err := verifySchema(); err != nil {
+		log.Printf("[Database] ⚠ Schema verification warning: %v", err)
+		log.Println("[Database] Make sure Prisma migrations have been run on this database")
 	}
 }
 
@@ -75,96 +79,27 @@ func Ping() error {
 	return sqlDB.Ping()
 }
 
-// createTables ensures the schema exists (Idempotent)
-func createTables() error {
-	schema := `
-    -- 1. USERS TABLE
-    CREATE TABLE IF NOT EXISTS users (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        email TEXT UNIQUE NOT NULL,
-        api_key TEXT UNIQUE NOT NULL,
-        created_at TIMESTAMP DEFAULT now()
-    );
-
-    -- 2. LEDGER TABLE (Double-Entry Accounting)
-    CREATE TABLE IF NOT EXISTS ledger (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id UUID REFERENCES users(id),
-        amount DECIMAL(20, 8) NOT NULL,
-        job_id TEXT,
-        description TEXT,
-        created_at TIMESTAMP DEFAULT now()
-    );
-
-    -- 3. JOBS TABLE (Workflow Execution Tracking)
-    -- CRITICAL: This table is required for webhook dispatch in main.go
-    CREATE TABLE IF NOT EXISTS jobs (
-        id TEXT PRIMARY KEY,
-        workflow_id TEXT NOT NULL,
-        user_id UUID REFERENCES users(id),
-        status TEXT DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'RUNNING', 'COMPLETED', 'FAILED', 'PAUSED')),
-        webhook_url TEXT,
-        params JSONB DEFAULT '{}',
-        result JSONB DEFAULT '{}',
-        error_message TEXT,
-        run_id TEXT,
-        created_at TIMESTAMP DEFAULT now(),
-        updated_at TIMESTAMP DEFAULT now(),
-        completed_at TIMESTAMP
-    );
-
-    -- INDEX: Optimize status polling and webhook queries
-    CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
-    CREATE INDEX IF NOT EXISTS idx_jobs_user_id ON jobs(user_id);
-    CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
-
-    -- MIGRATION: Ensure run_id exists for existing tables
-    ALTER TABLE jobs ADD COLUMN IF NOT EXISTS run_id TEXT;
-
-    -- 4. SEED USER (For Local Dev only)
-    INSERT INTO users (id, email, api_key)
-    VALUES ('00000000-0000-0000-0000-000000000000', 'dev@local', 'sk_test_123')
-    ON CONFLICT (id) DO NOTHING;
-    `
-	err := DB.Exec(schema).Error
-	if err != nil {
-		return err
+// verifySchema checks that the expected Prisma-managed tables exist.
+// We do NOT create or modify tables — Prisma owns the schema.
+func verifySchema() error {
+	// Check critical tables exist by doing a lightweight query
+	tables := []struct {
+		model     interface{}
+		tableName string
+	}{
+		{&models.Job{}, "jobs"},
+		{&models.UserProfile{}, "user_profiles"},
+		{&models.Workflow{}, "workflows"},
 	}
 
-	// 4. SEED CREDIT (Separate insert to avoid FK issues)
-	// Only insert if balance is 0 (idempotent)
-	err = DB.Exec(`
-		INSERT INTO ledger (user_id, amount, description)
-		SELECT '00000000-0000-0000-0000-000000000000', 10.00, 'Initial Grant'
-		WHERE NOT EXISTS (
-			SELECT 1 FROM ledger
-			WHERE user_id = '00000000-0000-0000-0000-000000000000'
-		);
-	`).Error
-	return err
-}
-
-// --- PUBLIC HELPERS ---
-
-// GetBalance calculates the current balance for a user
-func GetBalance(userID string) (float64, error) {
-	var balance float64
-	// In Double-Entry, Balance = Sum of all transactions
-	err := DB.Raw("SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE user_id = ?", userID).Scan(&balance).Error
-	return balance, err
-}
-
-// ChargeUser deducts money (inserts a negative record)
-func ChargeUser(userID string, amount float64, jobID string) error {
-	if amount <= 0 {
-		return fmt.Errorf("invalid charge amount: %f", amount)
+	for _, t := range tables {
+		if !DB.Migrator().HasTable(t.model) {
+			return fmt.Errorf("required table '%s' not found — run Prisma migrations first", t.tableName)
+		}
 	}
-	// We insert a NEGATIVE amount for a charge
-	err := DB.Exec(
-		"INSERT INTO ledger (user_id, amount, job_id, description) VALUES (?, ?, ?, 'Compute Cost')",
-		userID, -amount, jobID,
-	).Error
-	return err
+
+	log.Println("[Database] ✓ Schema verified (jobs, user_profiles, workflows)")
+	return nil
 }
 
 // GetDB returns the global GORM database instance

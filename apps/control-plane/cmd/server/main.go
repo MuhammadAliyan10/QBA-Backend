@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -18,19 +19,18 @@ import (
 	"e2e-platform/apps/control-plane/internal/health"
 	"e2e-platform/apps/control-plane/internal/metrics"
 	"e2e-platform/apps/control-plane/internal/middleware"
+	"e2e-platform/apps/control-plane/internal/models"
 	"e2e-platform/apps/control-plane/internal/webhook"
 	"e2e-platform/apps/control-plane/internal/ws"
 
 	// 2. Third-Party Libraries
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid" // INDUSTRIAL: UUID v4 for collision-free IDs
 	"github.com/joho/godotenv"
 	"github.com/nats-io/nats.go"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"go.temporal.io/sdk/client"
-	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	// 3. Generated Protobuf Contracts
@@ -61,62 +61,118 @@ func (c *Consumer) StartListening() {
 		jobID := parts[2]
 
 		// 4. UNMARSHAL PROTOBUF (JobEvent)
-		// We use the new 'JobEvent' message defined in events.proto
 		var event pb.JobEvent
 		if err := proto.Unmarshal(m.Data, &event); err != nil {
 			log.Printf("[Error] Failed to unmarshal event: %v", err)
 			return
 		}
 
-		// Log to server console for debugging
 		log.Printf("[Event] Job %s Status: %s | Node: %s | Msg: %s",
 			jobID, event.Status, event.NodeId, event.Message)
 
-		// 5. CONVERT TO JSON FOR FRONTEND
-		// The React frontend expects JSON, so we convert the binary Protobuf to JSON string
-		// using protojson options to handle Enums and defaults correctly.
-		marshaler := protojson.MarshalOptions{
-			UseProtoNames:   true,
-			EmitUnpopulated: true,
-		}
-		jsonBytes, err := marshaler.Marshal(&event)
-		if err != nil {
-			log.Printf("[Error] Failed to marshal JSON for WS: %v", err)
-			return
+		// 4.5 UPDATE JOB STATUS IN DATABASE
+		// Map NATS event statuses to Prisma job_status enum values
+		switch event.Status {
+		case "RUNNING":
+			now := time.Now()
+			db.DB.Model(&models.Job{}).Where("id = ?", jobID).Updates(map[string]interface{}{
+				"status":     "RUNNING",
+				"started_at": &now,
+			})
+		case "COMPLETED":
+			now := time.Now()
+			db.DB.Model(&models.Job{}).Where("id = ?", jobID).Updates(map[string]interface{}{
+				"status":       "COMPLETED",
+				"completed_at": &now,
+			})
+			metrics.IncrementJobQueueCount("completed")
+		case "FAILED":
+			now := time.Now()
+			errMsg := event.Message
+			db.DB.Model(&models.Job{}).Where("id = ?", jobID).Updates(map[string]interface{}{
+				"status":        "FAILED",
+				"completed_at":  &now,
+				"error_message": &errMsg,
+			})
+			metrics.IncrementJobQueueCount("failed")
 		}
 
-		// Broadcast to specific Job Channel
-		c.ws.BroadcastToJob(jobID, jsonBytes)
+		// 5. CONVERT TO FRONTEND-COMPATIBLE JSON FOR WEBSOCKET
+		// The frontend expects messages with {type, nodeId, status, message, ...}
+		// We need to wrap the proto data in this format.
+		frontendStatus := strings.ToLower(event.Status)
+		if frontendStatus == "completed" {
+			frontendStatus = "success"
+		}
+
+		// Send NODE_STATUS message (per-step updates)
+		nodeMsg := map[string]interface{}{
+			"type":    "NODE_STATUS",
+			"nodeId":  event.NodeId,
+			"status":  frontendStatus,
+			"message": event.Message,
+		}
+
+		// Include screenshot if present
+		if len(event.ScreenshotPreview) > 0 {
+			nodeMsg["screenshot"] = event.ScreenshotPreview
+		}
+
+		nodeJSON, err := json.Marshal(nodeMsg)
+		if err == nil {
+			c.ws.BroadcastToJob(jobID, nodeJSON)
+		}
+
+		// Send LOG message (for the terminal view)
+		logMsg := map[string]interface{}{
+			"type":    "LOG",
+			"level":   "info",
+			"message": event.Message,
+			"nodeId":  event.NodeId,
+		}
+		if event.Status == "FAILED" {
+			logMsg["level"] = "error"
+		}
+
+		logJSON, err := json.Marshal(logMsg)
+		if err == nil {
+			c.ws.BroadcastToJob(jobID, logJSON)
+		}
+
+		// Send WORKFLOW_STATUS on terminal states
+		if event.Status == "COMPLETED" || event.Status == "FAILED" {
+			wsMsg := map[string]interface{}{
+				"type":   "WORKFLOW_STATUS",
+				"status": frontendStatus,
+			}
+			wsJSON, err := json.Marshal(wsMsg)
+			if err == nil {
+				c.ws.BroadcastToJob(jobID, wsJSON)
+			}
+		}
 
 		// 6. TRIGGER WEBHOOK ON JOB COMPLETION/FAILURE
 		// Only dispatch webhooks for terminal states
 		if event.Status == "COMPLETED" || event.Status == "FAILED" {
-			// Query webhook_url from jobs table
-			// INDUSTRIAL: Explicit error handling - do not proceed with empty data
+			// Look up webhook URL from the user profile (via job -> user relation)
+			// The Prisma schema stores webhook config on UserProfile, not on Job
 			var webhookURL sql.NullString
-			err := db.DB.Raw(
-				"SELECT webhook_url FROM jobs WHERE id = ?",
-				jobID,
-			).Scan(&webhookURL).Error
+			err := db.DB.Raw(`
+				SELECT up.webhook_url
+				FROM jobs j
+				JOIN user_profiles up ON j.user_id = up.id
+				WHERE j.id = ?
+			`, jobID).Scan(&webhookURL).Error
 
-			// TASK 3 FIX: Explicit error handling instead of silent failure
 			if err != nil {
-				if err == sql.ErrNoRows {
-					// Job not found - this is expected for jobs without webhook config
-					log.Printf("[Webhook] Job %s has no webhook configured (not in DB)", jobID)
-				} else {
-					// Actual database error - log with ERROR level
-					log.Printf("[ERROR] Database query failed for webhook_url (job=%s): %v", jobID, err)
-					// Record metric for monitoring
-					metrics.RecordAPIRequest("WEBHOOK_DB_ERROR", "internal", "500")
-				}
-				// Do not proceed - we cannot dispatch webhook without valid data
+				log.Printf("[Webhook] Could not look up webhook for job %s: %v", jobID, err)
+				// Not critical — just skip webhook dispatch
 				return
 			}
 
 			// Only dispatch if webhook URL is configured and non-empty
 			if !webhookURL.Valid || webhookURL.String == "" {
-				log.Printf("[Webhook] Job %s completed but no webhook URL configured", jobID)
+				log.Printf("[Webhook] Job %s completed but user has no webhook URL configured", jobID)
 				return
 			}
 
@@ -232,12 +288,16 @@ func main() {
 	// 8. Setup Gin Router
 	r := gin.Default()
 
-	// CORS Configuration - Allow Authorization header
-	config := cors.DefaultConfig()
-	config.AllowAllOrigins = true
-	config.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type", "Authorization"}
-	config.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
-	r.Use(cors.New(config))
+	// CORS Configuration
+	corsOrigins := os.Getenv("CORS_ORIGINS")
+	if corsOrigins == "" {
+		corsOrigins = "http://localhost:3000"
+	}
+	corsConfig := cors.DefaultConfig()
+	corsConfig.AllowOrigins = strings.Split(corsOrigins, ",")
+	corsConfig.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type", "Authorization"}
+	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+	r.Use(cors.New(corsConfig))
 
 	// Add metrics middleware to track all requests
 	r.Use(func(c *gin.Context) {
@@ -263,152 +323,34 @@ func main() {
 	})
 
 	// --- [ENDPOINT 0] GENERATE WORKFLOW (AI) ---
-	generatorCtrl := controllers.NewGeneratorController()
-	r.POST("/api/v1/workflow/generate", generatorCtrl.HandleGenerate)       // Async - returns job_id
+	generatorCtrl := controllers.NewGeneratorController(temporalClient)
+	r.POST("/api/v1/workflow/generate", generatorCtrl.HandleGenerate)         // Async - returns job_id
 	r.POST("/api/v1/workflow/generate/sync", generatorCtrl.HandleGenerateSync) // Sync - waits for result
 
-	// --- [ENDPOINT 0.5] WORKFLOW MANAGEMENT ---
-	workflowCtrl := controllers.NewWorkflowController()
-	r.POST("/api/v1/workflow/save", workflowCtrl.HandleSave)
-	r.POST("/api/v1/workflow/status", workflowCtrl.HandleStatus)
-	r.POST("/api/v1/workflow/execute", workflowCtrl.HandleExecute)
-	r.DELETE("/api/v1/workflow/:id", workflowCtrl.HandleDelete)
-	r.GET("/v1/jobs", workflowCtrl.HandleListJobs)
+	// --- WORKFLOW & JOB MANAGEMENT ---
+	// NOTE: Workflow CRUD is handled by Prisma server actions on the frontend.
+	// The backend only handles execution orchestration via Temporal.
+	workflowCtrl := controllers.NewWorkflowController(temporalClient)
 
-	// --- [ENDPOINT 1] START AUTOMATION JOB ---
-	// Create protected route group with rate limiting
-	protected := r.Group("/")
+	// Create authenticated route group
+	auth := r.Group("/")
+	auth.Use(middleware.AuthMiddleware())
+
+	// Apply rate limiting if Redis is available
 	if redisClient != nil {
-		// Apply rate limiting if Redis is available
-		protected.Use(func(c *gin.Context) {
-			// Dev mode: allow X-User-ID header for testing
-			if userID := c.GetHeader("X-User-ID"); userID != "" {
-				c.Set("userID", userID)
-			}
-			c.Next()
-		})
-		protected.Use(middleware.NewRateLimitMiddleware(redisClient).Middleware())
+		auth.Use(middleware.NewRateLimitMiddleware(redisClient).Middleware())
 	}
 
-	protected.POST("/run", func(c *gin.Context) {
-		// A. Parse Developer Request (JSON)
-		// Matches the structure sent by your Dashboard or Curl
-		var req struct {
-			WorkflowID string            `json:"workflow_id"`
-			Params     map[string]string `json:"params"`
-			Config     struct {
-				UsePremiumProxy bool   `json:"use_premium_proxy"`
-				SolveCaptchas   bool   `json:"solve_captchas"`
-				SessionID       string `json:"session_id"`
-				Region          string `json:"region"`
-			} `json:"config"`
-		}
+	// Workflow execution (authenticated)
+	auth.POST("/api/v1/workflows/:id/run", workflowCtrl.HandleExecute) // Frontend's runWorkflow()
+	auth.POST("/api/v1/workflow/execute", workflowCtrl.HandleExecute)  // Legacy compatibility
 
-		if err := c.BindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": "Invalid JSON body"})
-			return
-		}
-
-		// TASK 1 FIX: Generate UUID v4 to prevent identity collisions at scale
-		// Old: fmt.Sprintf("job-%d", time.Now().Unix()) - collision risk at high throughput
-		// New: UUID v4 provides 122 bits of randomness (collision probability: 1 in 2^61)
-		jobID := uuid.New().String()
-
-		// B. Prepare Data for Temporal
-		// We package everything into a generic map because Python receives it as a dict.
-		workflowPayload := map[string]interface{}{
-			"job_id":      jobID,
-			"workflow_id": req.WorkflowID,
-			"params":      req.Params,
-			"config": map[string]interface{}{
-				"use_premium_proxy": req.Config.UsePremiumProxy,
-				"solve_captchas":    req.Config.SolveCaptchas,
-				"session_id":        req.Config.SessionID,
-				"region":            req.Config.Region,
-			},
-		}
-
-		workflowOptions := client.StartWorkflowOptions{
-			ID:        "workflow-" + jobID,
-			TaskQueue: "e2e-browser-tasks",
-		}
-
-		// C. Start the Workflow (with timeout to prevent hanging)
-		execCtx, execCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer execCancel()
-
-		we, err := temporalClient.ExecuteWorkflow(execCtx, workflowOptions, "BrowserWorkflow", workflowPayload)
-		if err != nil {
-			log.Printf("[Error] Temporal workflow start failed: %v", err)
-			c.JSON(500, gin.H{"error": "Failed to start workflow"})
-			return
-		}
-
-		// Record metrics
-		metrics.RecordWorkflowStart(req.WorkflowID)
-		metrics.IncrementJobQueueCount("queued")
-
-		c.JSON(202, gin.H{
-			"message":  "Job Queued Successfully",
-			"job_id":   jobID,
-			"run_id":   we.GetRunID(),
-			"trace_ws": fmt.Sprintf("/ws?job_id=%s", jobID),
-		})
-	})
-
-	// --- [ENDPOINT 2] HUMAN-IN-THE-LOOP RESUME ---
-	r.POST("/resume", func(c *gin.Context) {
-		// A. Parse Resume Request (JSON)
-		// e.g. {"job_id": "...", "data": {"otp": "123456"}}
-		var req struct {
-			JobID string            `json:"job_id"`
-			Data  map[string]string `json:"data"`
-		}
-
-		if err := c.BindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": "Invalid JSON body"})
-			return
-		}
-
-		if req.JobID == "" {
-			c.JSON(400, gin.H{"error": "job_id is required"})
-			return
-		}
-
-		// B. Send Temporal Signal to the Running Workflow
-		workflowID := "workflow-" + req.JobID
-
-		log.Printf("[Signal] Sending signal to workflow %s with data: %v", workflowID, req.Data)
-
-		// Context with timeout to prevent hanging
-		signalCtx, signalCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer signalCancel()
-
-		err := temporalClient.SignalWorkflow(
-			signalCtx,
-			workflowID,
-			"",                 // Empty RunID = use the currently running execution
-			"USER_INTERACTION", // Signal name (Matches Python @workflow.signal)
-			req.Data,           // Signal payload
-		)
-
-		if err != nil {
-			log.Printf("[Error] Signal failed for job %s: %v", req.JobID, err)
-			c.JSON(500, gin.H{
-				"success": false,
-				"error":   "Failed to signal workflow",
-				"details": err.Error(),
-			})
-			return
-		}
-
-		log.Printf("[Signal] Signal sent successfully to job %s", req.JobID)
-		c.JSON(200, gin.H{
-			"success": true,
-			"message": "Workflow resumed",
-			"job_id":  req.JobID,
-		})
-	})
+	// Job management (authenticated)
+	auth.GET("/v1/jobs", workflowCtrl.HandleListJobs)
+	auth.GET("/v1/jobs/:id", workflowCtrl.HandleGetJob)
+	auth.POST("/v1/jobs/:id/cancel", workflowCtrl.HandleCancelJob)
+	auth.GET("/v1/jobs/:id/logs", workflowCtrl.HandleGetJobLogs)
+	auth.POST("/v1/jobs/:id/resume", workflowCtrl.HandleResumeJob)
 
 	// 9. Start Server
 	port := os.Getenv("PORT_GO_API")
