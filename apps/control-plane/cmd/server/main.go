@@ -289,13 +289,14 @@ func main() {
 	r := gin.Default()
 
 	// CORS Configuration
-	corsOrigins := os.Getenv("CORS_ORIGINS")
-	if corsOrigins == "" {
-		corsOrigins = "http://localhost:3000"
-	}
 	corsConfig := cors.DefaultConfig()
-	corsConfig.AllowOrigins = strings.Split(corsOrigins, ",")
-	corsConfig.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type", "Authorization", "X-User-Id", "X-Clerk-User-Id"}
+	corsOrigins := os.Getenv("CORS_ORIGINS")
+	if corsOrigins == "" || corsOrigins == "*" {
+		corsConfig.AllowAllOrigins = true
+	} else {
+		corsConfig.AllowOrigins = strings.Split(corsOrigins, ",")
+	}
+	corsConfig.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type", "Authorization", "X-User-Id", "X-Clerk-User-Id", "Accept", "Referer", "User-Agent"}
 	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 	r.Use(cors.New(corsConfig))
 
