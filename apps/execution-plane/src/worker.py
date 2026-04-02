@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from workflows import BrowserWorkflow, GenerateWorkflowRecipe
 from activities.activities import browser_automation_activity
 from activities.discoveryActivities import (
-    evaluate_next_step_activity,
+    harvest_and_plan_activity,    # NEW: Math-first one-shot planner (replaces evaluate_next_step)
     execute_action_activity,
     cleanup_browser_activity
 )
@@ -63,8 +63,8 @@ async def main():
             ],
             activities=[
                 browser_automation_activity,
-                # Discovery activities for verified generation
-                evaluate_next_step_activity,
+                # Math-First generation activities
+                harvest_and_plan_activity,    # One-shot DOM harvest + intent plan (replaces ReAct loop)
                 execute_action_activity,
                 cleanup_browser_activity,
                 # Event publishing (notify frontend of step results)
