@@ -102,9 +102,7 @@ RUN mkdir -p /app/prisma
 # We handle this by copying during build with proper context
 COPY apps/execution-plane/prisma/schema.prisma ./prisma/schema.prisma
 
-# Generate Prisma client
-RUN /root/.local/bin/prisma generate --schema=prisma/schema.prisma
-
+# Removed Prisma from execution-plane: worker doesn't use it.
 # ==================================================
 # Copy Application Code
 # ==================================================

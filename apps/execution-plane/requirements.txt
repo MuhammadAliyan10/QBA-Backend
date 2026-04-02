@@ -10,7 +10,7 @@
 temporalio==1.7.1
 nats-py==2.9.0
 redis==5.0.1
-prisma==0.15.0
+
 
 # -----------------------------
 # BROWSER AUTOMATION
