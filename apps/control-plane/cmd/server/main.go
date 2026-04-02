@@ -295,7 +295,7 @@ func main() {
 	}
 	corsConfig := cors.DefaultConfig()
 	corsConfig.AllowOrigins = strings.Split(corsOrigins, ",")
-	corsConfig.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type", "Authorization"}
+	corsConfig.AllowHeaders = []string{"Origin", "Content-Length", "Content-Type", "Authorization", "X-User-Id", "X-Clerk-User-Id"}
 	corsConfig.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 	r.Use(cors.New(corsConfig))
 
