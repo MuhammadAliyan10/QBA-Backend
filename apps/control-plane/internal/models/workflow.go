@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"gorm.io/datatypes"
-	"gorm.io/gorm"
 )
 
 // Workflow represents a saved automation workflow
@@ -32,7 +31,6 @@ type Workflow struct {
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
-	DeletedAt gorm.DeletedAt `gorm:"index"`
 }
 
 // TableName specifies the table name for GORM

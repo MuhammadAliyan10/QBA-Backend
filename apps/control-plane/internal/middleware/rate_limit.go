@@ -7,31 +7,45 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/time/rate"
 )
 
+// ─── RATE LIMIT MIDDLEWARE ───────────────────────────────────────────────────
+
 // RateLimitMiddleware enforces token bucket rate limiting per user.
-// Prevents resource exhaustion by limiting API calls to N requests per time window.
 //
-// Algorithm: Token Bucket
-// - Each user has a bucket with a maximum capacity
-// - Tokens refill over time (window-based reset)
-// - Each request consumes 1 token
-// - Requests are rejected when bucket is empty
+// Three-tier defense:
+//  1. Primary:   Redis Lua token bucket (distributed, persistent)
+//  2. Fallback:  In-memory x/time/rate.Limiter per userID (local, ephemeral)
+//  3. Dead stop: HTTP 503 — if both fail, NO traffic passes
+//
+// This middleware NEVER fails open. Un-metered traffic on heavy compute is
+// a resource exhaustion vector.
 type RateLimitMiddleware struct {
 	redis       *redis.Client
 	luaScript   *redis.Script
-	maxRequests int           // Maximum requests per window
-	window      time.Duration // Time window for rate limiting
+	maxRequests int
+	window      time.Duration
+
+	// In-memory fallback limiter (sync.Map[string]*rate.Limiter)
+	localLimiters sync.Map
+	localRate     rate.Limit
+	localBurst    int
+
+	// Periodic cleanup of stale local limiters
+	cleanupOnce sync.Once
 }
 
-// Lua script for atomic token bucket implementation
+// Lua script for atomic token bucket implementation.
 // Returns:
-//   -1: Rate limit exceeded (no tokens available)
-//   >= 0: Tokens remaining after deduction
+//
+//	-1: Rate limit exceeded (no tokens available)
+//	>= 0: Tokens remaining after deduction
 const luaTokenBucketScript = `
 local key = KEYS[1]
 local capacity = tonumber(ARGV[1])
@@ -60,10 +74,11 @@ else
 end
 `
 
-// NewRateLimitMiddleware creates a new rate limiting middleware.
+// NewRateLimitMiddleware creates a new fail-closed rate limiting middleware.
+//
 // Configuration via environment variables:
 //   - RATE_LIMIT_REQUESTS: Max requests per window (default: 5)
-//   - RATE_LIMIT_WINDOW: Window duration in seconds (default: 60)
+//   - RATE_LIMIT_WINDOW:   Window duration in seconds (default: 60)
 func NewRateLimitMiddleware(redisClient *redis.Client) *RateLimitMiddleware {
 	maxRequests, _ := strconv.Atoi(os.Getenv("RATE_LIMIT_REQUESTS"))
 	if maxRequests == 0 {
@@ -72,78 +87,90 @@ func NewRateLimitMiddleware(redisClient *redis.Client) *RateLimitMiddleware {
 
 	windowSeconds, _ := strconv.Atoi(os.Getenv("RATE_LIMIT_WINDOW"))
 	if windowSeconds == 0 {
-		windowSeconds = 60 // Default: 60 seconds (1 minute)
+		windowSeconds = 60 // Default: 60 seconds
 	}
 
-	return &RateLimitMiddleware{
+	// Compute local rate limiter parameters to mirror Redis config.
+	// rate.Limit is events per second. We want maxRequests per windowSeconds.
+	localRate := rate.Limit(float64(maxRequests) / float64(windowSeconds))
+
+	rl := &RateLimitMiddleware{
 		redis:       redisClient,
 		luaScript:   redis.NewScript(luaTokenBucketScript),
 		maxRequests: maxRequests,
 		window:      time.Duration(windowSeconds) * time.Second,
+		localRate:   localRate,
+		localBurst:  maxRequests,
 	}
+
+	return rl
 }
 
 // Middleware returns the Gin middleware function for rate limiting.
 func (rl *RateLimitMiddleware) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Extract user ID from context (set by auth middleware)
+		// Extract user ID from context (set by auth middleware).
 		userID, exists := GetUserID(c)
 		if !exists {
-			// If no user ID, apply global rate limit (optional)
-			// For now, we require authentication
+			log.Printf("[RATE] REJECT: No user identity in context | IP=%s", c.ClientIP())
 			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Authentication required for rate limiting",
+				"error": "Authentication required",
 			})
 			c.Abort()
 			return
 		}
 
-		// Check rate limit
-		remaining, retryAfter, err := rl.checkRateLimit(c.Request.Context(), userID)
+		// Start periodic cleanup of stale local limiters.
+		rl.cleanupOnce.Do(func() {
+			go rl.cleanupLoop()
+		})
 
-		if err != nil {
-			// Redis error - log but don't block request (fail open)
-			log.Printf("[WARN] Rate limit check failed for user %s: %v", userID, err)
+		// ── Tier 1: Redis token bucket ───────────────────────────────────
+		if rl.redis != nil {
+			remaining, retryAfter, err := rl.checkRedisRateLimit(c.Request.Context(), userID)
+
+			if err == nil {
+				// Redis is healthy — evaluate result.
+				if remaining == -1 {
+					rl.rejectRateLimited(c, userID, retryAfter)
+					return
+				}
+				// Passed — set headers and continue.
+				c.Header("X-RateLimit-Limit", fmt.Sprintf("%d", rl.maxRequests))
+				c.Header("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
+				c.Next()
+				return
+			}
+
+			// Redis failed — fall through to tier 2.
+			log.Printf("[RATE] WARNING: Redis unavailable — falling back to in-memory limiter | User=%s | Error=%v",
+				userID, err)
+		} else {
+			log.Printf("[RATE] WARNING: Redis not configured — using in-memory limiter")
+		}
+
+		// ── Tier 2: Redis failed — fall back to in-memory limiter ────────
+
+		if rl.checkLocalRateLimit(userID) {
+			// Passed local check.
+			c.Header("X-RateLimit-Limit", fmt.Sprintf("%d", rl.maxRequests))
+			c.Header("X-RateLimit-Source", "local-fallback")
 			c.Next()
 			return
 		}
 
-		// Rate limit exceeded
-		if remaining == -1 {
-			log.Printf("🚫 Rate limit exceeded for user %s", userID)
-			c.Header("X-RateLimit-Limit", fmt.Sprintf("%d", rl.maxRequests))
-			c.Header("X-RateLimit-Remaining", "0")
-			c.Header("X-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(retryAfter).Unix()))
-			c.Header("Retry-After", fmt.Sprintf("%d", int(retryAfter.Seconds())))
-
-			c.JSON(http.StatusTooManyRequests, gin.H{
-				"error":       "Rate limit exceeded",
-				"message":     fmt.Sprintf("Maximum %d jobs per minute. Please try again later.", rl.maxRequests),
-				"retry_after": int(retryAfter.Seconds()),
-			})
-			c.Abort()
-			return
-		}
-
-		// Success - add rate limit headers
-		c.Header("X-RateLimit-Limit", fmt.Sprintf("%d", rl.maxRequests))
-		c.Header("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
-		c.Header("X-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(rl.window).Unix()))
-
-		log.Printf("[OK] Rate limit check passed for user %s. Remaining: %d/%d", userID, remaining, rl.maxRequests)
-		c.Next()
+		// Local limiter also says no.
+		rl.rejectRateLimited(c, userID, rl.window)
 	}
 }
 
-// checkRateLimit performs the token bucket check using Redis Lua script.
-// Returns:
-//   - remaining: tokens left in bucket (-1 if rate limited)
-//   - retryAfter: duration until next token available
-//   - error: Redis error (nil on success)
-func (rl *RateLimitMiddleware) checkRateLimit(ctx context.Context, userID string) (int64, time.Duration, error) {
+// ── TIER 1: REDIS ────────────────────────────────────────────────────────────
+
+func (rl *RateLimitMiddleware) checkRedisRateLimit(
+	ctx context.Context, userID string,
+) (int64, time.Duration, error) {
 	key := fmt.Sprintf("ratelimit:user:%s:jobs", userID)
 
-	// Execute Lua script
 	result, err := rl.luaScript.Run(
 		ctx,
 		rl.redis,
@@ -154,21 +181,19 @@ func (rl *RateLimitMiddleware) checkRateLimit(ctx context.Context, userID string
 	).Result()
 
 	if err != nil {
-		return 0, 0, fmt.Errorf("lua script failed: %w", err)
+		return 0, 0, fmt.Errorf("redis lua script failed: %w", err)
 	}
 
-	// Parse result
 	remaining, ok := result.(int64)
 	if !ok {
 		return 0, 0, fmt.Errorf("unexpected result type: %T", result)
 	}
 
-	// If rate limited, get TTL for retry-after
 	var retryAfter time.Duration
 	if remaining == -1 {
 		ttl, err := rl.redis.TTL(ctx, key).Result()
 		if err != nil {
-			retryAfter = rl.window // Fallback to full window
+			retryAfter = rl.window
 		} else {
 			retryAfter = ttl
 		}
@@ -177,14 +202,76 @@ func (rl *RateLimitMiddleware) checkRateLimit(ctx context.Context, userID string
 	return remaining, retryAfter, nil
 }
 
+// ── TIER 2: IN-MEMORY FALLBACK ───────────────────────────────────────────────
+
+// checkLocalRateLimit uses a per-user x/time/rate.Limiter as a fallback
+// when Redis is unavailable. Returns true if the request is allowed.
+func (rl *RateLimitMiddleware) checkLocalRateLimit(userID string) bool {
+	limiterI, _ := rl.localLimiters.LoadOrStore(userID, &localLimiterEntry{
+		limiter:  rate.NewLimiter(rl.localRate, rl.localBurst),
+		lastSeen: time.Now(),
+	})
+
+	entry := limiterI.(*localLimiterEntry)
+	entry.lastSeen = time.Now()
+	return entry.limiter.Allow()
+}
+
+type localLimiterEntry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
+// cleanupLoop removes stale local limiters every 5 minutes to prevent unbounded
+// memory growth. A limiter is stale if not seen for 10 minutes.
+func (rl *RateLimitMiddleware) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		now := time.Now()
+		stale := 0
+		rl.localLimiters.Range(func(key, value interface{}) bool {
+			entry := value.(*localLimiterEntry)
+			if now.Sub(entry.lastSeen) > 10*time.Minute {
+				rl.localLimiters.Delete(key)
+				stale++
+			}
+			return true
+		})
+		if stale > 0 {
+			log.Printf("[RATE] Cleaned up %d stale local rate limiters", stale)
+		}
+	}
+}
+
+// ── REJECTION ────────────────────────────────────────────────────────────────
+
+func (rl *RateLimitMiddleware) rejectRateLimited(c *gin.Context, userID string, retryAfter time.Duration) {
+	log.Printf("[RATE] REJECT: Rate limit exceeded | User=%s | IP=%s | Path=%s",
+		userID, c.ClientIP(), c.Request.URL.Path)
+
+	c.Header("X-RateLimit-Limit", fmt.Sprintf("%d", rl.maxRequests))
+	c.Header("X-RateLimit-Remaining", "0")
+	c.Header("X-RateLimit-Reset", fmt.Sprintf("%d", time.Now().Add(retryAfter).Unix()))
+	c.Header("Retry-After", fmt.Sprintf("%d", int(retryAfter.Seconds())))
+
+	c.JSON(http.StatusTooManyRequests, gin.H{
+		"error":       "Rate limit exceeded",
+		"message":     fmt.Sprintf("Maximum %d jobs per minute. Please try again later.", rl.maxRequests),
+		"retry_after": int(retryAfter.Seconds()),
+	})
+	c.Abort()
+}
+
+// ── PUBLIC HELPERS ───────────────────────────────────────────────────────────
+
 // GetRemainingQuota returns the current remaining quota for a user.
-// Useful for /balance or /quota endpoints.
 func (rl *RateLimitMiddleware) GetRemainingQuota(ctx context.Context, userID string) (int64, error) {
 	key := fmt.Sprintf("ratelimit:user:%s:jobs", userID)
 
 	val, err := rl.redis.Get(ctx, key).Int64()
 	if err == redis.Nil {
-		// No bucket yet - return full capacity
 		return int64(rl.maxRequests), nil
 	}
 	if err != nil {
@@ -201,6 +288,6 @@ func (rl *RateLimitMiddleware) ResetUserQuota(ctx context.Context, userID string
 	if err != nil {
 		return fmt.Errorf("failed to reset quota: %w", err)
 	}
-	log.Printf("[RESET] Reset rate limit for user %s", userID)
+	log.Printf("[RATE] Reset rate limit for user %s", userID)
 	return nil
 }

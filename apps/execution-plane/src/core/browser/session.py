@@ -29,7 +29,13 @@ from urllib.parse import urlparse
 
 import redis.asyncio as aioredis
 from cryptography.fernet import Fernet, InvalidToken
-from playwright.async_api import BrowserContext
+from playwright.async_api import BrowserContext, Page, Response
+
+
+# Deferred imports inside methods to break circular dependencies
+# from core.planning.elementMatcher import ElementMatcher, Intent
+
+from core.browser.domHarvester import DOMHarvester
 
 logger = logging.getLogger("session_manager")
 
@@ -208,7 +214,7 @@ class SessionManager:
         self,
         user_id: str,
         domain: str
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[dict[str, Any]]:
         """
         Retrieve and decrypt a stored browser session.
 
@@ -312,6 +318,95 @@ class SessionManager:
         except Exception as e:
             logger.error(f"[Session] Failed to save session for {user_id}@{domain}: {e}")
             return False
+
+    # --- GHOST SESSION DETECTION (Zero LLM) ---
+
+    async def verify_session(self, page: Page, target_url: str) -> bool:
+        """
+        Navigate to target and verify if the session is still valid.
+
+        Logic:
+        1. Intercept 401 Unauthorized responses.
+        2. Use ElementMatcher to find 'Logout' or 'Account' signatures.
+        3. Check for obvious login page indicators in URL.
+        """
+        logger.info(f"[Session] Verifying ghost state for {target_url}")
+
+        unauthorized_detected = False
+
+        # 1. Listen for 401s during navigation
+        async def handle_response(response: Response):
+            nonlocal unauthorized_detected
+            if response.status == 401:
+                logger.warning(f"[Session] Intercepted 401 on {response.url}")
+                unauthorized_detected = True
+
+        page.on("response", handle_response)
+
+        try:
+            # Navigate with a short timeout for verification
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
+
+            if unauthorized_detected:
+                return False
+
+            # 2. Check for login-indicative URL redirects
+            current_url = page.url.lower()
+            if any(path in current_url for path in ["/login", "/signin", "/auth"]):
+                logger.warning(f"[Session] Redirected to login path: {current_url}")
+                return False
+
+            # 3. DOM Signature Matching (Math-First)
+            # Harvest full DOM snapshot
+            harvester = DOMHarvester()
+            snapshot = await harvester.harvest(page)
+
+            # Deferred import to break circular dependency with core.browser
+            from core.planning.elementMatcher import ElementMatcher
+            from core.planning.intentParser import Intent
+
+            # Use ElementMatcher to look for "Logout" or "Sign Out"
+            matcher = ElementMatcher()
+
+            # We use a dummy Intent for the matcher to look for auth markers
+            auth_intent = Intent(
+                action="CLICK",
+                targetDescription="Logout or Sign Out or Log off",
+                qualifier="first"
+            )
+
+            account_intent = Intent(
+                action="SEE",
+                targetDescription="My Account or Profile or User Menu",
+                qualifier="first"
+            )
+
+            try:
+                # If we find a confident 'Logout' button, session is definitely active
+                logout_match = await matcher.match(auth_intent, snapshot)
+                if logout_match.confidence > 0.7:
+                    logger.info(f"[Session] Ghost check passed: Found '{logout_match.element.text}'")
+                    return True
+            except Exception:
+                pass # Matcher might raise AIFallbackTriggered if not found
+
+            try:
+                # Secondary check: Profile indicators
+                account_match = await matcher.match(account_intent, snapshot)
+                if account_match.confidence > 0.7:
+                    logger.info(f"[Session] Ghost check passed: Found profile identity marker")
+                    return True
+            except Exception:
+                pass
+
+            logger.warning("[Session] Ghost check FAILED: No authenticated signatures found")
+            return False
+
+        except Exception as e:
+            logger.error(f"[Session] Verification crash: {e}")
+            return False
+        finally:
+            page.remove_listener("response", handle_response)
 
     async def delete_session(self, user_id: str, domain: str) -> bool:
         """

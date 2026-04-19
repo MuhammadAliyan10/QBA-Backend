@@ -60,8 +60,8 @@ class ValidationError:
 class ValidationResult:
     """Result of recipe validation."""
     is_valid: bool
-    errors: List[ValidationError] = field(default_factory=list)
-    warnings: List[ValidationError] = field(default_factory=list)
+    errors: list[ValidationError] = field(default_factory=list)
+    warnings: list[ValidationError] = field(default_factory=list)
     recipe_name: str = ""
 
     def add_error(self, error: ValidationError):
@@ -106,10 +106,10 @@ class RecipeValidator:
 
     def __init__(self):
         self.variable_pattern = re.compile(r'\{\{\s*([\w.]+)\s*\}\}')
-        self.defined_variables: Set[str] = set()
-        self.node_ids: Set[str] = set()
-        self.edges: List[Dict] = []
-        self.nodes: Dict[str, Dict] = {}
+        self.defined_variables: set[str] = set()
+        self.node_ids: set[str] = set()
+        self.edges: list[Dict] = []
+        self.nodes: dict[str, Dict] = {}
 
     def validate(self, recipe: Dict) -> ValidationResult:
         """
@@ -543,7 +543,7 @@ class RecipeValidator:
     def _rule_14_no_circular_dependencies(self, recipe: Dict, result: ValidationResult):
         """Edges MUST NOT create cycles (except loop_continue)."""
         # Build adjacency list excluding loop_continue edges
-        graph: Dict[str, List[str]] = {node_id: [] for node_id in self.node_ids}
+        graph: dict[str, list[str]] = {node_id: [] for node_id in self.node_ids}
 
         for edge in self.edges:
             if edge.get("type") == "loop_continue":

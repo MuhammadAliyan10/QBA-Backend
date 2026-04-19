@@ -101,7 +101,7 @@ class RAGService:
     # EMBEDDING
     # -------------------------------------------------------------------------
 
-    async def embed(self, text: str) -> List[float]:
+    async def embed(self, text: str) -> list[float]:
         """
         Generate embedding vector for text.
 

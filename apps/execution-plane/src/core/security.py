@@ -100,7 +100,7 @@ class CryptoManager:
         
         logger.info(f"CryptoManager initialized with KMS key: {self.kms_key_id}")
     
-    def generate_data_key(self) -> Tuple[bytes, bytes]:
+    def generate_data_key(self) -> tuple[bytes, bytes]:
         """
         Request a Data Encryption Key from KMS.
         

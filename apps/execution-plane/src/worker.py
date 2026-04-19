@@ -23,6 +23,16 @@ from activities.discoveryActivities import (
     execute_action_activity,
     cleanup_browser_activity
 )
+from activities.healingActivities import (
+    validateRequestActivity,
+    generateWorkflowMapActivity,
+    executeWorkflowStrictlyActivity,
+    healWorkflowActivity
+)
+from activities.hybridActivities import (
+    generateIntentSequenceActivity,
+    executeHybridWorkflowActivity
+)
 from activities.publishActivities import publish_event_activity
 from telemetry import init_telemetry, shutdown_telemetry
 
@@ -69,6 +79,16 @@ async def main():
                 cleanup_browser_activity,
                 # Event publishing (notify frontend of step results)
                 publish_event_activity,
+
+                # Strict Assertion & Self-Healing Layer
+                validateRequestActivity,
+                generateWorkflowMapActivity,
+                executeWorkflowStrictlyActivity,
+                healWorkflowActivity,
+
+                # Hybrid Agentic DOM-Walker Layer
+                generateIntentSequenceActivity,
+                executeHybridWorkflowActivity,
             ],
             # CRITICAL: Allow enough time for Browser to close gracefully
             graceful_shutdown_timeout=timedelta(seconds=15)

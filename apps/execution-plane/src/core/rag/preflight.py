@@ -50,7 +50,7 @@ class PreflightResult:
 
     # Timing
     total_ms: int = 0
-    layer_ms: Dict[str, int] = None
+    layer_ms: dict[str, int] = None
 
     def __post_init__(self):
         if self.warnings is None:
@@ -133,22 +133,126 @@ class PreflightPipeline:
         self,
         url: str,
         prompt: str,
-        skip_justification: bool = False
+        skip_justification: bool = False,
+        job_id: Optional[str] = None
     ) -> PreflightResult:
         """
         Execute the full preflight pipeline.
-
-        Args:
-            url: Target URL
-            prompt: User's task description
-            skip_justification: Skip browser verification (faster but less safe)
-
-        Returns:
-            PreflightResult with hardened recipe
+        Includes Phase 1: HTTP Verification, Intent Feasibility, Session Check.
         """
         start_time = time.time()
         layer_ms = {}
         warnings = []
+
+        # ---------------------------------------------------------------------
+        # PHASE 1: HTTP Verification
+        # ---------------------------------------------------------------------
+        logger.info(f"[{job_id}] Phase 1: HTTP Verification for {url}")
+        verify_start = time.time()
+        import httpx
+        try:
+            # Mimic residential browser to bypass simple WAFs on GET
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Upgrade-Insecure-Requests": "1"
+            }
+            async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=5.0) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+
+                # FIX: 200 OK Honeypot Check (Text-Signature Matching)
+                body_text = resp.text.lower()
+                waf_signatures = [
+                    "cf-browser-verification",
+                    "window.__cf_chl_opt",
+                    "window.datadomeoptions",
+                    "challenge-platform",
+                    "just a moment..."
+                ]
+                for sig in waf_signatures:
+                    if sig in body_text:
+                        logger.warning(f"[{job_id}] WAF Signature Detected in 200 OK response: {sig}")
+                        return PreflightResult(
+                            success=False, recipe=None, source="http_verification",
+                            warnings=[f"URL served a 200 OK honeypot (WAF signature '{sig}' detected)."],
+                            total_ms=int((time.time() - start_time) * 1000), layer_ms=layer_ms
+                        )
+
+            layer_ms["http_ms"] = int((time.time() - verify_start) * 1000)
+        except httpx.HTTPStatusError as e:
+            # 403s are common for WAFs blocking simple HTTP GETs. Let Phase 2 Oracle attempt it.
+            logger.warning(f"[{job_id}] HTTP Verification Warning: {e.response.status_code}")
+            warnings.append(f"HTTP Warning: {e.response.status_code}. Site might be blocking basic GET requests.")
+            layer_ms["http_ms"] = int((time.time() - verify_start) * 1000)
+        except Exception as e:
+            # WAFs frequently tarpit/timeout basic HTTP clients. Let Phase 2 handle the final verdict.
+            logger.warning(f"[{job_id}] HTTP Verification Tarpit/Timeout: {e}")
+            warnings.append(f"Verification Tarpit: {str(e)[:100]}")
+            layer_ms["http_ms"] = int((time.time() - verify_start) * 1000)
+
+        # ---------------------------------------------------------------------
+        # PHASE 1: Preflight Oracle (Latency Optimized 3-in-1)
+        # ---------------------------------------------------------------------
+        logger.info(f"[{job_id}] Phase 1: Preflight Oracle Validation")
+        oracle_start = time.time()
+        try:
+            from core.llm.safeClient import SafeLLMClient
+            from core.rag.prompts import PREFLIGHT_ORACLE_PROMPT
+            import json
+
+            llm = SafeLLMClient()
+            oracle_raw = await llm.call(PREFLIGHT_ORACLE_PROMPT, f"URL: {url}\nIntent: {prompt}", temperature=0.0)
+
+            # Extract and parse JSON
+            start_idx = oracle_raw.find('{')
+            end_idx = oracle_raw.rfind('}')
+            oracle_data = json.loads(oracle_raw[start_idx:end_idx+1])
+
+            is_possible = oracle_data.get("is_possible", True)
+            if not is_possible:
+                reason = oracle_data.get("reasoning", "Unknown logical constraint")
+                return PreflightResult(
+                    success=False, recipe=None, source="oracle_gatekeeper",
+                    warnings=[f"Feasibility Failure: {reason}"],
+                    total_ms=int((time.time() - start_time) * 1000), layer_ms=layer_ms
+                )
+
+            # Store oracle findings for downstream consumption
+            auth_required = oracle_data.get("auth_required", False)
+            site_category = oracle_data.get("site_category", "portal")
+            site_complexity = oracle_data.get("complexity", "Medium")
+
+            # Check Auth Session if required
+            if auth_required:
+                from core.AccountManager import AccountManager
+                from urllib.parse import urlparse
+                domain = urlparse(url).netloc.replace("www.", "")
+                try:
+                    am = AccountManager()
+                    with am.engine.connect() as conn:
+                        from sqlalchemy import text
+                        count = conn.execute(text("SELECT COUNT(*) FROM auth_accounts WHERE domain = :domain"), {"domain": domain}).scalar()
+                        if count == 0:
+                            warnings.append(f"Persistence Gap: {domain} requires auth, but no accounts found in DB.")
+                except Exception as e:
+                    logger.warning(f"[{job_id}] Auth DB check failed: {e}")
+
+            # Assign classification for Planner
+            from core.rag.classifier import ClassificationResult
+            classification = ClassificationResult(
+                category=site_category,
+                platform="Detecting...", # Placeholder for justifier
+                complexity=site_complexity,
+                confidence=0.90,
+                features={"auth_required": auth_required}
+            )
+
+            layer_ms["oracle_ms"] = int((time.time() - oracle_start) * 1000)
+        except Exception as e:
+            logger.error(f"[{job_id}] Oracle Error: {e}")
+            warnings.append(f"Oracle degradation: {str(e)[:50]}")
 
         # ---------------------------------------------------------------------
         # LAYER 1: Memory Check (RAG)
@@ -182,14 +286,16 @@ class PreflightPipeline:
             layer_ms["memory_ms"] = int((time.time() - layer_start) * 1000)
 
         # ---------------------------------------------------------------------
-        # LAYER 1.5: Classification (For context)
+        # LAYER 1.5: Classification (For context) — ONLY if Oracle didn't set it
         # ---------------------------------------------------------------------
-        classification = None
-        try:
-            classification = await self.classifier.classify(url)
-            logger.info(f"[Preflight] Classified as: {classification.category}")
-        except Exception as e:
-            logger.warning(f"[Preflight] Classification failed: {e}")
+        if classification is None:
+            try:
+                classification = await self.classifier.classify(url)
+                logger.info(f"[Preflight] Classified as: {classification.category}")
+            except Exception as e:
+                logger.warning(f"[Preflight] Classification failed: {e}")
+        else:
+            logger.info(f"[Preflight] Using Oracle classification: {classification.category}")
 
         # ---------------------------------------------------------------------
         # LAYER 2: Generate Soft Recipe (Planner AI)
@@ -198,7 +304,7 @@ class PreflightPipeline:
         layer_start = time.time()
 
         try:
-            soft_recipe = await self._generate_recipe(prompt, url, classification)
+            soft_recipe = await self._generate_recipe(prompt, url, classification, job_id=job_id)
             layer_ms["generation_ms"] = int((time.time() - layer_start) * 1000)
 
             if not soft_recipe:
@@ -238,9 +344,12 @@ class PreflightPipeline:
                 warnings.extend([w.message for w in result.warnings[:3]])
 
         except Exception as e:
+            # RecipeValidationError is raised on schema/logic failures —
+            # treat as warnings, not a crash, so justification can still run
             logger.warning(f"[Preflight] Static validation failed: {e}")
-            warnings.append(f"Validation warning: {str(e)[:50]}")
+            warnings.append(f"Validation warning: {str(e)[:100]}")
             layer_ms["static_ms"] = int((time.time() - layer_start) * 1000)
+
 
         # ---------------------------------------------------------------------
         # LAYER 4: Dynamic Justification (Browser)
@@ -294,7 +403,8 @@ class PreflightPipeline:
         prompt: str,
         url: str,
         classification = None,
-        similar_template: Dict = None
+        similar_template: Dict = None,
+        job_id: Optional[str] = None
     ) -> Optional[Dict]:
         """
         Generate a soft recipe from prompt using LLM Planner.
@@ -315,7 +425,8 @@ class PreflightPipeline:
             prompt=prompt,
             url=url,
             classification=classification_dict,
-            similar_template=similar_template
+            similar_template=similar_template,
+            job_id=job_id
         )
 
         if result.success:
@@ -343,6 +454,7 @@ async def handle_preflight_request(payload: Dict) -> Dict:
     url = payload.get("url")
     prompt = payload.get("prompt")
     skip_justification = payload.get("skip_justification", False)
+    job_id = payload.get("job_id")
 
     if not url or not prompt:
         return {
@@ -352,7 +464,7 @@ async def handle_preflight_request(payload: Dict) -> Dict:
         }
 
     pipeline = PreflightPipeline()
-    result = await pipeline.run(url, prompt, skip_justification)
+    result = await pipeline.run(url, prompt, skip_justification, job_id=job_id)
     return result.to_dict()
 
 

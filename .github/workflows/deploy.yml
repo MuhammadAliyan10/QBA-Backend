@@ -230,6 +230,9 @@ jobs:
             echo "control-plane already exists"
           fi
 
+          # Get Control Plane FQDN for scaling rule
+          CONTROL_PLANE_URL=$(az containerapp show --name ${{ env.CONTROL_PLANE_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "properties.configuration.ingress.fqdn" -o tsv || echo "localhost")
+
           # Check and create Execution Plane
           if ! az containerapp show --name ${{ env.EXECUTION_PLANE_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} > /dev/null 2>&1; then
             echo "Creating execution-plane container app..."
@@ -242,7 +245,14 @@ jobs:
               --registry-username ${{ steps.acr.outputs.acr_username }} \
               --registry-password ${{ steps.acr.outputs.acr_password }} \
               --min-replicas 0 \
-              --max-replicas 1
+              --max-replicas 20 \
+              --scale-rule-name temporal-backlog \
+              --scale-rule-type prometheus \
+              --scale-rule-metadata \
+                serverAddress="https://$CONTROL_PLANE_URL/metrics" \
+                metricName="job_queue_count" \
+                threshold="1" \
+                query="job_queue_count{status='queued'}"
           else
             echo "execution-plane already exists"
           fi

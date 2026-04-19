@@ -34,12 +34,12 @@ class InputBridge:
             self._viewport = viewport if viewport else {"width": 1280, "height": 720}
         return self._viewport
 
-    def _scale_coordinates(self, x: float, y: float, vw: int, vh: int) -> Tuple[float, float]:
+    def _scale_coordinates(self, x: float, y: float, vw: int, vh: int) -> tuple[float, float]:
         scale_x = vw / self.config.canvas_width
         scale_y = vh / self.config.canvas_height
         return (x * scale_x, y * scale_y)
 
-    async def handle_event(self, event: Dict[str, Any]) -> bool:
+    async def handle_event(self, event: dict[str, Any]) -> bool:
         event_type = event.get("type", "")
 
         try:

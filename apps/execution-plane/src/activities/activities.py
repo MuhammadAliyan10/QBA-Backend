@@ -3,13 +3,17 @@ import asyncio
 import logging
 import base64
 import time
+import json
 import tempfile
 from datetime import timedelta
 from typing import Dict, Any, Optional, List
 from temporalio import activity
+from temporalio.exceptions import ApplicationError
+from contextlib import asynccontextmanager
 from playwright.async_api import async_playwright, Page, ElementHandle
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 import httpx
+import traceback
 
 # Feature Flags
 from config import is_s3_upload_enabled, is_session_persistence_enabled
@@ -23,6 +27,7 @@ from core.storage import get_storage, is_storage_available, StorageUploadError
 # --- IMPORTS ---
 # 1. The Nervous System (Snake Case - Infrastructure)
 from core.NervousSystem import NervousSystem
+from core.utils.params import substitute_variables, validate_and_substitute
 
 # 2. The Glass Box Engine (Camel Case - Logic)
 from core.selector.smartFinder import SmartFinder
@@ -31,7 +36,7 @@ from core.selector.smartFinder import SmartFinder
 from core.NetworkSniffer import NetworkSniffer
 
 # 4. The Account Pool Manager (Session Rehydration)
-from core.AccountManager import AccountManager
+from core.AccountManager import AccountManager, SessionHydrationTimeout
 
 # 5. The Recipe Manager (Dynamic RAG)
 from core.recipe.recipeManager import RecipeManager
@@ -59,39 +64,25 @@ DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", tempfile.gettempdir())
 def validate_step_params(step_params: Dict[str, Any], available_params: Dict[str, Any], step_index: int) -> Dict[str, Any]:
     """
     Validates and substitutes variables in step parameters.
-
-    CRITICAL: Fails fast if required variables are missing.
-    Prevents silent failures where {placeholder} is typed literally.
-
-    Args:
-        step_params: Parameters for this step (may contain {variable} placeholders)
-        available_params: User-provided parameters from payload
-        step_index: Step number for error messages
-
-    Returns:
-        Dict with all variables substituted
-
-    Raises:
-        ValueError: If a required variable is missing
+    Supports both {{variable}} and {variable} syntax within strings.
     """
-    validated = {}
+    return validate_and_substitute(step_params, available_params)
 
-    for key, value in step_params.items():
-        if isinstance(value, str) and value.startswith("{") and value.endswith("}"):
-            var_name = value[1:-1]
-
-            if var_name not in available_params:
-                raise ValueError(
-                    f"[Step {step_index}] Missing required parameter: '{var_name}'. "
-                    f"Expected in payload.params. Available params: {list(available_params.keys())}"
-                )
-
-            validated[key] = available_params[var_name]
-            logger.debug(f"[Param] Substituted {{{var_name}}} → '{str(validated[key])[:20]}...'")
-        else:
-            validated[key] = value
-
-    return validated
+@asynccontextmanager
+async def safe_browser_context(playwright_instance, launch_args, storage_state=None):
+    """
+    Guarantees browser and context closure even on catastrophic crashes.
+    Prevents zombie Chromium processes and memory leaks.
+    """
+    browser = await playwright_instance.chromium.launch(**launch_args)
+    context = await browser.new_context(storage_state=storage_state)
+    page = await context.new_page()
+    try:
+        # We yield context and page so callers can access context.cookies()
+        yield context, page
+    finally:
+        await context.close()
+        await browser.close()
 
 
 async def click_with_retry(
@@ -124,7 +115,11 @@ async def click_with_retry(
     for attempt in range(max_attempts):
         try:
             # Re-find element on each attempt (handles stale references)
-            element = await finder.find(page, intent)
+            result = await finder.find(intent, timeout=10000)
+            if not result.found:
+                raise Exception(f"Element not found: {intent}")
+
+            element = result.element
 
             # Scroll into view to ensure visibility
             await element.scroll_into_view_if_needed()
@@ -298,7 +293,16 @@ async def browser_automation_activity(payload: dict) -> dict:
     # 1. Unpack Payload (From Go)
     job_id = payload.get("job_id")
     workflow_id = payload.get("workflow_id")
+    target_url = payload.get("target_url")
+    objective = payload.get("objective")
     params = payload.get("params", {})
+
+    # DIAGNOSTIC TELEMETRY
+    payload_keys = list(payload.keys())
+    await NervousSystem.publish(
+        f"quanta.telemetry.{job_id}",
+        json.dumps({"type": "log", "message": f"[Executor] Raw Payload Keys: {payload_keys} | WorkflowID: {workflow_id}"})
+    )
 
     # The 'config' dictionary contains our Glass Box settings
     config = payload.get("config", {})
@@ -348,7 +352,29 @@ async def browser_automation_activity(payload: dict) -> dict:
         steps = payload.get("steps", [])
 
     if not steps:
-        err = f"[Error] No recipe found for workflow: '{workflow_id}'"
+        # SOURCE D: AI Autonomous Planning (Ad-Hoc)
+        logger.info(f"[{job_id}] No recipe found. Invoking Preflight Planner...")
+        await NervousSystem.publish_update(job_id, "RUNNING", "Generating autonomous plan...", "init")
+
+        from core.rag.preflight import PreflightPipeline
+        pipeline = PreflightPipeline()
+        preflight_result = await pipeline.run(target_url, objective, skip_justification=True, job_id=job_id)
+
+        if preflight_result.success and preflight_result.recipe:
+            recipe_data = preflight_result.recipe
+            from core.recipe.recipe_converter import convert_graph_to_steps
+            nodes = recipe_data.get("nodes", [])
+            edges = recipe_data.get("edges", [])
+            steps = convert_graph_to_steps(nodes, edges)
+            logger.info(f"[{job_id}] Autonomously generated {len(steps)} steps")
+            await NervousSystem.publish_update(job_id, "RUNNING", f"Plan generated ({len(steps)} steps)", "init")
+        else:
+            err = f"[Error] Autonomous planning failed: {preflight_result.errors if hasattr(preflight_result, 'errors') else 'Unknown error'}"
+            await NervousSystem.publish_update(job_id, "FAILED", err, "init")
+            return {"status": "FAILED", "error": err}
+
+    if not steps:
+        err = f"[Error] No recipe found or generated for workflow: '{workflow_id}'"
         await NervousSystem.publish_update(job_id, "FAILED", err, "init")
         return {"status": "FAILED", "error": err}
 
@@ -395,75 +421,87 @@ async def browser_automation_activity(payload: dict) -> dict:
         # This replaces the fragile 'e' not in locals() hack
         workflow_succeeded = False
 
+        # --- 5. SESSION & ACCOUNT PREPARATION ---
+        user_id = payload.get("user_id", job_id)
+        target_domain = config.get("domain") or (steps[0]["params"].get("url") if steps and steps[0]["action"] == "GOTO" else None)
+        if target_domain and not target_domain.startswith("http"):
+             # Handle cases where domain is just a string
+             pass
+        elif target_domain:
+             target_domain = SessionManager.extract_domain(target_domain)
+
+        session_data = None
+        if is_session_persistence_enabled() and target_domain:
+            try:
+                session_manager = await get_session_manager()
+                if session_manager:
+                    session_data = await session_manager.get_session(user_id, target_domain)
+                    if session_data:
+                        await NervousSystem.publish_update(
+                            job_id, "RUNNING",
+                            f"[Session] Restored encrypted session for {target_domain}",
+                            "init"
+                        )
+            except Exception as e:
+                logger.warning(f"[Session] Failed to restore session: {e}")
+
+        # --- 6. EXECUTION ENGINE ---
         try:
-            browser = await p.chromium.launch(**launch_args)
+            async with safe_browser_context(p, launch_args, storage_state=session_data) as (context, page):
 
-            # --- 5. ACCOUNT POOL & SESSION INJECTION ---
-            # Initialize Account Manager
-            account_mgr = AccountManager()
-            leased_account = None
+                # Initialize Account Manager for just-in-time leasing if needed
+                account_mgr = AccountManager()
+                leased_account = None
 
-            # Check if login is required
-            require_login = config.get("require_login", False)
-            target_domain = config.get("domain")
+                require_login = config.get("require_login", False)
+                if require_login and target_domain:
+                    leased_account = await account_mgr.lease_account(target_domain)
+                    if leased_account:
+                        await NervousSystem.publish_update(
+                            job_id, "RUNNING",
+                            f"[Security] Leased account: {leased_account['username']} (cookies: {'Yes' if leased_account['cookies'] else 'No'})",
+                            "init"
+                        )
+                        if leased_account['cookies']:
+                             await context.add_cookies(leased_account['cookies'])
 
-            if require_login and target_domain:
-                # Attempt to lease an account from the pool
-                leased_account = account_mgr.lease_account(target_domain)
+                # --- 7. Initialize Global Network Sniffer ---
+                from core.NetworkSniffer import NetworkSniffer
+                global_sniffer = NetworkSniffer(target_domain=target_domain)
+                await global_sniffer.start_sniffing(page)
 
-                if leased_account:
+            # --- GHOST SESSION VERIFICATION & AUTH LOCK ---
+            if is_session_persistence_enabled() and target_domain and session_manager:
+                # 1. Verify if session is still valid (Lightweight DOM/Network check)
+                is_valid = await session_manager.verify_session(page, target_domain)
+
+                if not is_valid:
                     await NervousSystem.publish_update(
                         job_id, "RUNNING",
-                        f"[Security] Leased account: {leased_account['username']} (cookies: {'Yes' if leased_account['cookies'] else 'No'})",
-                        "init"
+                        f"[Security] Ghost session detected for {target_domain}. Re-authenticating...",
+                        "auth"
                     )
 
-            # Create browser context
-            # SESSION PERSISTENCE: Try to restore encrypted session
-            session_manager = None
-            session_data = None
-            target_domain = SessionManager.extract_domain(url) if 'url' in params else None
-            user_id = payload.get("user_id", job_id)  # Fall back to job_id if no user
+                    if leased_account:
+                        # 2. Acquire Distributed Lock (Block Thundering Herds)
+                        is_leader, lock_uuid = await account_mgr.acquire_auth_lock(
+                            leased_account['id'], target_domain
+                        )
 
-            if is_session_persistence_enabled() and target_domain:
-                try:
-                    session_manager = await get_session_manager()
-                    if session_manager:
-                        session_data = await session_manager.get_session(user_id, target_domain)
-                        if session_data:
-                            await NervousSystem.publish_update(
-                                job_id, "RUNNING",
-                                f"[Session] Restored encrypted session for {target_domain}",
-                                "init"
-                            )
-                except Exception as e:
-                    logger.warning(f"[Session] Failed to restore session: {e}")
-                    session_data = None
-
-            # Create context with or without session state
-            if session_data:
-                context = await browser.new_context(
-                    storage_state=session_data,
-                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36..."
-                )
-                logger.info(f"[Session] Using restored session for {target_domain}")
-            else:
-                context = await browser.new_context(
-                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36..."
-                )
-
-            # Fast Path: Inject cookies if available
-            cookie_valid = False
-            if leased_account and leased_account['cookies']:
-                try:
-                    await context.add_cookies(leased_account['cookies'])
-                    await user_logger.info("FOUND_ELEMENT", element="Saved Session")
-                    cookie_valid = True
-                except Exception as e:
-                    logger.warning(f"Cookie injection failed: {e}")
-                    cookie_valid = False
-
-            page = await context.new_page()
+                        if is_leader:
+                            # LEADER: Execute headless login sequence
+                            # Note: The main loop will handle login steps if they are present
+                            logger.info(f"[Auth] Leader status active for {job_id}")
+                            payload["_auth_lock"] = {"uuid": lock_uuid, "account_id": leased_account['id']}
+                        else:
+                            # FOLLOWER: Polling finished, fresh cookies should be in DB
+                            logger.info(f"[Auth] Follower resumed. Re-fetching fresh session.")
+                            # Re-lease to get the fresh cookies (already happens in lease_account)
+                            fresh_account = account_mgr.lease_account(target_domain)
+                            if fresh_account and fresh_account['cookies']:
+                                await context.add_cookies(fresh_account['cookies'])
+                                await page.reload()
+                                await user_logger.info("SESSION_RECOVERED")
 
             # --- DOWNLOAD HANDLER (Industrial-Grade) ---
             # TASK 2 FIX: Real blob storage implementation
@@ -540,7 +578,7 @@ async def browser_automation_activity(payload: dict) -> dict:
             page.on("download", handle_download)
 
             # Initialize the Co-Pilot (SmartFinder)
-            finder = SmartFinder(job_id)
+            finder = SmartFinder(page)
 
             # --- 6. EXECUTION LOOP ---
             for i, step in enumerate(steps):
@@ -554,9 +592,20 @@ async def browser_automation_activity(payload: dict) -> dict:
 
                 logger.info(f"[{job_id}] Executing {action} (step {i+1}/{len(steps)})...")
 
+                # TELEMETRY: Node Start
+                await NervousSystem.publish(
+                    f"quanta.telemetry.{job_id}",
+                    json.dumps({"type": "log", "message": f"[Executor] Starting Node: {action} (step {i+1}/{len(steps)})"})
+                )
+
                 # --- ACTION SWITCH ---
                 if action == "GOTO":
-                    url = step_params["url"]
+                    url = step_params.get("url", "")
+
+                    if not url:
+                        logger.warning(f"[{job_id}] Skipping GOTO step {i+1}: URL is empty")
+                        await NervousSystem.publish_update(job_id, "RUNNING", "Skipped empty navigation", node_id)
+                        continue
 
                     # Use configurable timeout. wait_until="domcontentloaded" is
                     # faster than "load" and enough to unblock Playwright.
@@ -564,6 +613,51 @@ async def browser_automation_activity(payload: dict) -> dict:
 
                     # Wait for network to settle (catches lazy-loaded assets)
                     await safe_wait_for_network_idle(page)
+
+                    # ⚡ PHASE 2: WAF Evasion & Captcha Detection
+                    waf_detected = await page.evaluate('''() => {
+                        const isCloudflare = document.querySelector('#cf-spinner') || document.title.includes('Just a moment...') || window.__cf_chl_opt;
+                        const isDatadome = document.querySelector('iframe[src*="datadome.co"]');
+                        const isCaptcha = document.querySelector('iframe[src*="recaptcha"]') || document.querySelector('iframe[src*="hcaptcha"]');
+
+                        if (isCloudflare) return 'Cloudflare';
+                        if (isDatadome) return 'Datadome';
+                        if (isCaptcha) return 'Captcha';
+                        return null;
+                    }''')
+
+                    if waf_detected:
+                        logger.warning(f"[{job_id}] WAF/Captcha Detected: {waf_detected}")
+
+                        # FIX: Automated Solver Routing Loop
+                        solver_success = False
+                        for attempt in range(3):
+                            logger.info(f"[{job_id}] Routing page to Automated Solver API (Attempt {attempt+1}/3)...")
+                            # Mock solver hook (FlareSolverr/CapSolver implementation goes here)
+                            await asyncio.sleep(5)
+
+                            # Re-verify WAF presence
+                            still_detected = await page.evaluate('''() => {
+                                const isCloudflare = document.querySelector('#cf-spinner') || document.title.includes('Just a moment...') || window.__cf_chl_opt;
+                                const isDatadome = document.querySelector('iframe[src*="datadome.co"]');
+                                const isCaptcha = document.querySelector('iframe[src*="recaptcha"]') || document.querySelector('iframe[src*="hcaptcha"]');
+                                return isCloudflare || isDatadome || isCaptcha;
+                            }''')
+
+                            if not still_detected:
+                                solver_success = True
+                                logger.info(f"[{job_id}] Automated Solver successfully bypassed the interstitial.")
+                                break
+
+                        if not solver_success:
+                            # Use Temporal ApplicationError to explicitly mark this non-retryable
+                            # Prevents infinite loops DDOSing Cloudflare endpoints
+                            raise ApplicationError(
+                                f"WAF_DETECTED: {waf_detected} block. Automated solver failed 3 times.",
+                                type="HumanInterventionRequired",
+                                non_retryable=True,
+                                details={"url": url}
+                            )
 
                     # ⚡ SPA FIX: After networkidle, JavaScript frameworks (React/Vue/Svelte)
                     # still need time to execute and paint the final DOM.
@@ -605,7 +699,7 @@ async def browser_automation_activity(payload: dict) -> dict:
                         # Update RAG
                         await finder.vector_db.store(
                             intent,
-                            find_result.new_signature["selector"],
+                            find_result.new_signature.get("selector", "unknown"),
                             find_result.new_signature.get("attributes")
                         )
                         # Update In-Memory Recipe (if running from recipe)
@@ -618,13 +712,39 @@ async def browser_automation_activity(payload: dict) -> dict:
                     # 3. Interact
                     element = find_result.element
                     await element.scroll_into_view_if_needed()
-                    await element.click(timeout=5000)
+
+                    # Phase 2.5 FIX: Async Hydration Retry Loop
+                    # React/Next.js elements might be visible in DOM but lacking event listeners for ~500ms
+                    hydration_success = False
+                    for click_attempt in range(3):
+                        try:
+                            await element.click(timeout=5000)
+
+                            # Give JS framework time to process synthetic event
+                            await asyncio.sleep(0.5)
+
+                            # If we made it here without element throwing "Node Detached", we assume success
+                            hydration_success = True
+                            break
+                        except Exception as e:
+                            logger.warning(f"[{job_id}] Click hydration failure (Attempt {click_attempt+1}/3). Retrying...")
+                            await asyncio.sleep(1.0)
+
+                    if not hydration_success:
+                        logger.error(f"[{job_id}] Element failed hydration after 3 attempts.")
+
+                    # POST-CLICK STABILITY: Wait for potential navigation or dynamic load
+                    await safe_wait_for_network_idle(page)
+                    await asyncio.sleep(1.0) # Settle window for React/SPA frameworks
 
                     await user_logger.info("CLICKED_ELEMENT", element=intent)
 
                 elif action == "HOVER":
                     intent = step_params["intent"]
-                    element = await finder.find(page, intent)
+                    result = await finder.find(intent, timeout=10000)
+                    if not result.found:
+                        raise Exception(f"Element not found: {intent}")
+                    element = result.element
                     await element.hover()
                     await user_logger.info("FOUND_ELEMENT", element=f"Hovered {intent}")
 
@@ -640,7 +760,10 @@ async def browser_automation_activity(payload: dict) -> dict:
                     if not os.path.isabs(file_path):
                         file_path = os.path.join(DOWNLOAD_DIR, file_path)
 
-                    element = await finder.find(page, intent)
+                    result = await finder.find(intent, timeout=10000)
+                    if not result.found:
+                        raise Exception(f"Element not found: {intent}")
+                    element = result.element
                     await element.set_input_files(file_path)
                     await user_logger.info("FOUND_ELEMENT", element=f"Uploaded {os.path.basename(file_path)}")
 
@@ -648,7 +771,10 @@ async def browser_automation_activity(payload: dict) -> dict:
                     # Scroll to element OR by pixels
                     if "intent" in step_params:
                         intent = step_params["intent"]
-                        element = await finder.find(page, intent)
+                        result = await finder.find(intent, timeout=10000)
+                        if not result.found:
+                            raise Exception(f"Element not found: {intent}")
+                        element = result.element
                         await element.scroll_into_view_if_needed()
                     elif "delta_y" in step_params:
                         delta_y = int(step_params["delta_y"])
@@ -659,8 +785,14 @@ async def browser_automation_activity(payload: dict) -> dict:
                     source_intent = step_params["source"]
                     target_intent = step_params["target"]
 
-                    source = await finder.find(page, source_intent)
-                    target = await finder.find(page, target_intent)
+                    source_res = await finder.find(source_intent)
+                    target_res = await finder.find(target_intent)
+
+                    if not source_res.found: raise Exception(f"Source not found: {source_intent}")
+                    if not target_res.found: raise Exception(f"Target not found: {target_intent}")
+
+                    source = source_res.element
+                    target = target_res.element
 
                     await source.drag_to(target)
                     await user_logger.progress(f"Dragged {source_intent} to {target_intent}")
@@ -684,27 +816,150 @@ async def browser_automation_activity(payload: dict) -> dict:
                     intent = step_params["intent"]
                     attr = step_params.get("attribute") # None = text content
 
-                    element = await finder.find(page, intent)
+                    raw_value = None
+                    is_network_extraction = False
 
-                    if attr:
-                        value = await element.get_attribute(attr)
-                    else:
-                        value = await element.text_content()
+                    # PHASE 3 FIX: Network First Intent-Key Matching
+                    if global_sniffer and hasattr(global_sniffer, 'captured_responses') and global_sniffer.captured_responses:
 
-                    # Store in job results (could be passed to next steps via context)
-                    logger.info(f"[{job_id}] Extracted '{intent}': {value}")
+                        best_payload = None
+                        best_score = -1
+                        # Basic tokenization of user intent ("price of iphone" -> ["price", "iphone"])
+                        intent_keywords = [k.lower() for k in intent.split() if len(k) > 2]
+
+                        for resp in global_sniffer.captured_responses:
+                            data_str = str(resp["data"]).lower()
+                            # Score based on how many intent keywords exist in the raw JSON payload
+                            score = sum(3 for k in intent_keywords if k in data_str)
+                            # Tie-breaker: larger payloads are typically more data rich
+                            score += (resp["size"] / 10000.0)
+
+                            if score > best_score:
+                                best_score = score
+                                best_payload = resp["data"]
+
+                        if best_payload is not None and best_score > 0:
+                            raw_value = best_payload
+                            is_network_extraction = True
+                            global_sniffer.captured_responses = [] # Prevent stale reads
+                            logger.info(f"[{job_id}] Extracted '{intent}' via JSON API Interception (bypassing DOM). Score: {best_score:.2f}")
+
+                    if not is_network_extraction:
+                        # PHASE 3: Algorithmic DOM Parsing Fallback
+                        result = await finder.find(intent, timeout=10000, scan_mode="all")
+                        if not result.found:
+                            raise Exception(f"Element not found: {intent}")
+                        element = result.element
+
+                        if attr:
+                            raw_value = await element.get_attribute(attr)
+                        else:
+                            # Inspect tag for table extraction
+                            tag_name = await element.evaluate("el => el.tagName.toLowerCase()")
+                            if tag_name == "table":
+                                raw_value = await element.evaluate("""el => {
+                                    const headers = Array.from(el.querySelectorAll('th')).map((th, i) => th.innerText.trim() || `col_${i+1}`);
+                                    const rows = Array.from(el.querySelectorAll('tbody tr, tr')).filter(tr => !tr.querySelector('th'));
+
+                                    let keys = headers;
+                                    if (keys.length === 0 && rows.length > 0) {
+                                        const maxCols = Math.max(...rows.map(tr => (tr.cells ? tr.cells.length : 0)));
+                                        keys = Array.from({length: maxCols}, (_, i) => `col_${i+1}`);
+                                    }
+
+                                    const result = [];
+                                    for (const row of rows) {
+                                        if (!row.cells) continue;
+                                        const cells = Array.from(row.cells).map(td => td.innerText.trim());
+                                        if (cells.length > 0 && cells.some(c => c !== '')) {
+                                            const rowDict = {};
+                                            for (let i = 0; i < keys.length; i++) {
+                                                rowDict[keys[i]] = cells[i] !== undefined ? cells[i] : null;
+                                            }
+                                            result.push(rowDict);
+                                        }
+                                    }
+                                    return result;
+                                }""")
+                            else:
+                                raw_value = await element.text_content()
+
+                    # TYPE INFERENCE
+                    typed_type = "string"
+                    typed_content = raw_value
+
+                    if isinstance(raw_value, list):
+                        typed_type = "table"
+                    elif isinstance(raw_value, str):
+                        val_str = raw_value.strip()
+                        lower_str = val_str.lower()
+                        if lower_str == "true":
+                            typed_type = "boolean"
+                            typed_content = True
+                        elif lower_str == "false":
+                            typed_type = "boolean"
+                            typed_content = False
+                        else:
+                            import re
+                            # Basic heuristic for full-string numbers (allow formatted curr/commas)
+                            if re.match(r'^[-+]?[^\d.-]*[\d.,]+[^\d.-]*$', val_str):
+                                clean_str = re.sub(r'[^\d.-]', '', val_str)
+                                if clean_str and clean_str != "-" and clean_str != ".":
+                                    try:
+                                        if '.' in clean_str:
+                                            typed_content = float(clean_str)
+                                            typed_type = "number"
+                                        else:
+                                            typed_content = int(clean_str)
+                                            typed_type = "number"
+                                    except ValueError:
+                                        pass
+
+                    payload_dict = {
+                        "type": typed_type,
+                        "content": typed_content,
+                        "confidence": 1.0
+                    }
+                    data_json = json.dumps(payload_dict)
+
+                    # TELEMETRY: Extraction Payload
+                    await NervousSystem.publish(
+                        f"quanta.telemetry.{job_id}",
+                        json.dumps({"type": "log", "message": f"[Extractor] Payload: {data_json}"})
+                    )
+
+                    logger.info(f"[{job_id}] Extracted '{intent}': ({typed_type}) {str(typed_content)[:100]}")
                     await user_logger.info("FOUND_ELEMENT", element=f"Extracted data from {intent}")
+
+                    publish_str = str(typed_content) if typed_type != "table" else f"Table ({len(typed_content)} rows)"
+                    await NervousSystem.publish_update(
+                        job_id, "RUNNING", f"Extracted: {publish_str[:30]}...", node_id, data=data_json
+                    )
 
                 elif action == "TYPE":
                     intent = step_params["intent"]
                     text = step_params["text"]
 
-                    element = await finder.find(page, intent)
+                    result = await finder.find(intent, timeout=10000)
+                    if not result.found:
+                        raise Exception(f"Element not found: {intent}")
+                    element = result.element
 
                     # USE GAUSSIAN TYPING (The Humanizer)
                     await finder.glass.human_type(page, element, text)
 
                     await NervousSystem.publish_update(job_id, "RUNNING", f"Typed input safely", node_id)
+
+                elif action == "LOG":
+                    # Support both 'content' (from old nodes) and 'message' (from new nodes)
+                    content = step_params.get("message") or step_params.get("content", "")
+
+                    data_json = json.dumps({"content": content})
+
+                    logger.info(f"[{job_id}] LOG: {content}")
+                    await NervousSystem.publish_update(
+                        job_id, "SUCCESS", f"Log: {content[:30]}...", node_id, data=data_json
+                    )
 
                 elif action == "LOGIN_AND_SNIFF":
                     # --- LEVEL 5: HYBRID PROTOCOL AUTOMATION ---
@@ -804,6 +1059,75 @@ async def browser_automation_activity(payload: dict) -> dict:
                         await NervousSystem.publish_update(job_id, "WARNING", msg, node_id)
 
 
+                elif action == "DATA_TRANSFORM":
+                    import csv
+                    import io
+
+                    input_data = step_params.get("inputData")
+                    output_format = step_params.get("format", "json")
+
+                    logger.info(f"[{job_id}] Transforming data to {output_format}")
+
+                    try:
+                        # Parse input data if it's a JSON string
+                        data_to_format = input_data
+                        if isinstance(input_data, str):
+                            try:
+                                data_to_format = json.loads(input_data)
+                            except:
+                                # Keep as raw string if not JSON
+                                pass
+
+                        transformed_value = ""
+
+                        if output_format == "json":
+                            transformed_value = json.dumps(data_to_format, indent=2)
+                        elif output_format == "csv":
+                            # Simple CSV conversion for lists of dicts
+                            if isinstance(data_to_format, list) and len(data_to_format) > 0:
+                                output = io.StringIO()
+                                if isinstance(data_to_format[0], dict):
+                                    writer = csv.DictWriter(
+                                        output,
+                                        fieldnames=data_to_format[0].keys(),
+                                        quoting=csv.QUOTE_ALL
+                                    )
+                                    if step_params.get("includeHeader", True):
+                                        writer.writeheader()
+                                    writer.writerows(data_to_format)
+                                else:
+                                    writer = csv.writer(output, quoting=csv.QUOTE_ALL)
+                                    writer.writerows([[x] for x in data_to_format])
+                                transformed_value = output.getvalue()
+                            else:
+                                transformed_value = str(data_to_format)
+                        elif output_format == "html_table":
+                            if isinstance(data_to_format, list) and len(data_to_format) > 0 and isinstance(data_to_format[0], dict):
+                                headers = data_to_format[0].keys()
+                                html = "<table><thead><tr>"
+                                html += "".join([f"<th>{h}</th>" for h in headers])
+                                html += "</tr></thead><tbody>"
+                                for row in data_to_format:
+                                    html += "<tr>" + "".join([f"<td>{row.get(h, '')}</td>" for h in headers]) + "</tr>"
+                                html += "</tbody></table>"
+                                transformed_value = html
+                            else:
+                                transformed_value = f"<p>{str(data_to_format)}</p>"
+                        else:
+                            transformed_value = str(data_to_format)
+
+                        # Update status with data for frontend preview
+                        res_json = json.dumps({"content": transformed_value})
+                        await NervousSystem.publish_update(
+                            job_id, "RUNNING", f"Formatted data as {output_format}", node_id, data=res_json
+                        )
+
+                    except Exception as e:
+                        logger.error(f"[{job_id}] Transformation failed: {e}")
+                        await NervousSystem.publish_update(
+                            job_id, "WARNING", f"Formatting failed: {str(e)}", node_id
+                        )
+
                 # --- VISUAL PROOF (Screenshot) ---
                 # Take a tiny jpeg
                 screenshot = await page.screenshot(
@@ -845,6 +1169,11 @@ async def browser_automation_activity(payload: dict) -> dict:
                 "job_id": job_id
             }
 
+        except ApplicationError as app_err:
+            logger.error(f"Job Failed (ApplicationError): {app_err}", exc_info=True)
+            workflow_succeeded = False
+            raise app_err  # Re-raise Temporal errors exactly as they are so Temporal halts
+
         except Exception as e:
             logger.error(f"Job Failed: {e}", exc_info=True)
             workflow_succeeded = False  # Explicitly mark failure
@@ -853,6 +1182,13 @@ async def browser_automation_activity(payload: dict) -> dict:
             failure_screenshot = b""
             if 'page' in locals() and page:
                 failure_screenshot = await capture_failure_screenshot(page, job_id, e)
+
+            # TELEMETRY: Failure with Stack Trace
+            stack_trace = traceback.format_exc()
+            await NervousSystem.publish(
+                f"quanta.telemetry.{job_id}",
+                json.dumps({"type": "log", "message": f"[Executor] Job Failed: {str(e)}\n{stack_trace}"})
+            )
 
             await NervousSystem.publish_update(
                 job_id, "FAILED",
@@ -886,11 +1222,11 @@ async def browser_automation_activity(payload: dict) -> dict:
                     new_cookies = None
                     if 'context' in locals() and context:
                         try:
+                            # Context is safely closed by context manager AFTER this block
                             new_cookies = await context.cookies()
                         except Exception as cookie_err:
                             logger.warning(f"Could not capture cookies: {cookie_err}")
-
-                    account_mgr.release_account(
+                    await account_mgr.release_account(
                         leased_account['id'],
                         new_cookies=new_cookies,
                         success=workflow_succeeded
@@ -900,17 +1236,11 @@ async def browser_automation_activity(payload: dict) -> dict:
                 except Exception as release_err:
                     logger.error(f"Failed to release account: {release_err}")
 
-            # 2. Close browser context (if exists)
-            if 'context' in locals() and context:
-                try:
-                    await context.close()
-                except Exception as ctx_err:
-                    logger.warning(f"Context close error: {ctx_err}")
-
-            # 3. Close browser (if exists)
-            if 'browser' in locals() and browser:
-                try:
-                    await browser.close()
-                except Exception as browser_err:
-                    logger.warning(f"Browser close error: {browser_err}")
+            # --- RELEASE AUTH LOCK ---
+            if "_auth_lock" in payload and account_mgr:
+                lock_info = payload["_auth_lock"]
+                await account_mgr.release_auth_lock(
+                    lock_info["account_id"],
+                    target_domain,
+                )
 

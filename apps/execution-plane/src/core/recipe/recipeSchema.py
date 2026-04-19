@@ -42,6 +42,22 @@ class NodeType(str, Enum):
     PARALLEL = "parallel"
 
 
+class ActionType(str, Enum):
+    NAVIGATE = "navigate"
+    CLICK = "find_and_click"
+    TYPE = "find_and_type"
+    EXTRACT = "extract_text"
+    EXTRACT_TABLE = "extract_table"
+    WAIT = "wait_for_selector"
+    WAIT_HIDDEN = "wait_for_hidden"
+    SCREENSHOT = "screenshot"
+    SCROLL = "scroll"
+    HOVER = "hover"
+    SELECT = "select_option"
+    CHECK = "check_checkbox"
+
+
+
 class BackoffStrategy(str, Enum):
     LINEAR = "linear"
     EXPONENTIAL = "exponential"
@@ -104,7 +120,7 @@ class RecipeMetadata(BaseModel):
     author: str = "unknown"
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    tags: List[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
     priority: str = "normal"  # low | normal | high | critical
     estimated_duration_ms: int = 60000
     max_cost_usd: float = 10.0
@@ -124,8 +140,8 @@ class InputField(BaseModel):
 
 class RecipeInputs(BaseModel):
     """Recipe input definitions."""
-    required: List[InputField] = Field(default_factory=list)
-    optional: List[InputField] = Field(default_factory=list)
+    required: list[InputField] = Field(default_factory=list)
+    optional: list[InputField] = Field(default_factory=list)
 
 
 # =============================================================================
@@ -139,8 +155,8 @@ class FailureAction(BaseModel):
     duration_ms: Optional[int] = None
     reason: Optional[str] = None
     extract_error: Optional[str] = None
-    conditions: Optional[List[Dict[str, Any]]] = None
-    default: Optional[Dict[str, Any]] = None
+    conditions: Optional[list[dict[str, Any]]] = None
+    default: Optional[dict[str, Any]] = None
 
 
 class Condition(BaseModel):
@@ -152,7 +168,7 @@ class Condition(BaseModel):
     value: Optional[Any] = None
     path: Optional[str] = None
     condition: Optional[str] = None  # equals | length_greater_than | etc.
-    conditions: Optional[List["Condition"]] = None  # For any_of / all_of
+    conditions: Optional[list["Condition"]] = None  # For any_of / all_of
     on_failure: Optional[FailureAction] = None
     on_success: Optional[FailureAction] = None  # For post-conditions that trigger action on success
 
@@ -168,10 +184,25 @@ class WaitStrategy(BaseModel):
     max_wait_ms: int = 10000
 
 
+class ResponseGuard(BaseModel):
+    """API Awaiter: Intercepts specific network responses."""
+    url_pattern: str
+    status: int = 200
+    timeout_ms: int = 15000
+
+
+class MutationGuard(BaseModel):
+    """Mutation Observer Guard: Waits for specific DOM changes."""
+    selector: str
+    type: str = "text"  # text | children | attribute | detached
+    attribute_name: Optional[str] = None
+    timeout_ms: int = 15000
+
+
 class Action(BaseModel):
     """Single action within a node."""
     seq: int = 0
-    type: str  # navigate | find_and_click | find_and_type | etc.
+    type: ActionType
     intent: Optional[str] = None  # For semantic finding
     url: Optional[str] = None
     value: Optional[str] = None
@@ -181,14 +212,16 @@ class Action(BaseModel):
     clear_first: bool = False
     mask_in_logs: bool = False
     wait_strategy: Optional[WaitStrategy] = None
+    response_guard: Optional[ResponseGuard] = None
+    mutation_guard: Optional[MutationGuard] = None
     path: Optional[str] = None  # For set_context
     message: Optional[str] = None  # For log
     event: Optional[str] = None  # For emit_event
-    data: Optional[Dict[str, Any]] = None
+    data: Optional[dict[str, Any]] = None
     state: Optional[str] = None  # For wait_for_load_state
     format: Optional[str] = None  # For create_report
-    content: Optional[Dict[str, Any]] = None
-    columns: Optional[List[str]] = None
+    content: Optional[dict[str, Any]] = None
+    columns: Optional[list[str]] = None
     max_rows: Optional[Union[int, str]] = None
 
 
@@ -202,7 +235,7 @@ class RetryConfig(BaseModel):
     backoff_strategy: BackoffStrategy = BackoffStrategy.EXPONENTIAL
     initial_delay_ms: int = 1000
     max_delay_ms: int = 10000
-    retry_on: List[str] = Field(default_factory=lambda: ["timeout", "element_not_found", "network_error"])
+    retry_on: list[str] = Field(default_factory=lambda: ["timeout", "element_not_found", "network_error"])
 
 
 class ExecutionConfig(BaseModel):
@@ -221,7 +254,7 @@ class StatePolicy(BaseModel):
     """State/checkpoint policy for a node."""
     checkpoint: bool = False
     hibernate: bool = False
-    save: List[str] = Field(default_factory=lambda: ["cookies", "local_storage"])
+    save: list[str] = Field(default_factory=lambda: ["cookies", "local_storage"])
     checkpoint_id: Optional[str] = None
 
 
@@ -240,7 +273,7 @@ class LoopConfig(BaseModel):
     continue_on_error: bool = True
     checkpoint_every: Optional[int] = None
     body: str  # Node ID to execute for each item
-    on_item_error: Optional[Dict[str, Any]] = None
+    on_item_error: Optional[dict[str, Any]] = None
     on_complete: Optional[str] = None
 
 
@@ -255,7 +288,7 @@ class DecisionBranch(BaseModel):
 class DecisionConfig(BaseModel):
     """Configuration for decision nodes."""
     source: str  # {{ context.status }}
-    branches: List[DecisionBranch]
+    branches: list[DecisionBranch]
     default: str  # Default node ID
 
 
@@ -274,23 +307,23 @@ class GateTimeout(BaseModel):
 
 class GateNotification(BaseModel):
     """Notification config for human gates."""
-    channels: List[str] = Field(default_factory=lambda: ["email"])
-    recipients: List[str] = Field(default_factory=list)
+    channels: list[str] = Field(default_factory=lambda: ["email"])
+    recipients: list[str] = Field(default_factory=list)
 
 
 class HumanGateConfig(BaseModel):
     """Configuration for human gate nodes."""
     reason: str
     prompt: str
-    options: List[GateOption]
+    options: list[GateOption]
     timeout: GateTimeout
     notification: Optional[GateNotification] = None
 
 
 class CheckpointSaveConfig(BaseModel):
     """What to save in a checkpoint."""
-    browser_state: List[str] = Field(default_factory=lambda: ["cookies", "local_storage", "session_storage"])
-    page_state: List[str] = Field(default_factory=lambda: ["url", "scroll_position"])
+    browser_state: list[str] = Field(default_factory=lambda: ["cookies", "local_storage", "session_storage"])
+    page_state: list[str] = Field(default_factory=lambda: ["url", "scroll_position"])
     context: bool = True
     screenshot: bool = False
 
@@ -320,7 +353,7 @@ class ParallelMerge(BaseModel):
 class ParallelConfig(BaseModel):
     """Configuration for parallel nodes."""
     max_concurrency: int = 3
-    branches: List[ParallelBranch]
+    branches: list[ParallelBranch]
     join_strategy: JoinStrategy = JoinStrategy.WAIT_ALL
     wait_n_count: int = 2
     on_partial_failure: str = "continue_with_available"
@@ -333,8 +366,8 @@ class ParallelConfig(BaseModel):
 
 class TelemetryConfig(BaseModel):
     """Telemetry configuration for a node."""
-    emit_events: List[str] = Field(default_factory=lambda: ["node_started", "node_finished"])
-    custom_metrics: Dict[str, str] = Field(default_factory=dict)
+    emit_events: list[str] = Field(default_factory=lambda: ["node_started", "node_finished"])
+    custom_metrics: dict[str, str] = Field(default_factory=dict)
 
 
 # =============================================================================
@@ -356,11 +389,11 @@ class Node(BaseModel):
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
 
     # Conditions (optional)
-    pre_conditions: List[Condition] = Field(default_factory=list)
-    post_conditions: List[Condition] = Field(default_factory=list)
+    pre_conditions: list[Condition] = Field(default_factory=list)
+    post_conditions: list[Condition] = Field(default_factory=list)
 
     # Actions (for action nodes)
-    actions: List[Action] = Field(default_factory=list)
+    actions: list[Action] = Field(default_factory=list)
 
     # State policy (optional)
     state_policy: Optional[StatePolicy] = None
@@ -419,11 +452,11 @@ class Edge(BaseModel):
 class ModalDetector(BaseModel):
     """Modal/popup detection configuration."""
     enabled: bool = True
-    selectors: List[str] = Field(default_factory=list)
+    selectors: list[str] = Field(default_factory=list)
     action: str = "dismiss_or_escalate"
-    dismiss_strategies: List[Dict[str, Any]] = Field(default_factory=list)
+    dismiss_strategies: list[dict[str, Any]] = Field(default_factory=list)
     max_dismiss_attempts: int = 3
-    on_dismiss_failure: Optional[Dict[str, Any]] = None
+    on_dismiss_failure: Optional[dict[str, Any]] = None
 
 
 class SessionValidator(BaseModel):
@@ -437,8 +470,8 @@ class SessionValidator(BaseModel):
 class CaptchaDetector(BaseModel):
     """CAPTCHA detection configuration."""
     enabled: bool = True
-    selectors: List[str] = Field(default_factory=list)
-    on_detection: Dict[str, Any] = Field(default_factory=dict)
+    selectors: list[str] = Field(default_factory=list)
+    on_detection: dict[str, Any] = Field(default_factory=dict)
 
 
 class GlobalGuards(BaseModel):
@@ -466,7 +499,7 @@ class ExitPoints(BaseModel):
 class RecipeContext(BaseModel):
     """Initial context configuration."""
     description: str = "Shared state across all nodes"
-    initial: Dict[str, Any] = Field(default_factory=dict)
+    initial: dict[str, Any] = Field(default_factory=dict)
 
 
 # =============================================================================
@@ -491,8 +524,8 @@ class Recipe(BaseModel):
     inputs: RecipeInputs = Field(default_factory=RecipeInputs)
     context: RecipeContext = Field(default_factory=RecipeContext)
 
-    nodes: List[Node]
-    edges: List[Edge] = Field(default_factory=list)
+    nodes: list[Node]
+    edges: list[Edge] = Field(default_factory=list)
 
     entry_point: str
     exit_points: ExitPoints
@@ -509,7 +542,7 @@ class Recipe(BaseModel):
                 return node
         return None
 
-    def get_outgoing_edges(self, node_id: str) -> List[Edge]:
+    def get_outgoing_edges(self, node_id: str) -> list[Edge]:
         """Get all edges originating from a node."""
         return [e for e in self.edges if e.source == node_id]
 
@@ -518,7 +551,7 @@ class Recipe(BaseModel):
 # CONVENIENCE FUNCTIONS
 # =============================================================================
 
-def load_recipe(json_data: Dict[str, Any]) -> Recipe:
+def load_recipe(json_data: dict[str, Any]) -> Recipe:
     """
     Load and validate a recipe from JSON.
 
@@ -534,7 +567,7 @@ def load_recipe(json_data: Dict[str, Any]) -> Recipe:
     return Recipe.model_validate(json_data)
 
 
-def dump_recipe(recipe: Recipe) -> Dict[str, Any]:
+def dump_recipe(recipe: Recipe) -> dict[str, Any]:
     """
     Serialize a recipe to JSON-compatible dict.
 

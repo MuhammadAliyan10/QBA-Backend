@@ -32,8 +32,10 @@ type JobEvent struct {
 	Timestamp int64  `protobuf:"varint,5,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
 	// [NEW] A tiny thumbnail (base64 or raw bytes) so the user can see the bot working
 	ScreenshotPreview []byte `protobuf:"bytes,6,opt,name=screenshot_preview,json=screenshotPreview,proto3" json:"screenshot_preview,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// [NEW] Node-specific output data (JSON string)
+	Data          string `protobuf:"bytes,7,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *JobEvent) Reset() {
@@ -106,6 +108,13 @@ func (x *JobEvent) GetScreenshotPreview() []byte {
 		return x.ScreenshotPreview
 	}
 	return nil
+}
+
+func (x *JobEvent) GetData() string {
+	if x != nil {
+		return x.Data
+	}
+	return ""
 }
 
 // 2. Billing Events (The Ledger)
@@ -369,14 +378,15 @@ var File_events_proto protoreflect.FileDescriptor
 
 const file_events_proto_rawDesc = "" +
 	"\n" +
-	"\fevents.proto\x12\x06e2e.v1\"\xb9\x01\n" +
+	"\fevents.proto\x12\x06e2e.v1\"\xcd\x01\n" +
 	"\bJobEvent\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12\x17\n" +
 	"\anode_id\x18\x04 \x01(\tR\x06nodeId\x12\x1c\n" +
 	"\ttimestamp\x18\x05 \x01(\x03R\ttimestamp\x12-\n" +
-	"\x12screenshot_preview\x18\x06 \x01(\fR\x11screenshotPreview\"\xbb\x01\n" +
+	"\x12screenshot_preview\x18\x06 \x01(\fR\x11screenshotPreview\x12\x12\n" +
+	"\x04data\x18\a \x01(\tR\x04data\"\xbb\x01\n" +
 	"\fBillingEvent\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x15\n" +
 	"\x06job_id\x18\x02 \x01(\tR\x05jobId\x12\x16\n" +

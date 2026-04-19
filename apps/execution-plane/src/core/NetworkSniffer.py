@@ -38,6 +38,7 @@ class NetworkSniffer:
         self.target_domain = target_domain
         self.verified_session: Optional[Dict] = None
         self.rate_limited = False
+        self.captured_responses = []
 
     async def start_sniffing(self, page: Page):
         """
@@ -70,13 +71,47 @@ class NetworkSniffer:
                 return
 
             # Filter: Resource Type (Data only)
-            if request.resource_type not in ["xhr", "fetch"]:
+            if request.resource_type not in ["xhr", "fetch", "document"]:
                 return
 
             # --- VALIDATION LOGIC ---
             # Only capture if server returns Success (2xx)
             if 200 <= status < 300:
                 await self._capture_verified_request(request)
+
+                # PHASE 3 FIX: Telemetry Firehose Filtering
+                try:
+                    content_type = response.headers.get("content-type", "")
+                    if "application/json" in content_type.lower():
+                        data = await response.json()
+                        if isinstance(data, (list, dict)):
+                            data_str = str(data)
+                            payload_size = len(data_str)
+
+                            # 1. Size Heuristic (Telemetry is small, product lists are large)
+                            if payload_size < 300:
+                                return
+
+                            # 2. Endpoint Heuristic (Drop obvious tracking endpoints)
+                            lower_url = url.lower()
+                            if any(k in lower_url for k in ['track', 'analytics', 'telemetry', 'beacon', 'metrics', 'log']):
+                                return
+
+                            self.captured_responses.append({
+                                "url": url,
+                                "method": request.method,
+                                "data": data,
+                                "size": payload_size
+                            })
+
+                            # 3. Memory Cap (Keep only top 5 largest payloads)
+                            self.captured_responses.sort(key=lambda x: x["size"], reverse=True)
+                            if len(self.captured_responses) > 5:
+                                self.captured_responses.pop()
+
+                            logger.info(f"[Network] Intercepted highly-ranked JSON Payload ({payload_size} bytes) from {url}")
+                except Exception as e:
+                    logger.debug(f"[Network] Failed to parse JSON response: {e}")
 
             # Check for Rate Limits
             elif status == 429:

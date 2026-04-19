@@ -27,7 +27,7 @@ logger = logging.getLogger("staticValidator")
 class RecipeValidationError(Exception):
     """Raised when static validation fails."""
 
-    def __init__(self, message: str, errors: List["ValidationIssue"]):
+    def __init__(self, message: str, errors: list["ValidationIssue"]):
         self.message = message
         self.errors = errors
         super().__init__(self.message)
@@ -64,7 +64,7 @@ class ValidationIssue:
 class ValidationResult:
     """Result of static validation."""
     is_valid: bool = True
-    issues: List[ValidationIssue] = field(default_factory=list)
+    issues: list[ValidationIssue] = field(default_factory=list)
 
     def add_error(self, code: str, message: str, **kwargs):
         self.issues.append(ValidationIssue(
@@ -84,11 +84,11 @@ class ValidationResult:
         ))
 
     @property
-    def errors(self) -> List[ValidationIssue]:
+    def errors(self) -> list[ValidationIssue]:
         return [i for i in self.issues if i.severity == IssueSeverity.ERROR]
 
     @property
-    def warnings(self) -> List[ValidationIssue]:
+    def warnings(self) -> list[ValidationIssue]:
         return [i for i in self.issues if i.severity == IssueSeverity.WARNING]
 
 
@@ -187,7 +187,7 @@ class StaticValidator:
         """Ensure all {{ variables }} are defined before use."""
 
         # Collect defined variables
-        defined: Set[str] = set()
+        defined: set[str] = set()
 
         # From context.initial
         for key in recipe.get("context", {}).get("initial", {}).keys():
@@ -232,7 +232,7 @@ class StaticValidator:
                     suggestion=f"Ensure '{var}' is initialized in context.initial or set by a prior action"
                 )
 
-    def _is_defined(self, var: str, defined: Set[str]) -> bool:
+    def _is_defined(self, var: str, defined: set[str]) -> bool:
         """Check if variable is in defined set."""
         if var in defined:
             return True
@@ -258,12 +258,12 @@ class StaticValidator:
         exit_points = set(recipe.get("exit_points", {}).values())
 
         # Build adjacency lists
-        incoming: Dict[str, List[str]] = {nid: [] for nid in nodes}
-        outgoing: Dict[str, List[str]] = {nid: [] for nid in nodes}
+        incoming: dict[str, list[str]] = {nid: [] for nid in nodes}
+        outgoing: dict[str, list[str]] = {nid: [] for nid in nodes}
 
         for edge in edges:
-            src = edge.get("from", "")
-            dst = edge.get("to", "")
+            src = edge.get("source") or edge.get("from", "")
+            dst = edge.get("target") or edge.get("to", "")
             if src in outgoing:
                 outgoing[src].append(dst)
             if dst in incoming:
@@ -389,8 +389,8 @@ class StaticValidator:
         # Build adjacency
         adj = {nid: [] for nid in nodes}
         for edge in edges:
-            src = edge.get("from", "")
-            dst = edge.get("to", "")
+            src = edge.get("source") or edge.get("from", "")
+            dst = edge.get("target") or edge.get("to", "")
             if src in adj:
                 adj[src].append(dst)
 

@@ -106,3 +106,60 @@ class CheckpointError(Exception):
         self.reason = reason
         super().__init__(f"Checkpoint {operation} failed for '{checkpoint_id}': {reason}")
 
+
+class AIFallbackTriggered(Exception):
+    """
+    Raised when the deterministic element scoring engine cannot resolve a match.
+
+    Two failure modes:
+        1. AbsoluteFailure  — best candidate scored below the confidence floor (0.65).
+        2. AmbiguityCollision — top two candidates are within 5% of each other;
+           the engine cannot deterministically choose between them.
+
+    Attributes:
+        reason (str): "ABSOLUTE_FAILURE" or "AMBIGUITY_COLLISION"
+        best_score (float): Score of the highest-ranked candidate
+        delta (float): Score gap between #1 and #2 (0.0 if only one candidate)
+        top_candidates (list): List of (score, qId, tag, text) tuples for LLM context
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        best_score: float = 0.0,
+        delta: float = 0.0,
+        top_candidates: Optional[list] = None,
+    ):
+        self.reason = reason
+        self.best_score = best_score
+        self.delta = delta
+        self.top_candidates = top_candidates or []
+        super().__init__(
+            f"AI fallback triggered ({reason}): "
+            f"best_score={best_score:.3f}, delta={delta:.3f}, "
+            f"candidates={len(self.top_candidates)}"
+        )
+
+    @classmethod
+    def absolute_failure(
+        cls, best_score: float, top_candidates: list
+    ) -> "AIFallbackTriggered":
+        """Best candidate scored below the confidence floor."""
+        return cls(
+            reason="ABSOLUTE_FAILURE",
+            best_score=best_score,
+            delta=0.0,
+            top_candidates=top_candidates,
+        )
+
+    @classmethod
+    def ambiguity_collision(
+        cls, best_score: float, delta: float, top_candidates: list
+    ) -> "AIFallbackTriggered":
+        """Top two candidates are too close — engine cannot decide."""
+        return cls(
+            reason="AMBIGUITY_COLLISION",
+            best_score=best_score,
+            delta=delta,
+            top_candidates=top_candidates,
+        )

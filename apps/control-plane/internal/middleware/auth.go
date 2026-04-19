@@ -2,133 +2,304 @@ package middleware
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"log"
+	"math/big"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
-	"e2e-platform/apps/control-plane/internal/db"
-	"e2e-platform/apps/control-plane/internal/models"
-
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 )
 
-// ContextKey is the type for context keys to avoid collisions
+// ─── CONTEXT KEYS ────────────────────────────────────────────────────────────
+
+// ContextKey is the type for context keys to avoid collisions.
 type ContextKey string
 
 const (
-	// UserIDKey is the context key for storing user ID
+	// UserIDKey is the context key for storing the verified user ID.
 	UserIDKey ContextKey = "userID"
 )
 
-// AuthMiddleware validates requests using one of two methods:
-//   1. API Key: Authorization: Bearer sk_live_xxx or sk_test_xxx
-//      → Validates against api_keys table (for programmatic/external access)
-//   2. Clerk JWT: Authorization: Bearer <jwt_token>
-//      → Extracts user ID from X-User-Id header set by frontend (for browser access)
-//   3. Development mode: X-User-ID header for testing
+// ─── JWKS CACHE ─────────────────────────────────────────────────────────────
+
+// jwksCache holds the cached Clerk JWKS (JSON Web Key Set) so we don't
+// fetch it on every single request. Keys are refreshed every 10 minutes.
+type jwksCache struct {
+	mu      sync.RWMutex
+	keys    map[string]*rsa.PublicKey // kid → public key
+	fetched time.Time
+	ttl     time.Duration
+}
+
+var clerkJWKS = &jwksCache{
+	keys: make(map[string]*rsa.PublicKey),
+	ttl:  10 * time.Minute,
+}
+
+// ─── JWKS TYPES ─────────────────────────────────────────────────────────────
+
+type jwksResponse struct {
+	Keys []jwkKey `json:"keys"`
+}
+
+type jwkKey struct {
+	Kty string `json:"kty"`
+	Kid string `json:"kid"`
+	Use string `json:"use"`
+	N   string `json:"n"`
+	E   string `json:"e"`
+	Alg string `json:"alg"`
+}
+
+// ─── AUTH MIDDLEWARE ─────────────────────────────────────────────────────────
+
+// AuthMiddleware validates requests using cryptographic verification.
+// Two paths only:
 //
-// In development mode (ENVIRONMENT != "production"), unauthenticated requests are allowed
-// with a warning log, so the frontend can operate without API keys during development.
+//  1. API Key:  Authorization: Bearer sk_live_xxx → SHA-256 hash → DB lookup
+//  2. Clerk JWT: Authorization: Bearer <jwt> → JWKS signature verification
+//
+// Optional local-only bypass: SKIP_AUTH=true + DEV_USER_ID (never use in production).
+// Otherwise every request is cryptographically verified or rejected with HTTP 401.
 func AuthMiddleware() gin.HandlerFunc {
-	isProduction := os.Getenv("ENVIRONMENT") == "production" || os.Getenv("GIN_MODE") == "release"
+	if clerkIssuerURL() == "" && !strings.EqualFold(os.Getenv("SKIP_AUTH"), "true") {
+		log.Println("[AUTH] WARNING: CLERK_ISSUER_URL / CLERK_PUBLISHABLE_KEY not configured. JWT auth will be unavailable for Bearer JWTs.")
+	}
 
 	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
+		// Explicit dev-only bypass — must never be set in production.
+		if strings.EqualFold(os.Getenv("SKIP_AUTH"), "true") {
+			uid := strings.TrimSpace(os.Getenv("DEV_USER_ID"))
+			if uid == "" {
+				uid = "dev_user_local"
+			}
+			log.Printf("[AUTH] WARNING: SKIP_AUTH=true — using user %s (local development only)", uid)
+			setAuthUser(c, uid)
+			c.Next()
+			return
+		}
 
-		// --- Path 1: API Key Authentication ---
-		if authHeader != "" {
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) == 2 && parts[0] == "Bearer" {
-				token := parts[1]
-
-				// Check if it's an API key (sk_live_ or sk_test_ prefix)
-				if strings.HasPrefix(token, "sk_live_") || strings.HasPrefix(token, "sk_test_") {
-					if authenticateAPIKey(c, token) {
-						c.Next()
-						return
-					}
-					// API key was provided but invalid — reject
-					return
-				}
-
-				// Otherwise treat as Clerk JWT — extract user identity from it
-				// Clerk tokens are JWTs, but full verification requires JWKS.
-				// For now, we trust the frontend (which is Clerk-protected) and
-				// extract user identity from the X-User-Id header if present.
+		authHeader := strings.TrimSpace(c.GetHeader("Authorization"))
+		if authHeader == "" {
+			if q := strings.TrimSpace(c.Query("access_token")); q != "" {
+				authHeader = "Bearer " + q
 			}
 		}
 
-		// --- Path 2: User ID from header (frontend/dev) ---
-		if userID := c.GetHeader("X-User-Id"); userID != "" {
-			c.Set(string(UserIDKey), userID)
-			c.Next()
-			return
-		}
-
-		// Also check Clerk's standard header
-		if userID := c.GetHeader("X-Clerk-User-Id"); userID != "" {
-			c.Set(string(UserIDKey), userID)
-			c.Next()
-			return
-		}
-
-		// --- Path 3: No auth provided ---
-		if isProduction {
+		userID, err := resolveAuthorizationHeader(c.Request.Context(), authHeader)
+		if err != nil {
+			log.Printf("[AUTH] REJECT: %v | IP=%s | Path=%s", err, c.ClientIP(), c.Request.URL.Path)
 			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Authentication required. Provide an API key (Authorization: Bearer sk_live_xxx) or valid session.",
+				"error": "Authentication required. Provide an API key (Bearer sk_live_xxx) or valid JWT.",
 			})
 			c.Abort()
 			return
 		}
 
-		// Development mode: allow with warning
-		c.Set(string(UserIDKey), "anonymous-dev")
+		setAuthUser(c, userID)
 		c.Next()
 	}
 }
 
-// authenticateAPIKey validates an API key against the database.
-// Returns true if authentication succeeded, false if it failed (and response was sent).
-func authenticateAPIKey(c *gin.Context, apiKey string) bool {
-	// Hash the API key (SHA-256)
-	hash := sha256.Sum256([]byte(apiKey))
-	keyHash := hex.EncodeToString(hash[:])
+// ─── CLERK JWT VERIFICATION ─────────────────────────────────────────────────
 
-	// Query database with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+// verifyClerkJWT cryptographically verifies a Clerk JWT token.
+//
+// Steps:
+//  1. Parse JWT header to extract "kid" (key ID)
+//  2. Fetch/cache Clerk JWKS (public keys)
+//  3. Verify RS256 signature against the matching public key
+//  4. Validate exp, iss claims
+//  5. Extract "sub" claim (the Clerk User ID)
+func verifyClerkJWT(tokenString string, issuerURL string) (string, error) {
+	// Parse with key function that fetches the correct JWKS key.
+	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
+		// Enforce RS256
+		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
 
-	var apiKeyRecord models.ApiKey
-	err := db.DB.WithContext(ctx).Where("key_hash = ? AND is_active = ?", keyHash, true).First(&apiKeyRecord).Error
+		kid, ok := t.Header["kid"].(string)
+		if !ok || kid == "" {
+			return nil, fmt.Errorf("token missing kid header")
+		}
+
+		// Get the public key for this kid
+		key, err := getClerkPublicKey(kid, issuerURL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get public key: %w", err)
+		}
+
+		return key, nil
+	},
+		jwt.WithIssuer(issuerURL),
+		jwt.WithExpirationRequired(),
+		jwt.WithValidMethods([]string{"RS256"}),
+	)
 
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid API key"})
-		c.Abort()
-		return false
+		return "", fmt.Errorf("jwt verification failed: %w", err)
 	}
 
-	if !apiKeyRecord.IsActive {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "API key has been deactivated"})
-		c.Abort()
-		return false
+	if !token.Valid {
+		return "", fmt.Errorf("token is not valid")
 	}
 
-	// Store user ID in context
-	c.Set(string(UserIDKey), apiKeyRecord.UserID)
-	return true
+	// Extract the subject (Clerk User ID, e.g., "user_2abc123...")
+	sub, err := token.Claims.GetSubject()
+	if err != nil || sub == "" {
+		return "", fmt.Errorf("token missing sub claim")
+	}
+
+	return sub, nil
 }
 
-// GetUserID extracts userID from the request context.
-// Should be called after AuthMiddleware.
+// getClerkPublicKey fetches the RSA public key for the given kid from Clerk's JWKS.
+func getClerkPublicKey(kid string, issuerURL string) (*rsa.PublicKey, error) {
+	clerkJWKS.mu.RLock()
+	if key, ok := clerkJWKS.keys[kid]; ok && time.Since(clerkJWKS.fetched) < clerkJWKS.ttl {
+		clerkJWKS.mu.RUnlock()
+		return key, nil
+	}
+	clerkJWKS.mu.RUnlock()
+
+	// Cache miss or expired — fetch fresh JWKS.
+	if err := fetchClerkJWKS(issuerURL); err != nil {
+		return nil, err
+	}
+
+	clerkJWKS.mu.RLock()
+	defer clerkJWKS.mu.RUnlock()
+
+	key, ok := clerkJWKS.keys[kid]
+	if !ok {
+		return nil, fmt.Errorf("key ID %s not found in Clerk JWKS", kid)
+	}
+	return key, nil
+}
+
+// fetchClerkJWKS retrieves the JWKS from Clerk and populates the cache.
+func fetchClerkJWKS(issuerURL string) error {
+	jwksURL := strings.TrimRight(issuerURL, "/") + "/.well-known/jwks.json"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", jwksURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create JWKS request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to fetch JWKS from %s: %w", jwksURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("JWKS endpoint returned %d", resp.StatusCode)
+	}
+
+	var jwks jwksResponse
+	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
+		return fmt.Errorf("failed to decode JWKS: %w", err)
+	}
+
+	clerkJWKS.mu.Lock()
+	defer clerkJWKS.mu.Unlock()
+
+	clerkJWKS.keys = make(map[string]*rsa.PublicKey)
+	for _, k := range jwks.Keys {
+		if k.Kty != "RSA" || k.Use != "sig" {
+			continue
+		}
+		pubKey, err := parseRSAPublicKey(k)
+		if err != nil {
+			log.Printf("[AUTH] WARNING: failed to parse JWKS key %s: %v", k.Kid, err)
+			continue
+		}
+		clerkJWKS.keys[k.Kid] = pubKey
+	}
+
+	clerkJWKS.fetched = time.Now()
+	log.Printf("[AUTH] Refreshed Clerk JWKS — %d keys cached", len(clerkJWKS.keys))
+	return nil
+}
+
+// parseRSAPublicKey converts a JWK key to an *rsa.PublicKey.
+func parseRSAPublicKey(k jwkKey) (*rsa.PublicKey, error) {
+	nBytes, err := base64.RawURLEncoding.DecodeString(k.N)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode modulus: %w", err)
+	}
+
+	eBytes, err := base64.RawURLEncoding.DecodeString(k.E)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode exponent: %w", err)
+	}
+
+	n := new(big.Int).SetBytes(nBytes)
+	e := 0
+	for _, b := range eBytes {
+		e = e<<8 + int(b)
+	}
+
+	return &rsa.PublicKey{N: n, E: e}, nil
+}
+
+// deriveClerkIssuer attempts to derive the Clerk issuer URL from the publishable key.
+// Clerk publishable keys are formatted as pk_test_<base64-encoded-domain>.
+func deriveClerkIssuer(publishableKey string) string {
+	// Strip prefix (pk_test_ or pk_live_)
+	parts := strings.SplitN(publishableKey, "_", 3)
+	if len(parts) < 3 {
+		return ""
+	}
+	encoded := parts[2]
+
+	// Clerk base64-encodes the domain with a trailing $ — strip it.
+	encoded = strings.TrimRight(encoded, "$")
+
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		// Try with padding
+		for i := 0; i < 3; i++ {
+			encoded += "="
+			decoded, err = base64.StdEncoding.DecodeString(encoded)
+			if err == nil {
+				break
+			}
+		}
+		if err != nil {
+			return ""
+		}
+	}
+
+	domain := strings.TrimSpace(string(decoded))
+	if domain == "" {
+		return ""
+	}
+
+	return "https://" + domain
+}
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+
+// GetUserID extracts the verified userID from the request context.
+// Must be called after AuthMiddleware.
 func GetUserID(c *gin.Context) (string, bool) {
 	userID, exists := c.Get(string(UserIDKey))
 	if !exists {
 		return "", false
 	}
-
 	userIDStr, ok := userID.(string)
 	return userIDStr, ok
 }

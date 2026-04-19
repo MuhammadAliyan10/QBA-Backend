@@ -37,7 +37,7 @@ class ClassificationResult:
     platform: str  # Shopify, WordPress, React, Custom, etc.
     complexity: str  # Low, Medium, High
     confidence: float  # 0-1
-    features: Dict[str, bool]  # auth_required, captcha_likely, etc.
+    features: dict[str, bool]  # auth_required, captcha_likely, etc.
 
     def to_dict(self) -> Dict:
         return {
@@ -183,23 +183,8 @@ Meta Description: {html_meta.get('description', 'None')}
 Technologies: {html_meta.get('technologies', [])}
 """
 
-        prompt = f"""Classify this website for browser automation:
-
-URL: {url}
-Domain: {domain}
-{meta_context}
-
-Respond in JSON format:
-{{
-    "category": "ecommerce|social|banking|news|saas|portal|government|entertainment",
-    "platform": "Shopify|WordPress|React|Angular|Custom|Unknown",
-    "complexity": "Low|Medium|High",
-    "auth_required": true|false,
-    "captcha_likely": true|false,
-    "has_anti_bot": true|false
-}}
-
-Only output valid JSON, no explanation."""
+        from core.rag.prompts import URL_CLASSIFIER_PROMPT
+        prompt = URL_CLASSIFIER_PROMPT.format(url=url, domain=domain, meta_context=meta_context)
 
         try:
             response = self.client.chat.completions.create(
@@ -236,7 +221,7 @@ Only output valid JSON, no explanation."""
                 features={"auth_required": True, "captcha_likely": False}
             )
 
-    def _infer_features(self, category: str, complexity: str) -> Dict[str, bool]:
+    def _infer_features(self, category: str, complexity: str) -> dict[str, bool]:
         """Infer common features based on category."""
         return {
             "auth_required": category in ("banking", "social", "saas"),

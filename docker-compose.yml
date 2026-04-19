@@ -195,8 +195,9 @@ services:
       - REDIS_URL=redis:6379
       - NATS_URL=nats://nats:4222
       - TEMPORAL_HOST=temporal:7233
+      - NVIDIA_API_KEY=${NVIDIA_API_KEY:-dummy_key_to_pass_validation}
       # For local dev: use local postgres. For production: use Supabase DATABASE_URL
-      - DATABASE_URL=postgresql://postgres:postgres@app_postgres:5432/quanta
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@app_postgres:5432/quanta}
     depends_on:
       nats:
         condition: service_started
@@ -236,7 +237,7 @@ services:
       # AI Keys (Passed from host .env)
       - NVIDIA_API_KEY=${NVIDIA_API_KEY}
       # For local dev: use local postgres. For production: use Supabase DATABASE_URL
-      - DATABASE_URL=postgresql://postgres:postgres@app_postgres:5432/quanta
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@app_postgres:5432/quanta}
     depends_on:
       temporal:
         condition: service_started

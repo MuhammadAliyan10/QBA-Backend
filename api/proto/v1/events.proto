@@ -19,6 +19,9 @@ message JobEvent {
 
   // [NEW] A tiny thumbnail (base64 or raw bytes) so the user can see the bot working
   bytes screenshot_preview = 6;
+
+  // [NEW] Node-specific output data (JSON string)
+  string data = 7;
 }
 
 // 2. Billing Events (The Ledger)

@@ -2,8 +2,6 @@ package models
 
 import (
 	"time"
-
-	"gorm.io/gorm"
 )
 
 // UserProfile represents a user profile linked to Clerk authentication
@@ -23,7 +21,6 @@ type UserProfile struct {
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
-	DeletedAt gorm.DeletedAt `gorm:"index"`
 }
 
 // TableName specifies the table name for GORM

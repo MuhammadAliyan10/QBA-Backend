@@ -39,8 +39,10 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
+import re
+import json
 from playwright.async_api import Page, ElementHandle, Locator
 
 # Internal imports
@@ -52,6 +54,7 @@ from core.selector.utils.mathUtils import (
     normalize_text,
     compute_element_signature
 )
+from core.GlassBox import GlassBoxEngine
 
 logger = logging.getLogger("smartFinderV2")
 
@@ -97,8 +100,8 @@ class ElementCandidate:
     handle: ElementHandle
     tag: str = ""
     text: str = ""
-    classes: List[str] = field(default_factory=list)
-    attributes: Dict[str, str] = field(default_factory=dict)
+    classes: list[str] = field(default_factory=list)
+    attributes: dict[str, str] = field(default_factory=dict)
     score: float = 0.0
     simhash: str = ""
 
@@ -140,10 +143,10 @@ class QdrantVectorDB:
         """Lazy-load Qdrant client."""
         if self._client is None:
             try:
-                from qdrant_client import QdrantClient
+                from qdrant_client import AsyncQdrantClient
                 from qdrant_client.http import models
 
-                self._client = QdrantClient(
+                self._client = AsyncQdrantClient(
                     url=self.url,
                     api_key=self.api_key,
                     timeout=5.0  # Fast timeout for element finding
@@ -151,12 +154,12 @@ class QdrantVectorDB:
 
                 # Check if collection exists, create if not
                 try:
-                    collections = self._client.get_collections().collections
+                    collections = (await self._client.get_collections()).collections
                     exists = any(c.name == self.collection_name for c in collections)
 
                     if not exists:
                         logger.info(f"[VectorDB] Creating collection '{self.collection_name}'")
-                        self._client.create_collection(
+                        await self._client.create_collection(
                             collection_name=self.collection_name,
                             vectors_config=models.VectorParams(
                                 size=384,  # all-MiniLM-L6-v2 dimension
@@ -198,16 +201,16 @@ class QdrantVectorDB:
             if not embedding:
                 return None
 
-            # Search Qdrant
-            results = self._client.search(
+            # Search Qdrant (v2 API: query_points replaces search)
+            response = await self._client.query_points(
                 collection_name=self.collection_name,
-                query_vector=embedding,
+                query=embedding,
                 limit=1,
                 score_threshold=0.7
             )
 
-            if results:
-                match = results[0]
+            if response.points:
+                match = response.points[0]
                 return {
                     "selector": match.payload.get("selector"),
                     "score": match.score,
@@ -220,7 +223,7 @@ class QdrantVectorDB:
 
         return None
 
-    async def _get_embedding(self, text: str) -> Optional[List[float]]:
+    async def _get_embedding(self, text: str) -> Optional[list[float]]:
         """Generate embedding vector for text using sentence-transformers."""
         try:
             from sentence_transformers import SentenceTransformer
@@ -254,7 +257,7 @@ class QdrantVectorDB:
             if not embedding:
                 return False
 
-            self._client.upsert(
+            await self._client.upsert(
                 collection_name=self.collection_name,
                 points=[
                     models.PointStruct(
@@ -331,19 +334,10 @@ class LLMAgent:
     async def recover(
         self,
         intent: str,
-        page_context: str = "",
-        screenshot: bytes = None
+        axtree_map: str = ""
     ) -> Optional[str]:
         """
-        Use AI to find an element selector.
-
-        Args:
-            intent: Natural language description of the element
-            page_html: Truncated page HTML for context
-            screenshot: Optional screenshot bytes
-
-        Returns:
-            CSS selector string if found, None otherwise
+        Use AI to identify a Node_ID from an AXTree map.
         """
         await self._ensure_client()
 
@@ -352,8 +346,7 @@ class LLMAgent:
             return None
 
         try:
-            # Build prompt
-            prompt = self._build_prompt(intent, page_html)
+            from core.rag.prompts import SELECTOR_RECOVERY_SYSTEM_PROMPT, SELECTOR_RECOVERY_USER_PROMPT
 
             # Call LLM
             response = await self._client.chat.completions.create(
@@ -361,44 +354,29 @@ class LLMAgent:
                 messages=[
                     {
                         "role": "system",
-                        "content": (
-                            "You are an expert at finding HTML elements. "
-                            "Given a description and HTML, return ONLY a valid CSS selector. "
-                            "Return just the selector, nothing else. "
-                            "If you cannot find a matching element, return 'NOT_FOUND'."
-                        )
+                        "content": SELECTOR_RECOVERY_SYSTEM_PROMPT
                     },
-                    {"role": "user", "content": prompt}
+                    {
+                        "role": "user",
+                        "content": SELECTOR_RECOVERY_USER_PROMPT.format(
+                            intent=intent,
+                            axtree_map=axtree_map
+                        )
+                    }
                 ],
-                max_tokens=100,
+                max_tokens=20,
                 temperature=0
             )
 
-            selector = response.choices[0].message.content.strip()
-
-            # Validate response
-            if selector and selector != "NOT_FOUND" and len(selector) < 200:
-                logger.info(f"[AIAgent] Found selector: {selector[:50]}...")
-                return selector
-
-            return None
+            node_id_str = response.choices[0].message.content.strip()
+            # Extract just the number if AI adds fluff
+            match = re.search(r"(\d+)", node_id_str)
+            return match.group(1) if match else None
 
         except Exception as e:
             logger.warning(f"[AIAgent] Recovery failed: {e}")
             return None
 
-    def _build_prompt(self, intent: str, page_context: str) -> str:
-        """Build the prompt for the LLM."""
-        context_preview = page_context[:20000] if page_context else "No Context available"
-
-        return f"""Find the element: "{intent}"
-
-PAGE CONTEXT:
-```
-{context_preview}
-```
-
-Return a CSS selector that uniquely identifies this element."""
 
 
 # =============================================================================
@@ -522,6 +500,7 @@ class SmartFinder:
         self.page = page
         self.vector_db = vector_db or MockVectorDB()
         self.ai_agent = ai_agent or MockAIAgent()
+        self.glass = GlassBoxEngine()
 
         # Heuristic Intent Map (Synonyms)
         self.INTENT_SYNONYMS = {
@@ -541,7 +520,7 @@ class SmartFinder:
         # Playwright selectors support case-insensitive attribute matching (:i flag).
         # These are EXACT DOM lookups — pure logic, zero AI, zero fuzzy math.
         # =======================================================================
-        self.STRUCTURAL_SELECTORS: Dict[str, List[str]] = {
+        self.STRUCTURAL_SELECTORS: dict[str, list[str]] = {
             # Search
             "search": [
                 "input[type='search']",
@@ -622,7 +601,7 @@ class SmartFinder:
         }
 
         # Cache for element signatures (avoid recomputing)
-        self._signature_cache: Dict[str, Dict] = {}
+        self._signature_cache: dict[str, Dict] = {}
 
     async def find(
         self,
@@ -713,7 +692,7 @@ class SmartFinder:
                 layer1_start = time.time()
 
                 try:
-                    result = await self._layer1_reflex(intent, metadata["simhash"], container_selector)
+                    result = await self._layer1_reflex(intent, metadata["simhash"], container_selector, scan_mode=scan_mode)
                     if result.found:
                         result.duration_ms = int((time.time() - start_time) * 1000)
                         logger.info(
@@ -735,7 +714,7 @@ class SmartFinder:
             layer2_start = time.time()
 
             try:
-                result = await self._layer2_heuristic(intent, container_selector, position=position, discovery_mode=discovery_mode)
+                result = await self._layer2_heuristic(intent, container_selector, scan_mode=scan_mode, position=position, discovery_mode=discovery_mode)
                 if result.found:
                     result.new_signature = await self._compute_element_signature(result.element)
 
@@ -743,7 +722,7 @@ class SmartFinder:
                     if result.new_signature and "selector" in result.new_signature:
                         asyncio.create_task(self.vector_db.store(
                             intent=intent,
-                            selector=result.new_signature["selector"],
+                            selector=result.new_signature.get("selector", "unknown"),
                             attributes=result.new_signature.get("attributes", {})
                         ))
 
@@ -755,7 +734,7 @@ class SmartFinder:
                     return result
                 else:
                     logger.info(
-                        f"[Layer 2] ❌ HEURISTIC MISS: No match > {self.LAYER2_THRESHOLD} "
+                        f"[Layer 2] ❌ HEURISTIC MISS: No match > {result.confidence:.2f} threshold "
                         f"(checked: {result.candidates_checked})"
                     )
             except Exception as e:
@@ -768,7 +747,7 @@ class SmartFinder:
             layer3_start = time.time()
 
             try:
-                result = await self._layer3_semantic(intent)
+                result = await self._layer3_semantic(intent, container_selector, scan_mode=scan_mode)
                 if result.found:
                     result.new_signature = await self._compute_element_signature(result.element)
                     result.duration_ms = int((time.time() - start_time) * 1000)
@@ -851,17 +830,6 @@ class SmartFinder:
             error=f"Element not found: {intent}"
         )
 
-    def _parse_container_hint(self, intent: str) -> Optional[str]:
-        """
-        Parse container hints from intent string.
-
-        Examples:
-            "Login button in the header" -> "header"
-            "Submit in the modal" -> "[role='dialog'], .modal"
-            "Edit button in row containing John" -> None (complex, handle separately)
-        """
-        intent_lower = intent.lower()
-
     # -------------------------------------------------------------------------
     # LAYER 0: STRUCTURAL (Deterministic CSS)
     # -------------------------------------------------------------------------
@@ -885,7 +853,7 @@ class SmartFinder:
         intent_words = [w for w in intent_lower.split() if len(w) > 2 and w not in stop_words]
 
         # Collect matching selectors from the map
-        selectors_to_try: List[str] = []
+        selectors_to_try: list[str] = []
         for keyword, css_list in self.STRUCTURAL_SELECTORS.items():
             keyword_words = keyword.split()
             # Match if ALL keyword words are present in the intent
@@ -1021,64 +989,90 @@ class SmartFinder:
         # Normalize intent for comparison
         intent_normalized = normalize_text(intent).lower()
 
-        # Check for synonyms
+        # ANCHOR-FIRST SCORING: Split comma-separated anchors into individual terms
+        # Planner generates: "repository, name, title, header, top, trending"
+        # We score EACH anchor independently against element signals
+        anchors = [a.strip() for a in intent_normalized.split(",") if a.strip()]
+        if not anchors:
+            anchors = [intent_normalized]
+
+        # Check for synonyms across all anchors
         synonyms = []
         for key, syn_list in self.INTENT_SYNONYMS.items():
             if key in intent_normalized or intent_normalized in key:
                 synonyms.extend(syn_list)
+            for anchor in anchors:
+                if key in anchor or anchor in key:
+                    synonyms.extend(syn_list)
 
         for candidate in candidates:
-            # Compare against inner text
-            text_score = hybrid_similarity(intent_normalized, candidate.text.lower())
+            # Collect all text signals from this element
+            element_signals = [
+                candidate.text.lower(),
+                candidate.attributes.get("aria-label", "").lower(),
+                candidate.attributes.get("placeholder", "").lower(),
+                candidate.attributes.get("value", "").lower(),
+                candidate.attributes.get("title", "").lower(),
+                candidate.attributes.get("data-tooltip", "").lower(),
+                candidate.attributes.get("alt", "").lower(),
+                candidate.attributes.get("data-label", "").lower(),
+                candidate.attributes.get("name", "").lower(),
+                " ".join(candidate.classes).lower(),
+            ]
 
-            # Compare against aria-label
-            aria_label = candidate.attributes.get("aria-label", "")
-            aria_score = hybrid_similarity(intent_normalized, aria_label.lower())
+            # Score each anchor INDIVIDUALLY against each signal, take the best
+            best_anchor_score = 0.0
+            for anchor in anchors:
+                for signal in element_signals:
+                    if not signal:
+                        continue
+                    score = hybrid_similarity(anchor, signal)
+                    best_anchor_score = max(best_anchor_score, score)
 
-            # Compare against placeholder (for inputs)
-            placeholder = candidate.attributes.get("placeholder", "")
-            placeholder_score = hybrid_similarity(intent_normalized, placeholder.lower())
-
-            # Compare against value (for buttons with value)
-            value = candidate.attributes.get("value", "")
-            value_score = hybrid_similarity(intent_normalized, value.lower())
-
-            # Icon-only elements: title, data-tooltip, alt, data-label
-            title_score = hybrid_similarity(intent_normalized, candidate.attributes.get("title", "").lower())
-            tooltip_score = hybrid_similarity(intent_normalized, candidate.attributes.get("data-tooltip", "").lower())
-            alt_score = hybrid_similarity(intent_normalized, candidate.attributes.get("alt", "").lower())
-            data_label_score = hybrid_similarity(intent_normalized, candidate.attributes.get("data-label", "").lower())
-            name_score = hybrid_similarity(intent_normalized, candidate.attributes.get("name", "").lower())
-
-            # Take best base score across all text signals
-            base_score = max(
-                text_score, aria_score, placeholder_score, value_score,
-                title_score, tooltip_score, alt_score, data_label_score, name_score
-            )
+            # Also score the full intent (handles cases where element text is multi-word)
+            full_intent_score = 0.0
+            for signal in element_signals:
+                if not signal:
+                    continue
+                full_intent_score = max(full_intent_score, hybrid_similarity(intent_normalized, signal))
 
             # WORD-OVERLAP BOOST (Jaccard similarity on word level)
-            # Character Levenshtein fails on "Search Input" vs "Search or jump to..."
-            # but word overlap catches it: {"search"} ∩ {"search", "or", "jump", "to"} = {"search"}
-            intent_words = set(intent_normalized.split())
-            all_text_signals = " ".join(filter(None, [
-                candidate.text.lower(),
+            intent_words = set()
+            for anchor in anchors:
+                intent_words.update(anchor.split())
+
+            # Metadata signals for Jaccard
+            meta_signals = " ".join(filter(None, [
                 candidate.attributes.get("placeholder", "").lower(),
                 candidate.attributes.get("aria-label", "").lower(),
                 candidate.attributes.get("title", "").lower(),
                 candidate.attributes.get("name", "").lower(),
+                candidate.attributes.get("itemprop", "").lower(),
+                candidate.attributes.get("id", "").lower(),
+                candidate.attributes.get("data-testid", "").lower(),
+                " ".join(candidate.classes).lower()
             ]))
-            element_words = set(all_text_signals.split())
-            if intent_words and element_words:
-                overlap = len(intent_words & element_words)
-                union = len(intent_words | element_words)
-                jaccard = overlap / union if union > 0 else 0.0
-                # Weight: word overlap is a strong signal — treat 0.3 jaccard as 0.6 base
-                word_score = min(jaccard * 2.0, 1.0)
-                candidate.score = max(base_score, word_score)
-            else:
-                candidate.score = base_score
+            meta_words = set(meta_signals.split())
+            text_words = set(candidate.text.lower().split())
 
-            # SYNONYM BOOST: If text matches a synonym, boost score
+            meta_jaccard = 0.0
+            if intent_words and meta_words:
+                overlap = len(intent_words & meta_words)
+                union = len(intent_words | meta_words)
+                meta_jaccard = overlap / union if union > 0 else 0.0
+
+            text_jaccard = 0.0
+            if intent_words and text_words:
+                overlap = len(intent_words & text_words)
+                union = len(intent_words | text_words)
+                text_jaccard = overlap / union if union > 0 else 0.0
+
+            word_score = max(min(meta_jaccard * 2.0, 1.0), text_jaccard)
+
+            # Final score: best of per-anchor, full-intent, and word-overlap
+            candidate.score = max(best_anchor_score, full_intent_score, word_score)
+
+            # SYNONYM BOOST
             if synonyms:
                 candidate_text = candidate.text.lower()
                 for syn in synonyms:
@@ -1086,8 +1080,7 @@ class SmartFinder:
                         candidate.score += 0.2
                         break
 
-            # FUNCTIONAL KEYWORD BOOST: Boost if intent implies tag
-            # If intent says "Search Input" and element is <input>, boost +0.3
+            # FUNCTIONAL KEYWORD BOOST
             if "input" in intent_normalized and (candidate.tag == "input" or candidate.tag == "textarea"):
                 candidate.score += 0.3
             elif "button" in intent_normalized and (candidate.tag == "button" or "btn" in candidate.classes):
@@ -1097,7 +1090,7 @@ class SmartFinder:
             elif "select" in intent_normalized and candidate.tag == "select":
                 candidate.score += 0.3
 
-            # LIST ITEM HEURISTICS: Boost content tags if intent implies list item
+            # LIST ITEM HEURISTICS
             list_keywords = ["repository", "article", "item", "result", "post", "product"]
             if any(k in intent_normalized for k in list_keywords):
                 if candidate.tag in ["h1", "h2", "h3", "h4", "h5", "a"]:
@@ -1150,8 +1143,14 @@ class SmartFinder:
                         logger.warning(f"[Visual Sort] Position {position} out of range (found {len(enriched_matches)})")
                         # Fallback to normal best match logic below
 
-        # Check if best match exceeds strict threshold
-        threshold = 0.65 if discovery_mode else self.LAYER2_THRESHOLD
+        # discovery_mode takes precedence (preflight first-time verification)
+        if discovery_mode:
+            threshold = 0.65
+        elif scan_mode == "all":
+            threshold = 0.7
+        else:
+            threshold = self.LAYER2_THRESHOLD
+
         if best_match and best_score >= threshold:
             return FindResult(
                 element=best_match.handle,
@@ -1180,7 +1179,12 @@ class SmartFinder:
     # -------------------------------------------------------------------------
     # LAYER 3: SEMANTIC (Vector DB)
     # -------------------------------------------------------------------------
-    async def _layer3_semantic(self, intent: str) -> FindResult:
+    async def _layer3_semantic(
+        self,
+        intent: str,
+        container_selector: Optional[str] = None,
+        scan_mode: str = "interactive"
+    ) -> FindResult:
         """
         Layer 3: Find element using semantic vector search.
 
@@ -1216,37 +1220,35 @@ class SmartFinder:
     # -------------------------------------------------------------------------
     async def _layer4_cognitive(self, intent: str, tree_context: str = None) -> FindResult:
         """
-        Layer 4: Use AI to recover the element.
-
-        Sends page context to an AI agent that analyzes the DOM
-        and returns a selector recommendation.
+        Layer 4: Use AI to recover the element via AXTree mapping.
         """
-        if tree_context:
-            page_context = f"ACCESSIBILITY TREE:\n{tree_context}"
-        else:
-            try:
-                page_html = await self.page.content()
-                page_context = "HTML:\n" + (page_html[:30000] + "...\n")
-            except:
-                page_context = ""
-
-        # Call AI agent
-        selector = await self.ai_agent.recover(intent, page_context=page_context)
-
-        if not selector:
-            return FindResult(layer=FinderLayer.COGNITIVE)
-
-        # Try the AI-suggested selector
         try:
-            element = await self.page.query_selector(selector)
-            if element:
-                return FindResult(
-                    element=element,
-                    layer=FinderLayer.COGNITIVE,
-                    confidence=0.6  # AI confidence is lower
-                )
+            from core.GlassBox import GlassBoxEngine
+            glass = GlassBoxEngine()
+
+            # 1. Get all candidates (including those outside current search scope)
+            candidates = await self._get_interactive_elements(scan_mode="all")
+            handles = [c.handle for c in candidates]
+
+            # 2. Extract Pruned AXTree
+            axtree_text, id_map = await glass.get_pruned_axtree(self.page, handles)
+
+            # 3. Call AI agent to get Node_ID
+            node_id_str = await self.ai_agent.recover(intent, axtree_map=axtree_text)
+
+            if node_id_str and node_id_str.isdigit():
+                node_id = int(node_id_str)
+                element = id_map.get(node_id)
+                if element:
+                    logger.info(f"[Layer 4] AI matched intent to Node_ID: {node_id}")
+                    return FindResult(
+                        element=element,
+                        layer=FinderLayer.COGNITIVE,
+                        confidence=0.85
+                    )
+
         except Exception as e:
-            logger.debug(f"[Layer 4] AI selector failed: {e}")
+            logger.warning(f"[Layer 4] Cognitive recovery failed: {e}")
 
         return FindResult(layer=FinderLayer.COGNITIVE)
 
@@ -1260,11 +1262,11 @@ class SmartFinder:
         include_iframes: bool = True,
         iframe_depth: int = 0,
         scan_mode: str = "interactive"
-    ) -> List[ElementCandidate]:
+    ) -> list[ElementCandidate]:
         """
         Get relevant elements on the page.
         """
-        candidates: List[ElementCandidate] = []
+        candidates: list[ElementCandidate] = []
         position_index = 0
 
         # Determine base element (container or page)
@@ -1463,8 +1465,10 @@ class SmartFinder:
 
             # Compute signature
             simhash = compute_simhash(tag, text, classes, attributes)
+            selector = await self._get_optimized_selector(element)
 
             return {
+                "selector": selector,
                 "simhash": simhash,
                 "tag": tag,
                 "text": normalize_text(text)[:50],
@@ -1475,6 +1479,40 @@ class SmartFinder:
         except Exception as e:
             logger.warning(f"[SmartFinder] Error computing signature: {e}")
             return None
+
+    async def _get_optimized_selector(self, element: ElementHandle) -> str:
+        """
+        Generates a stable CSS selector for an element.
+        Priority: data-testid > id > name > aria-label > tag + specific class
+        """
+        try:
+            # 1. Try stable attributes
+            for attr in ["data-testid", "data-cy", "data-qa", "id", "name"]:
+                val = await element.get_attribute(attr)
+                if val:
+                    if attr == "id":
+                        return f"#{val}"
+                    return f"[{attr}='{val}']"
+
+            # 2. Falling back to tag + placeholder (for inputs)
+            tag = await element.evaluate("el => el.tagName.toLowerCase()")
+            placeholder = await element.get_attribute("placeholder")
+            if placeholder:
+                return f"{tag}[placeholder='{placeholder}']"
+
+            # 3. Falling back to tag + first unique class
+            class_str = await element.get_attribute("class") or ""
+            classes = [c for c in class_str.split() if ":" not in c and " " not in c]
+            if classes:
+                # Use first class if it's not too generic (heuristic)
+                for c in classes:
+                    if len(c) > 3 and not any(x in c.lower() for x in ["hidden", "visible", "active"]):
+                        return f"{tag}.{c}"
+
+            # 4. Ultimate fallback: Simple tag (risky but better than nothing)
+            return tag
+        except:
+            return tag if 'tag' in locals() else "unknown"
 
 
 # =============================================================================

@@ -41,6 +41,10 @@ torch==2.4.0
 faiss-cpu==1.8.0
 qdrant-client==1.11.1
 
+# Database
+sqlalchemy==2.0.31
+asyncpg>=0.29.0
+
 # -----------------------------
 # DATA PROCESSING
 # -----------------------------

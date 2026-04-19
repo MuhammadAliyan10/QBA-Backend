@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"gorm.io/datatypes"
-	"gorm.io/gorm"
 )
 
 // Job represents a single execution of a workflow
@@ -13,7 +12,7 @@ type Job struct {
 	ID         string `gorm:"primaryKey;type:uuid;column:id;default:gen_random_uuid()"`
 	UserID     string `gorm:"column:user_id;type:uuid;index"`
 	WorkflowID string `gorm:"column:workflow_id;type:uuid;index"`
-	Status     string `gorm:"column:status;type:job_status;index"`
+	Status     string `gorm:"column:status;index"`
 
 	// Timing
 	ScheduledAt *time.Time `gorm:"column:scheduled_at;index"`
@@ -39,7 +38,6 @@ type Job struct {
 
 	CreatedAt time.Time `gorm:"index"`
 	UpdatedAt time.Time
-	DeletedAt gorm.DeletedAt `gorm:"index"`
 }
 
 // TableName specifies the table name for GORM

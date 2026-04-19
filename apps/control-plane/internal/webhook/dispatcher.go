@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,103 +12,144 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// WebhookPayload represents the data sent to user's webhook endpoint
+// WebhookPayload represents the optimized data sent to user's webhook endpoint
 type WebhookPayload struct {
-	JobID     string                 `json:"job_id"`
-	Status    string                 `json:"status"`
-	ResultURL string                 `json:"result_url,omitempty"`
-	Data      map[string]interface{} `json:"data,omitempty"`
-	Timestamp string                 `json:"timestamp"`
+	JobID       string                 `json:"job_id"`
+	Status      string                 `json:"status"`
+	ResultURL   string                 `json:"result_url,omitempty"`   // Legacy/Other URLs
+	DownloadURL string                 `json:"download_url,omitempty"` // S3 Presigned URL if payload >5MB
+	Data        map[string]interface{} `json:"data,omitempty"`         // Flattened Reducer Output
+	Timestamp   string                 `json:"timestamp"`
 }
 
-// Dispatch sends an HMAC-signed webhook with retry logic
-// This function is designed to be called in a goroutine for non-blocking execution
-//
-// Parameters:
-//   - url: User's webhook endpoint
-//   - payload: Data to send (will be JSON-encoded)
-//   - secret: HMAC secret key (typically user's API key)
-//
-// Retry Strategy:
-//   - Attempt 1: Immediate
-//   - Attempt 2: 1s delay
-//   - Attempt 3: 3s delay
-//   - Attempt 4: 10s delay
-func Dispatch(url string, payload interface{}, secret string) {
-	const maxRetries = 3
-	retryDelays := []time.Duration{0, 1 * time.Second, 3 * time.Second, 10 * time.Second}
+// WebhookDispatcher manages secure, payload-optimized webhook delivery
+type WebhookDispatcher struct {
+	s3Client   *s3.Client
+	bucketName string
+	presignSvc *s3.PresignClient
+}
 
-	// Marshal payload to JSON
-	jsonBytes, err := json.Marshal(payload)
+// NewWebhookDispatcher initializes the singleton dispatcher injected with AWS
+func NewWebhookDispatcher(s3Client *s3.Client, bucketName string) *WebhookDispatcher {
+	var presignClient *s3.PresignClient
+	if s3Client != nil {
+		presignClient = s3.NewPresignClient(s3Client)
+	}
+
+	return &WebhookDispatcher{
+		s3Client:   s3Client,
+		bucketName: bucketName,
+		presignSvc: presignClient,
+	}
+}
+
+// Dispatch executes the webhook delivery. It intercepts the payload, measures
+// the size of the flatten data, and uploads to S3 natively if >5MB.
+// It signs the final JSON representation using HMAC-SHA256.
+func (wd *WebhookDispatcher) Dispatch(url string, payload WebhookPayload, secret string) {
+	// Size limit threshold: 5MB
+	const MaxInlineDataBytes = 5 * 1024 * 1024
+
+	// Estimate size by marshaling just the Data subset
+	dataBytes, err := json.Marshal(payload.Data)
+	if err == nil && len(dataBytes) > MaxInlineDataBytes {
+		log.Printf("[Webhook] Payload %s data size (%d bytes) exceeds 5MB. Falling back to S3.", payload.JobID, len(dataBytes))
+
+		if wd.s3Client != nil && wd.bucketName != "" {
+			// S3 AWS Upload
+			key := fmt.Sprintf("webhooks/%s/result.json", payload.JobID)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+
+			_, err := wd.s3Client.PutObject(ctx, &s3.PutObjectInput{
+				Bucket:      aws.String(wd.bucketName),
+				Key:         aws.String(key),
+				Body:        bytes.NewReader(dataBytes),
+				ContentType: aws.String("application/json"),
+			})
+
+			if err != nil {
+				log.Printf("[Webhook] S3 Upload failed for %s: %v", payload.JobID, err)
+			} else {
+				// Generate 7-day presigned URL
+				presignReq, err := wd.presignSvc.PresignGetObject(context.Background(), &s3.GetObjectInput{
+					Bucket: aws.String(wd.bucketName),
+					Key:    aws.String(key),
+				}, s3.WithPresignExpires(7*24*time.Hour))
+
+				if err == nil {
+					payload.DownloadURL = presignReq.URL
+					payload.Data = nil // Omit inline data!
+					log.Printf("[Webhook] Generated presigned URL for %s", payload.JobID)
+				}
+			}
+		} else {
+			log.Printf("[Webhook] S3 Client not configured! Stripping data from response to prevent memory crashes.")
+			payload.Data = nil
+		}
+	}
+
+	// Sign the Final Optimized Payload
+	finalJsonBytes, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("[Webhook] Invalid payload: %v", err)
+		log.Printf("[Webhook] Invalid payload serialization: %v", err)
 		return
 	}
 
-	// Generate HMAC-SHA256 signature
-	signature := generateHMAC(jsonBytes, secret)
+	signature := generateHMAC(finalJsonBytes, secret)
 
-	// Retry loop
+	// Dispatch Async
+	go wd.executeDelivery(url, finalJsonBytes, signature)
+}
+
+func (wd *WebhookDispatcher) executeDelivery(url string, jsonBytes []byte, signature string) {
+	const maxRetries = 3
+	retryDelays := []time.Duration{0, 1 * time.Second, 3 * time.Second, 10 * time.Second}
+
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		// Apply backoff delay (skip for first attempt)
 		if attempt > 0 {
-			delay := retryDelays[attempt]
-			log.Printf("⏳ Webhook retry #%d after %v delay...", attempt, delay)
-			time.Sleep(delay)
+			time.Sleep(retryDelays[attempt])
 		}
 
-		// Send HTTP POST request
 		req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBytes))
 		if err != nil {
 			log.Printf("[Webhook] Invalid URL: %v", err)
 			return
 		}
 
-		// Set headers
 		req.Header.Set("Content-Type", "application/json")
+		// The payload HMAC explicitly signs the EXACT JSON bytes mapped here
 		req.Header.Set("X-E2E-Signature", signature)
 		req.Header.Set("X-E2E-Event", "job.completed")
-		req.Header.Set("User-Agent", "E2E-Platform-Webhook/1.0")
+		req.Header.Set("User-Agent", "Quanta-Industrial-Webhook/2.0")
 
-		// Execute request with timeout
-		client := &http.Client{
-			Timeout: 10 * time.Second,
-		}
-
+		client := &http.Client{Timeout: 10 * time.Second}
 		resp, err := client.Do(req)
 
-		// Handle network errors or timeouts
 		if err != nil {
 			log.Printf("[Webhook] Attempt #%d failed: %v", attempt+1, err)
-			if attempt == maxRetries {
-				log.Printf("[Webhook] DEAD LETTER: %s (max retries exceeded)", url)
-			}
 			continue
 		}
 
-		// Read response body for logging
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		// Check HTTP status code
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			log.Printf("[Webhook] Delivery successful: %s (status: %d, attempt: %d)", url, resp.StatusCode, attempt+1)
+			log.Printf("[Webhook] Delivery successful: %s (status: %d)", url, resp.StatusCode)
 			return
 		}
 
-		// Log failure and retry on 5xx errors
 		if resp.StatusCode >= 500 {
-			log.Printf("[Webhook] Server error: %d - %s (attempt: %d)", resp.StatusCode, string(body), attempt+1)
-			if attempt == maxRetries {
-				log.Printf("[Webhook] DEAD LETTER: %s (status: %d, max retries exceeded)", url, resp.StatusCode)
-			}
+			log.Printf("[Webhook] Server error: %d - %s", resp.StatusCode, string(body))
 			continue
 		}
 
-		// Client errors (4xx) - don't retry
-		log.Printf("[Webhook] Rejected: %s (status: %d, body: %s)", url, resp.StatusCode, string(body))
+		log.Printf("[Webhook] Rejected: %s (status: %d)", url, resp.StatusCode)
 		return
 	}
 }
@@ -119,27 +161,8 @@ func generateHMAC(payload []byte, secret string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// VerifyHMAC verifies an HMAC signature (utility for testing/validation)
+// VerifyHMAC verifies an HMAC signature
 func VerifyHMAC(payload []byte, signature string, secret string) bool {
 	expectedSignature := generateHMAC(payload, secret)
 	return hmac.Equal([]byte(signature), []byte(expectedSignature))
-}
-
-// Example usage and testing
-func ExampleDispatch() {
-	payload := WebhookPayload{
-		JobID:     "550e8400-e29b-41d4-a716-446655440000",
-		Status:    "COMPLETED",
-		ResultURL: "s3://bucket/result.json",
-		Data: map[string]interface{}{
-			"duration_ms": 1523,
-			"steps_count": 5,
-		},
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-	}
-
-	// Non-blocking dispatch
-	go Dispatch("https://example.com/webhook", payload, "secret_key_123")
-
-	fmt.Println("Webhook dispatched asynchronously")
 }

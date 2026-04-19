@@ -106,7 +106,7 @@ class GlassBoxEngine:
             await asyncio.sleep(delay_sec)
 
     # --- 4. THE RECURSIVE SHADOW PIERCER (DOM TRAVERSAL) ---
-    async def get_all_interactive_nodes(self, page: Page) -> List[ElementHandle]:
+    async def get_all_interactive_nodes(self, page: Page) -> list[ElementHandle]:
         """
         Recursively extracts buttons/inputs, piercing through Shadow DOMs.
         """
@@ -115,7 +115,7 @@ class GlassBoxEngine:
         return await page.query_selector_all("button, a, input, [role='button'], [onclick]")
 
     # --- 5. THE HONEYPOT FILTER (VISUAL FILTER) ---
-    async def filter_visible_elements(self, page: Page, elements: List[ElementHandle]) -> List[ElementHandle]:
+    async def filter_visible_elements(self, page: Page, elements: list[ElementHandle]) -> list[ElementHandle]:
         """
         Removes elements that are invisible to humans (Honeypot Traps).
         """
@@ -139,3 +139,34 @@ class GlassBoxEngine:
             except:
                 pass
         return visible
+
+    async def get_pruned_axtree(self, page: Page, elements: list[ElementHandle]) -> tuple[str, dict[int, ElementHandle]]:
+        """
+        Generates a pruned, numbered list of interactive elements for the LLM.
+        Returns (formatted_string, id_to_handle_map).
+        """
+        mapping = {}
+        lines = []
+
+        for i, el in enumerate(elements):
+            try:
+                # Extract semantic properties
+                props = await page.evaluate("""
+                    (el) => ({
+                        tag: el.tagName.toLowerCase(),
+                        text: (el.innerText || el.value || el.placeholder || "").trim().slice(0, 50),
+                        role: el.getAttribute('role') || "",
+                        id: el.id || "",
+                        name: el.getAttribute('name') || ""
+                    })
+                """, el)
+
+                mapping[i] = el
+                label = props["text"] or f"No-Text {props['tag']}"
+                line = f"[{i}] {props['tag'].upper()}: \"{label}\" (Role: {props['role']}, ID: {props['id']})"
+                lines.append(line)
+
+            except Exception:
+                continue
+
+        return "\n".join(lines), mapping

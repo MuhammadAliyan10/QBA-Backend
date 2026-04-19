@@ -68,7 +68,7 @@ class NATSPublisher:
             await self._nc.close()
             self._connected = False
 
-    async def publish(self, subject: str, data: bytes, headers: Dict[str, str] = None):
+    async def publish(self, subject: str, data: bytes, headers: dict[str, str] = None):
         if not self._connected:
             return False
         try:

@@ -32,11 +32,10 @@ func Init() {
 	}
 
 	var err error
-	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
-		// CRITICAL: Disable prepared statements for Supabase Transaction Pooler (Port 6543)
-		// PgBouncer in Transaction Mode does NOT support prepared statements
-		PrepareStmt: false,
-
+	DB, err = gorm.Open(postgres.New(postgres.Config{
+		DSN:                  dsn,
+		PreferSimpleProtocol: true, // CRITICAL: Fix for Supabase PgBouncer (prepared statement already exists)
+	}), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Info),
 	})
 

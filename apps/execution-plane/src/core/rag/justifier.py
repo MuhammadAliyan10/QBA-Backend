@@ -12,6 +12,8 @@ Author: Quanta Box Paradox Engineering
 Version: 2.0.0
 """
 
+from __future__ import annotations
+from typing import Any, Dict, List, Optional, Set
 import os
 import asyncio
 import logging
@@ -19,7 +21,6 @@ import time
 import json
 import base64
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext
@@ -31,7 +32,7 @@ logger = logging.getLogger("justifier")
 # CONSTANTS
 # =============================================================================
 
-PREFLIGHT_TIMEOUT_SECONDS = 30
+PREFLIGHT_TIMEOUT_SECONDS = 120
 MIN_CONFIDENCE_THRESHOLD = 0.80
 
 # Dangerous action types - NEVER execute in preflight (READ-ONLY)
@@ -63,7 +64,7 @@ class ElementVerification:
     confidence: float = 0.0
     verified_selector: Optional[str] = None
     layer_used: Optional[str] = None  # "REFLEX", "HEURISTIC", "SEMANTIC", "COGNITIVE"
-    vision_coordinates: Optional[Tuple[int, int]] = None
+    vision_coordinates: Optional[tuple[int, int]] = None
     duration_ms: int = 0
     error: Optional[str] = None
 
@@ -73,9 +74,9 @@ class JustificationResult:
     """Result of justifying an entire recipe."""
     success: bool
     patched_recipe: Dict
-    verifications: List[ElementVerification] = field(default_factory=list)
+    verifications: list[ElementVerification] = field(default_factory=list)
     duration_ms: int = 0
-    warning_flags: List[str] = field(default_factory=list)
+    warning_flags: list[str] = field(default_factory=list)
 
     @property
     def verified_count(self) -> int:
@@ -133,8 +134,8 @@ class JustifierEngine:
             JustificationResult with patched recipe
         """
         start_time = time.time()
-        verifications: List[ElementVerification] = []
-        warning_flags: List[str] = []
+        verifications: list[ElementVerification] = []
+        warning_flags: list[str] = []
 
         # Deep copy recipe for patching
         import copy
@@ -191,10 +192,17 @@ class JustifierEngine:
 
         duration_ms = int((time.time() - start_time) * 1000)
 
+        # Success = all verifiable actions are verified or skipped (warnings are informational)
+        verified_statuses = {VerificationStatus.VERIFIED, VerificationStatus.VISION_VERIFIED, VerificationStatus.SKIPPED}
+        all_verified = all(v.status in verified_statuses for v in verifications) if verifications else True
+
         logger.info(f"[Justifier] Complete: {len(verifications)} actions verified in {duration_ms}ms")
+        logger.info(f"[Justifier] Summary: {sum(1 for v in verifications if v.status == VerificationStatus.VERIFIED)} verified, "
+                     f"{sum(1 for v in verifications if v.status == VerificationStatus.CALIBRATION_NEEDED)} need calibration, "
+                     f"{sum(1 for v in verifications if v.status == VerificationStatus.SKIPPED)} skipped")
 
         return JustificationResult(
-            success=len(warning_flags) == 0,
+            success=all_verified,
             patched_recipe=patched_recipe,
             verifications=verifications,
             duration_ms=duration_ms,
@@ -307,13 +315,27 @@ class JustifierEngine:
             metadata = action.get("metadata", {})
 
             # Call SmartFinder with 4-layer fallback
-            result = await self._smart_finder.find(intent, metadata)
+            # Preflight = first-time discovery: scan ALL elements, lower threshold
+            result = await self._smart_finder.find(
+                intent,
+                metadata,
+                scan_mode="all",
+                discovery_mode=True
+            )
 
             duration_ms = int((time.time() - start_time) * 1000)
 
             if result.found and result.confidence >= MIN_CONFIDENCE_THRESHOLD:
                 # Get selector from element
                 selector = await self._extract_selector(result.element)
+
+                extracted_text = None
+                if action_type.lower() in ("extract", "extract_text", "scrape"):
+                    try:
+                        extracted_text = await result.element.inner_text()
+                        logger.info(f"[Justifier] EXTRACTED DATA: '{extracted_text.strip()}'")
+                    except:
+                        pass
 
                 logger.info(f"[Justifier] Verified '{intent}' via Layer {result.layer.value} ({result.confidence:.0%})")
 
@@ -325,7 +347,8 @@ class JustifierEngine:
                     confidence=result.confidence,
                     verified_selector=selector,
                     layer_used=result.layer.name,
-                    duration_ms=duration_ms
+                    duration_ms=duration_ms,
+                    error=f"DATA: {extracted_text}" if extracted_text else None
                 )
 
             elif result.found:
@@ -396,7 +419,7 @@ class JustifierEngine:
     # VISION FALLBACK
     # -------------------------------------------------------------------------
 
-    async def _verify_with_vision(self, intent: str) -> Optional[Tuple[str, Tuple[int, int]]]:
+    async def _verify_with_vision(self, intent: str) -> Optional[tuple[str, tuple[int, int]]]:
         """
         Vision AI fallback when SmartFinder can't find element.
         EXPENSIVE - only called when math fails.

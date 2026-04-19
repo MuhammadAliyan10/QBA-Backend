@@ -68,7 +68,7 @@ def is_dynamic_class(class_name: str) -> bool:
     return False
 
 
-def filter_stable_classes(classes: List[str]) -> List[str]:
+def filter_stable_classes(classes: list[str]) -> list[str]:
     """
     Filter out dynamic CSS-in-JS classes, keeping only stable semantic classes.
 
@@ -84,7 +84,7 @@ def filter_stable_classes(classes: List[str]) -> List[str]:
 def compute_simhash(
     tag: str,
     text: str = "",
-    classes: List[str] = None,
+    classes: list[str] = None,
     attributes: dict = None,
     position_index: int = 0,
     bit_size: int = 64
@@ -182,7 +182,7 @@ def compute_simhash(
     return format(fingerprint, f'0{hex_length}x')
 
 
-def _hash_to_bits(s: str, bit_size: int) -> List[int]:
+def _hash_to_bits(s: str, bit_size: int) -> list[int]:
     """Convert string to bit array using SHA256."""
     hash_bytes = hashlib.sha256(s.encode()).digest()
     bits = []
@@ -460,7 +460,7 @@ def normalize_text(text: str) -> str:
     return text.strip()
 
 
-def extract_meaningful_words(text: str, min_length: int = 3) -> List[str]:
+def extract_meaningful_words(text: str, min_length: int = 3) -> list[str]:
     """
     Extract meaningful words from text (filter stopwords and short words).
     """
@@ -488,7 +488,7 @@ def extract_meaningful_words(text: str, min_length: int = 3) -> List[str]:
 def compute_element_signature(
     tag: str,
     text: str = "",
-    classes: List[str] = None,
+    classes: list[str] = None,
     attributes: dict = None
 ) -> dict:
     """

@@ -42,8 +42,8 @@ Author: e2e Platform Engineering
 Version: 2.0.0
 """
 
-import asyncio
 import logging
+import traceback
 import time
 import json
 import hashlib
@@ -55,10 +55,13 @@ from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 from playwright.async_api import Page, Browser, BrowserContext
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 # Internal imports
 from core.recipe.recipeValidator import RecipeValidator, ValidationResult
+from core.recipe.recipeSchema import ActionType
 from core.NervousSystem import NervousSystem
+from exceptions import AIFallbackTriggered
 
 logger = logging.getLogger("recipeEngine")
 
@@ -94,7 +97,7 @@ class NodeResult:
     node_id: str
     status: ExecutionStatus
     next_node_id: Optional[str] = None  # Determined by edges/decisions
-    data: Dict[str, Any] = field(default_factory=dict)
+    data: dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
     duration_ms: int = 0
     checkpoint_id: Optional[str] = None
@@ -118,20 +121,20 @@ class ExecutionContext:
 
     # Recipe data
     recipe: Dict = field(default_factory=dict)
-    nodes: Dict[str, Dict] = field(default_factory=dict)  # node_id -> node
-    edges: List[Dict] = field(default_factory=list)
+    nodes: dict[str, Dict] = field(default_factory=dict)  # node_id -> node
+    edges: list[Dict] = field(default_factory=list)
 
     # Dynamic state
-    context_vars: Dict[str, Any] = field(default_factory=dict)  # {{ context.* }}
-    inputs: Dict[str, Any] = field(default_factory=dict)        # {{ inputs.* }}
-    secrets: Dict[str, Any] = field(default_factory=dict)       # {{ secrets.* }}
+    context_vars: dict[str, Any] = field(default_factory=dict)  # {{ context.* }}
+    inputs: dict[str, Any] = field(default_factory=dict)        # {{ inputs.* }}
+    secrets: dict[str, Any] = field(default_factory=dict)       # {{ secrets.* }}
 
     # Loop state (for nested loops)
-    loop_stack: List[Dict] = field(default_factory=list)  # [{iterator, index, items}]
+    loop_stack: list[Dict] = field(default_factory=list)  # [{iterator, index, items}]
 
     # Execution tracking
-    executed_nodes: Set[str] = field(default_factory=set)
-    execution_history: List[NodeResult] = field(default_factory=list)
+    executed_nodes: set[str] = field(default_factory=set)
+    execution_history: list[NodeResult] = field(default_factory=list)
     current_node_id: Optional[str] = None
 
     # Checkpoint state (for crash recovery)
@@ -186,7 +189,7 @@ class StateManager:
             storage_backend: "memory" | "redis" | "postgres" | "file"
         """
         self.storage_backend = storage_backend
-        self._checkpoints: Dict[str, Dict] = {}  # In-memory for now
+        self._checkpoints: dict[str, Dict] = {}  # In-memory for now
         logger.info(f"[StateManager] Initialized (backend: {storage_backend})")
 
     async def save_checkpoint(
@@ -385,7 +388,7 @@ class StepGuard:
         self.node = node
         self.node_id = node.get("id", "unknown")
 
-    async def check_pre_conditions(self) -> Tuple[bool, Optional[Dict]]:
+    async def check_pre_conditions(self) -> tuple[bool, Optional[Dict]]:
         """
         Evaluate all pre_conditions for the node.
 
@@ -403,7 +406,7 @@ class StepGuard:
 
         return True, None
 
-    async def check_post_conditions(self) -> Tuple[bool, Optional[Dict]]:
+    async def check_post_conditions(self) -> tuple[bool, Optional[Dict]]:
         """
         Evaluate all post_conditions after node execution.
 
@@ -435,15 +438,17 @@ class StepGuard:
         check_type = condition.get("check", "")
 
         try:
+            timeout = condition.get("timeout_ms", 5000)
+
             if check_type == "element_visible":
                 selector = condition.get("selector", "")
-                element = await self.ctx.page.query_selector(selector)
-                return element is not None and await element.is_visible()
+                await self.ctx.page.wait_for_selector(selector, state="visible", timeout=timeout)
+                return True
 
             elif check_type == "element_not_visible":
                 selector = condition.get("selector", "")
-                element = await self.ctx.page.query_selector(selector)
-                return element is None or not await element.is_visible()
+                await self.ctx.page.wait_for_selector(selector, state="hidden", timeout=timeout)
+                return True
 
             elif check_type == "url_contains":
                 value = condition.get("value", "")
@@ -679,7 +684,7 @@ class ActionNodeProcessor(BaseNodeProcessor):
         super().__init__(node, ctx)
         self.state_manager = state_manager
         self._smart_finder = None  # Lazy initialization
-        self._healing_updates: List[Dict] = []  # Track metadata updates
+        self._healing_updates: list[Dict] = []  # Track metadata updates
 
     @property
     def smart_finder(self):
@@ -720,6 +725,33 @@ class ActionNodeProcessor(BaseNodeProcessor):
             duration_ms=duration,
             data={"healing_count": len(self._healing_updates)}
         )
+
+    async def _apply_mutation_guard(self, guard: Dict):
+        """Mutation Observer Guard: Waits for specific DOM changes."""
+        selector = guard.get("selector")
+        m_type = guard.get("type", "text")
+        timeout = guard.get("timeout_ms", 15000)
+
+        logger.info(f"[MutationGuard] Waiting for {m_type} change on '{selector}'...")
+
+        if m_type == "detached":
+            await self.ctx.page.wait_for_selector(selector, state="hidden", timeout=timeout)
+        elif m_type == "children":
+            # Wait for child count to change
+            await self.ctx.page.wait_for_function(
+                f"() => {{ const el = document.querySelector('{selector}'); return el && el.children.length > 0; }}",
+                timeout=timeout
+            )
+        elif m_type == "text":
+            # Wait for text content to be non-empty
+            await self.ctx.page.wait_for_function(
+                f"() => {{ const el = document.querySelector('{selector}'); return el && el.textContent.trim().length > 0; }}",
+                timeout=timeout
+            )
+        elif m_type == "attribute":
+            attr = guard.get("attribute_name", "class")
+            # Wait for attribute to change (advanced: might need initial value)
+            await self.ctx.page.wait_for_selector(selector, timeout=timeout)
 
     async def _execute_action(self, action: Dict, action_index: int):
         """
@@ -771,8 +803,27 @@ class ActionNodeProcessor(BaseNodeProcessor):
                     "layer_used": result.layer.value
                 })
 
-            # Click the element
-            await result.element.click()
+            # Click the element with guards
+            response_guard = resolved_action.get("response_guard")
+            mutation_guard = resolved_action.get("mutation_guard")
+
+            if response_guard:
+                pattern = response_guard.get("url_pattern")
+                status = response_guard.get("status", 200)
+                timeout = response_guard.get("timeout_ms", 15000)
+
+                logger.info(f"[API Awaiter] Waiting for response matching '{pattern}'...")
+                async with self.ctx.page.expect_response(
+                    lambda r: pattern in r.url and r.status == status,
+                    timeout=timeout
+                ):
+                    await result.element.click()
+            else:
+                await result.element.click()
+
+            if mutation_guard:
+                await self._apply_mutation_guard(mutation_guard)
+
             logger.info(f"[Action] Clicked element (Layer {result.layer.value}, {result.duration_ms}ms)")
 
         elif action_type == "find_and_type":
@@ -800,17 +851,38 @@ class ActionNodeProcessor(BaseNodeProcessor):
                     "layer_used": result.layer.value
                 })
 
-            # Clear and type
+            # Clear and type with guards
+            response_guard = resolved_action.get("response_guard")
+            mutation_guard = resolved_action.get("mutation_guard")
+
             if clear_first:
                 await result.element.fill("")
 
-            # Use human-like typing if available
-            try:
-                from core.GlassBox import human_type
-                await human_type(result.element, value)
-            except ImportError:
-                # Fallback to regular typing
-                await result.element.type(value, delay=50)
+            async def action_trigger():
+                # Use human-like typing if available
+                try:
+                    from core.GlassBox import human_type
+                    await human_type(result.element, value)
+                except ImportError:
+                    # Fallback to regular typing
+                    await result.element.type(value, delay=50)
+
+            if response_guard:
+                pattern = response_guard.get("url_pattern")
+                status = response_guard.get("status", 200)
+                timeout = response_guard.get("timeout_ms", 15000)
+
+                logger.info(f"[API Awaiter] Waiting for response matching '{pattern}'...")
+                async with self.ctx.page.expect_response(
+                    lambda r: pattern in r.url and r.status == status,
+                    timeout=timeout
+                ):
+                    await action_trigger()
+            else:
+                await action_trigger()
+
+            if mutation_guard:
+                await self._apply_mutation_guard(mutation_guard)
 
             logger.info(f"[Action] Typed into element (Layer {result.layer.value}, {result.duration_ms}ms)")
 
@@ -845,7 +917,13 @@ class ActionNodeProcessor(BaseNodeProcessor):
         elif action_type == "wait_for_selector":
             selector = resolved_action.get("selector", "")
             timeout = resolved_action.get("timeout_ms", 10000)
-            await self.ctx.page.wait_for_selector(selector, timeout=timeout)
+            state = resolved_action.get("state", "visible")
+            await self.ctx.page.wait_for_selector(selector, state=state, timeout=timeout)
+
+        elif action_type == "wait_for_hidden":
+            selector = resolved_action.get("selector", "")
+            timeout = resolved_action.get("timeout_ms", 10000)
+            await self.ctx.page.wait_for_selector(selector, state="hidden", timeout=timeout)
 
         elif action_type == "wait_for_navigation":
             timeout = resolved_action.get("timeout_ms", 10000)
@@ -937,9 +1015,9 @@ class ActionNodeProcessor(BaseNodeProcessor):
     async def _extract_table_data(
         self,
         selector: str,
-        columns: List[str],
+        columns: list[str],
         max_rows: int
-    ) -> List[Dict]:
+    ) -> list[Dict]:
         """Extract data from an HTML table."""
         rows_data = []
 
@@ -1427,7 +1505,7 @@ class RecipeEngine:
         self._streaming_enabled = False
         logger.info("[GlassBox] Streaming disabled")
 
-    async def handle_remote_input(self, event: Dict[str, Any]) -> bool:
+    async def handle_remote_input(self, event: dict[str, Any]) -> bool:
         """
         Handle remote input events from frontend.
 
@@ -1507,23 +1585,14 @@ class RecipeEngine:
     async def run(
         self,
         browser: Browser,
-        inputs: Dict[str, Any] = None,
-        secrets: Dict[str, Any] = None,
+        inputs: dict[str, Any] = None,
+        secrets: dict[str, Any] = None,
         resume_from_node_id: Optional[str] = None,
         resume_checkpoint_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
-        Execute the recipe DAG.
-
-        Args:
-            browser: Playwright browser instance
-            inputs: User-provided input parameters
-            secrets: Encrypted credentials
-            resume_from_node_id: Node to resume from (crash recovery)
-            resume_checkpoint_id: Checkpoint to hydrate from
-
-        Returns:
-            Dict with execution result and final context
+        Execute the recipe DAG with deterministic state passing and granular
+        error handling per node.
         """
         if not self.is_loaded:
             raise RuntimeError("Recipe not loaded. Call load_recipe() first.")
@@ -1538,17 +1607,15 @@ class RecipeEngine:
         # 2. CRASH RECOVERY: Hydrate if resuming
         if resume_from_node_id and resume_checkpoint_id:
             logger.info(f"[Engine] RESUMING from {resume_from_node_id} (checkpoint: {resume_checkpoint_id})")
-
             await self.state_manager.hydrate_session(resume_checkpoint_id, self.ctx)
             self.ctx.resume_from_node = resume_from_node_id
             current_node_id = resume_from_node_id
         else:
-            # Normal start from entry point
             current_node_id = self.recipe.get("entry_point")
 
         # 3. Main execution loop
         exit_points = self.recipe.get("exit_points", {})
-        max_steps = 10000  # Safety limit
+        max_steps = 10000
         step_count = 0
 
         try:
@@ -1558,110 +1625,437 @@ class RecipeEngine:
                 node = self.ctx.nodes.get(current_node_id)
                 if not node:
                     logger.error(f"[Engine] Node not found: {current_node_id}")
-                    break
+                    return self._build_result(
+                        ExecutionStatus.FAILED,
+                        error=f"DAG broken: node '{current_node_id}' not found"
+                    )
+
+                # ── PRE-FLIGHT: Page Health Check ─────────────────────────
+                page_alive = await self._verify_page_health()
+                if not page_alive:
+                    screenshot_b64 = ""
+                    current_url = "unknown (page crashed)"
+                    logger.critical(f"[Engine] Page DEAD before node '{current_node_id}'")
+                    await NervousSystem.publish_update(
+                        self.job_id, "FAILED",
+                        f"💀 Browser page crashed before node '{current_node_id}'",
+                        current_node_id
+                    )
+                    return self._build_result(
+                        ExecutionStatus.FAILED,
+                        error=f"Page crashed/detached before node '{current_node_id}'",
+                        failure_screenshot=screenshot_b64,
+                        failure_url=current_url
+                    )
 
                 logger.info(f"[Engine] Step {step_count}: Executing '{current_node_id}'")
                 self.ctx.current_node_id = current_node_id
 
-                # 4. Execute node with guards
+                # TELEMETRY: Node Start
+                telemetry_payload = json.dumps({
+                    "type": "log",
+                    "message": f"[Executor] Starting Node: {current_node_id} (step {step_count})"
+                })
+                await NervousSystem.publish(f"quanta.telemetry.{self.job_id}", telemetry_payload)
+
+                # ── EXECUTE NODE (granular exception handling inside) ─────
                 result = await self._execute_node_with_guards(node)
 
-                # 5. Track execution
+                # ── TRACK EXECUTION ───────────────────────────────────────
                 self.ctx.executed_nodes.add(current_node_id)
                 self.ctx.execution_history.append(result)
 
-                # 6. Check if we hit an exit point
+                # ── EXTRACT NODES: Validate + Publish ─────────────────────
+                if self._is_extract_node(node) and result.status == ExecutionStatus.COMPLETED:
+                    extraction_valid = self._validate_extraction_output(
+                        node, result.data
+                    )
+                    if not extraction_valid:
+                        logger.warning(
+                            f"[Engine] EXTRACT node '{current_node_id}' produced "
+                            f"invalid output: {result.data}"
+                        )
+                        result.status = ExecutionStatus.FAILED
+                        result.error = (
+                            f"Extraction output failed schema validation at "
+                            f"node '{current_node_id}'"
+                        )
+                    else:
+                        # Publish flattened extraction data to NATS JetStream
+                        await self._publish_extraction_data(
+                            current_node_id, result.data
+                        )
+
+                # ── Propagate extracted data into context_vars ─────────────
+                if result.data:
+                    for key, value in result.data.items():
+                        self.ctx.context_vars[key] = value
+
+                # ── EXIT POINT CHECK ──────────────────────────────────────
                 if current_node_id == exit_points.get("success"):
                     logger.info("[Engine] Reached SUCCESS exit point")
                     return self._build_result(ExecutionStatus.COMPLETED)
 
                 if result.status == ExecutionStatus.FAILED:
-                    current_node_id = exit_points.get("failure")
-                    continue
+                    failure_node = exit_points.get("failure")
+                    if failure_node:
+                        current_node_id = failure_node
+                        continue
+                    # No failure exit point — terminate with failure payload
+                    screenshot_b64 = await self._capture_failure_screenshot()
+                    current_url = await self._safe_current_url()
+                    return self._build_result(
+                        ExecutionStatus.FAILED,
+                        error=result.error or f"Node '{current_node_id}' failed",
+                        failure_screenshot=screenshot_b64,
+                        failure_url=current_url
+                    )
 
-                # 7. Determine next node
+                # ── NEXT NODE ─────────────────────────────────────────────
                 if result.next_node_id:
                     current_node_id = result.next_node_id
                 else:
                     current_node_id = self._find_next_node(current_node_id, result)
 
-                # 8. Save checkpoint if node requests it
+                # ── CHECKPOINT ────────────────────────────────────────────
                 if node.get("state_policy", {}).get("checkpoint"):
                     checkpoint_id = f"cp_{current_node_id}_{int(time.time())}"
-                    await self.state_manager.save_checkpoint(checkpoint_id, current_node_id, self.ctx)
+                    await self.state_manager.save_checkpoint(
+                        checkpoint_id, current_node_id, self.ctx
+                    )
                     self.ctx.last_checkpoint_id = checkpoint_id
 
             return self._build_result(ExecutionStatus.COMPLETED)
 
         except Exception as e:
-            logger.error(f"[Engine] Execution failed: {e}")
-            return self._build_result(ExecutionStatus.FAILED, error=str(e))
+            logger.error(f"[Engine] Unhandled execution failure: {e}", exc_info=True)
+
+            # TELEMETRY: Failure with Stack Trace
+            stack_trace = traceback.format_exc()
+            telemetry_payload = json.dumps({
+                "type": "log",
+                "message": f"[Executor] DAG Execution Failed: {str(e)}\n{stack_trace}"
+            })
+            await NervousSystem.publish(f"quanta.telemetry.{self.job_id}", telemetry_payload)
+
+            screenshot_b64 = await self._capture_failure_screenshot()
+            current_url = await self._safe_current_url()
+            return self._build_result(
+                ExecutionStatus.FAILED,
+                error=str(e),
+                failure_screenshot=screenshot_b64,
+                failure_url=current_url
+            )
 
         finally:
-            # Cleanup
             if self.ctx.page:
-                await self.ctx.page.close()
+                try:
+                    await self.ctx.page.close()
+                except Exception:
+                    pass
             if self.ctx.browser_context:
-                await self.ctx.browser_context.close()
+                try:
+                    await self.ctx.browser_context.close()
+                except Exception:
+                    pass
+
+    # ─── PAGE HEALTH ──────────────────────────────────────────────────────────
+
+    async def _verify_page_health(self) -> bool:
+        """
+        Verify the Playwright Page object is still active and not
+        in a crashed/detached state. Returns False if page is dead.
+        """
+        if not self.ctx.page:
+            return False
+        try:
+            await self.ctx.page.evaluate("() => document.readyState")
+            return True
+        except Exception as e:
+            logger.error(f"[PageHealth] Page is dead: {e}")
+            return False
+
+    async def _capture_failure_screenshot(self) -> str:
+        """Capture a base64 screenshot of the current failure state."""
+        if not self.ctx.page:
+            return ""
+        try:
+            raw_bytes: bytes = await self.ctx.page.screenshot(
+                full_page=False, type="png"
+            )
+            return base64.b64encode(raw_bytes).decode("ascii")
+        except Exception as e:
+            logger.warning(f"[Screenshot] Failed to capture: {e}")
+            return ""
+
+    async def _safe_current_url(self) -> str:
+        """Return the current page URL or 'unknown' if page is dead."""
+        if not self.ctx.page:
+            return "unknown"
+        try:
+            return self.ctx.page.url
+        except Exception:
+            return "unknown"
+
+    # ─── EXTRACT VALIDATION & NATS PUBLISHING ─────────────────────────────────
+
+    @staticmethod
+    def _is_extract_node(node: Dict) -> bool:
+        """Check if any action in this node is an extraction action."""
+        for action in node.get("actions", []):
+            action_type: str = action.get("type", "")
+            if action_type in (
+                ActionType.EXTRACT.value,
+                ActionType.EXTRACT_TABLE.value,
+                "extract_text",
+                "extract_table",
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _validate_extraction_output(node: Dict, data: dict[str, Any]) -> bool:
+        """
+        Validate that extracted data matches the expected schema from
+        the node's store_as / output_schema definition.
+
+        Returns True if data is non-empty and all expected keys are present.
+        """
+        if not data:
+            return False
+
+        expected_keys: list[str] = []
+        for action in node.get("actions", []):
+            store_as: Optional[str] = action.get("store_as")
+            if store_as:
+                # Strip the "context." prefix if present
+                key = store_as.replace("context.", "")
+                expected_keys.append(key)
+
+        if not expected_keys:
+            # No store_as defined — any non-empty data is valid
+            return bool(data)
+
+        for key in expected_keys:
+            if key not in data:
+                logger.warning(
+                    f"[ExtractValidation] Missing key '{key}' in output: "
+                    f"{list(data.keys())}"
+                )
+                return False
+        return True
+
+    async def _publish_extraction_data(
+        self, node_id: str, data: dict[str, Any]
+    ) -> None:
+        """
+        Publish flattened extraction data to NATS JetStream on
+        subject `quanta.telemetry.{job_id}`.
+
+        Format: {"label_name": "extracted_value", ...}
+        """
+        flattened: dict[str, Any] = {}
+        for key, value in data.items():
+            if isinstance(value, (dict, list)):
+                flattened[key] = json.dumps(value, default=str)
+            else:
+                flattened[key] = value
+
+        # TELEMETRY: Extraction Payload
+        telemetry_payload = json.dumps({
+            "type": "log",
+            "message": f"[Extractor] Payload: {json.dumps(flattened)}"
+        })
+
+        try:
+            await NervousSystem.publish(f"quanta.telemetry.{self.job_id}", telemetry_payload)
+
+            # LEGACY / BROADCAST STATUS
+            payload = json.dumps({
+                "job_id": self.job_id,
+                "node_id": node_id,
+                "type": "extraction",
+                "timestamp": int(time.time()),
+                "data": flattened,
+            })
+            nc = await NervousSystem.get_nc()
+            subject = f"quanta.telemetry.{self.job_id}"
+            await nc.publish(subject, payload.encode("utf-8"))
+            logger.info(
+                f"[NATS] Published extraction data to {subject}: "
+                f"{list(flattened.keys())}"
+            )
+        except Exception as e:
+            logger.error(f"[NATS] Failed to publish extraction data: {e}")
+
+    # ─── GRANULAR NODE EXECUTION ──────────────────────────────────────────────
 
     async def _execute_node_with_guards(self, node: Dict) -> NodeResult:
         """
-        Execute a node with pre/post condition guards and timeout.
+        Execute a node with pre/post condition guards, timeout, and
+        GRANULAR exception handling per node.
 
-        FLOW:
-        1. Check pre_conditions → handle failures
-        2. Execute node with timeout
-        3. Check post_conditions → handle failures
-        4. Return result
+        Catches:
+          - PlaywrightTimeoutError → element not found / network timeout
+          - AIFallbackTriggered    → deterministic math failed
+          - asyncio.TimeoutError   → overall node timeout exceeded
+          - Exception              → unexpected failure (with screenshot)
         """
-        node_id = node.get("id")
+        node_id: str = node.get("id", "unknown")
         guard = StepGuard(self.ctx, node)
-        execution = node.get("execution", {})
-        timeout_ms = execution.get("timeout_ms", 30000)
+        execution: Dict = node.get("execution", {})
+        timeout_ms: int = execution.get("timeout_ms", 30000)
+        start_time: float = time.monotonic()
 
         # 1. Pre-conditions
         pre_passed, pre_failure_action = await guard.check_pre_conditions()
         if not pre_passed:
-            next_node = await self._handle_failure_action(pre_failure_action, node_id)
+            next_node = await self._handle_failure_action(
+                pre_failure_action, node_id
+            )
             return NodeResult(
                 node_id=node_id,
                 status=ExecutionStatus.SKIPPED,
                 next_node_id=next_node
             )
 
-        # 2. Execute with timeout
+        # 2. Execute with timeout + granular catches
         processor = self.factory.create(node, self.ctx)
+        result: Optional[NodeResult] = None
 
         try:
             result = await asyncio.wait_for(
                 processor.execute(),
                 timeout=timeout_ms / 1000.0
             )
-        except asyncio.TimeoutError:
-            return NodeResult(
-                node_id=node_id,
-                status=ExecutionStatus.TIMEOUT,
-                error=f"Node timed out after {timeout_ms}ms"
+
+        except PlaywrightTimeoutError as pte:
+            elapsed_ms = int((time.monotonic() - start_time) * 1000)
+            error_msg = (
+                f"Element not found or network timeout at Node [{node_id}] "
+                f"after {elapsed_ms}ms: {pte}"
             )
-        except Exception as e:
-            # Check if it's a human intervention request
-            if "HumanInterventionRequired" in str(type(e).__name__):
-                raise
+            logger.error(f"[Engine] {error_msg}")
+            screenshot_b64 = await self._capture_failure_screenshot()
+            current_url = await self._safe_current_url()
+            await NervousSystem.publish_update(
+                self.job_id, "FAILED", error_msg, node_id,
+                data=json.dumps({"url": current_url}),
+                screenshot=base64.b64decode(screenshot_b64) if screenshot_b64 else b""
+            )
             return NodeResult(
                 node_id=node_id,
                 status=ExecutionStatus.FAILED,
-                error=str(e)
+                error=error_msg,
+                duration_ms=elapsed_ms,
+                data={"failure_screenshot": screenshot_b64, "failure_url": current_url}
             )
 
-        # 3. Post-conditions
+        except AIFallbackTriggered as aft:
+            elapsed_ms = int((time.monotonic() - start_time) * 1000)
+            error_msg = (
+                f"Deterministic math failed at Node [{node_id}]: {aft}"
+            )
+            logger.error(f"[Engine] {error_msg}")
+            screenshot_b64 = await self._capture_failure_screenshot()
+            current_url = await self._safe_current_url()
+            await NervousSystem.publish_update(
+                self.job_id, "FAILED", error_msg, node_id,
+                data=json.dumps({"url": current_url}),
+                screenshot=base64.b64decode(screenshot_b64) if screenshot_b64 else b""
+            )
+            return NodeResult(
+                node_id=node_id,
+                status=ExecutionStatus.FAILED,
+                error=error_msg,
+                duration_ms=elapsed_ms,
+                data={"failure_screenshot": screenshot_b64, "failure_url": current_url}
+            )
+
+        except asyncio.TimeoutError:
+            elapsed_ms = int((time.monotonic() - start_time) * 1000)
+            error_msg = f"Node [{node_id}] timed out after {timeout_ms}ms"
+            logger.error(f"[Engine] {error_msg}")
+            screenshot_b64 = await self._capture_failure_screenshot()
+            current_url = await self._safe_current_url()
+            await NervousSystem.publish_update(
+                self.job_id, "FAILED", error_msg, node_id,
+                data=json.dumps({"url": current_url}),
+                screenshot=base64.b64decode(screenshot_b64) if screenshot_b64 else b""
+            )
+            return NodeResult(
+                node_id=node_id,
+                status=ExecutionStatus.TIMEOUT,
+                error=error_msg,
+                duration_ms=elapsed_ms,
+                data={"failure_screenshot": screenshot_b64, "failure_url": current_url}
+            )
+
+        except Exception as e:
+            # Re-raise human gate interrupts
+            if "HumanInterventionRequired" in type(e).__name__:
+                raise
+            elapsed_ms = int((time.monotonic() - start_time) * 1000)
+            error_msg = (
+                f"Unexpected failure at Node [{node_id}]: "
+                f"{type(e).__name__}: {e}"
+            )
+            logger.error(f"[Engine] {error_msg}", exc_info=True)
+            screenshot_b64 = await self._capture_failure_screenshot()
+            current_url = await self._safe_current_url()
+            await NervousSystem.publish_update(
+                self.job_id, "FAILED", error_msg, node_id,
+                data=json.dumps({"url": current_url}),
+                screenshot=base64.b64decode(screenshot_b64) if screenshot_b64 else b""
+            )
+            return NodeResult(
+                node_id=node_id,
+                status=ExecutionStatus.FAILED,
+                error=error_msg,
+                duration_ms=elapsed_ms,
+                data={"failure_screenshot": screenshot_b64, "failure_url": current_url}
+            )
+
+        # 3. Calculate duration
+        elapsed_ms = int((time.monotonic() - start_time) * 1000)
+        if result:
+            result.duration_ms = elapsed_ms
+
+        # 4. Post-conditions
         post_passed, post_failure_action = await guard.check_post_conditions()
         if not post_passed:
-            next_node = await self._handle_failure_action(post_failure_action, node_id)
+            next_node = await self._handle_failure_action(
+                post_failure_action, node_id
+            )
             if next_node:
                 result.next_node_id = next_node
             else:
                 result.status = ExecutionStatus.FAILED
 
+        return result
+
+    def _build_result(
+        self,
+        status: ExecutionStatus,
+        error: Optional[str] = None,
+        failure_screenshot: str = "",
+        failure_url: str = ""
+    ) -> dict[str, Any]:
+        """Build the final execution result with optional failure forensics."""
+        result: dict[str, Any] = {
+            "status": status.value,
+            "job_id": self.job_id,
+            "recipe_name": self.recipe.get("metadata", {}).get("name"),
+            "context": dict(self.ctx.context_vars),
+            "executed_nodes": list(self.ctx.executed_nodes),
+            "total_steps": len(self.ctx.execution_history),
+            "last_checkpoint_id": self.ctx.last_checkpoint_id,
+            "error": error
+        }
+        if failure_screenshot:
+            result["failure_screenshot_b64"] = failure_screenshot
+        if failure_url:
+            result["failure_url"] = failure_url
         return result
 
     async def _handle_failure_action(
@@ -1727,22 +2121,7 @@ class RecipeEngine:
 
         return None
 
-    def _build_result(
-        self,
-        status: ExecutionStatus,
-        error: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Build the final execution result."""
-        return {
-            "status": status.value,
-            "job_id": self.job_id,
-            "recipe_name": self.recipe.get("metadata", {}).get("name"),
-            "context": dict(self.ctx.context_vars),
-            "executed_nodes": list(self.ctx.executed_nodes),
-            "total_steps": len(self.ctx.execution_history),
-            "last_checkpoint_id": self.ctx.last_checkpoint_id,
-            "error": error
-        }
+
 
 
 # =============================================================================

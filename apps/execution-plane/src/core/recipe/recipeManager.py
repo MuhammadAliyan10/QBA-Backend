@@ -73,7 +73,7 @@ class RecipeManager:
         self.model: SentenceTransformer = tensor_engine.model
 
         # LRU Cache with TTL
-        self.cache: Dict[str, Dict] = {}  # {query_hash: {recipe, timestamp}}
+        self.cache: dict[str, Dict] = {}  # {query_hash: {recipe, timestamp}}
         self.cache_ttl = cache_ttl
         self.cache_size = cache_size
 
@@ -109,7 +109,7 @@ class RecipeManager:
         self,
         name: str,
         description: str,
-        steps: List[Dict],
+        steps: list[Dict],
         user_id: Optional[str] = None
     ) -> bool:
         """
@@ -304,7 +304,7 @@ class RecipeManager:
                 del self.cache[key]
             logger.debug(f"[Storage] Cache invalidated for recipe:'{recipe_name}'")
 
-    def list_recipes(self, user_id: Optional[str] = None, limit: int = 100) -> List[Dict]:
+    def list_recipes(self, user_id: Optional[str] = None, limit: int = 100) -> list[Dict]:
         """
         List all recipes (optionally filtered by user_id).
 

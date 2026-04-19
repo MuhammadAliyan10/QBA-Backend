@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -38,9 +39,9 @@ type PolarEvent struct {
 
 // NewPolarWebhookHandler creates a new Polar webhook handler.
 func NewPolarWebhookHandler(redisClient *redis.Client, natsConn *nats.Conn) *PolarWebhookHandler {
-	webhookSecret := os.Getenv("POLAR_WEBHOOK_SECRET")
+	webhookSecret := strings.TrimSpace(os.Getenv("POLAR_WEBHOOK_SECRET"))
 	if webhookSecret == "" {
-		log.Println("[WARN] POLAR_WEBHOOK_SECRET not set. Webhook signature verification disabled.")
+		log.Println("[WARN] POLAR_WEBHOOK_SECRET not set. When ENABLE_BILLING=true, webhooks will be rejected until a secret is configured.")
 	}
 
 	return &PolarWebhookHandler{
@@ -67,9 +68,14 @@ func (pwh *PolarWebhookHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Verify Polar signature
+	if strings.TrimSpace(pwh.webhookSecret) == "" {
+		log.Println("[ERROR] POLAR_WEBHOOK_SECRET is required when ENABLE_BILLING=true")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Billing webhook not configured"})
+		return
+	}
+
 	signature := c.GetHeader("X-Polar-Signature")
-	if pwh.webhookSecret != "" && !pwh.verifySignature(body, signature) {
+	if !pwh.verifySignature(body, signature) {
 		log.Println("[ERROR] Invalid Polar signature")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid signature"})
 		return
@@ -104,10 +110,6 @@ func (pwh *PolarWebhookHandler) HandleWebhook(c *gin.Context) {
 // verifySignature verifies the Polar webhook signature.
 // Polar uses HMAC-SHA256 for webhook signatures
 func (pwh *PolarWebhookHandler) verifySignature(payload []byte, signature string) bool {
-	if pwh.webhookSecret == "" {
-		return true // Skip verification in development
-	}
-
 	mac := hmac.New(sha256.New, []byte(pwh.webhookSecret))
 	mac.Write(payload)
 	expectedSignature := hex.EncodeToString(mac.Sum(nil))
@@ -117,6 +119,11 @@ func (pwh *PolarWebhookHandler) verifySignature(payload []byte, signature string
 
 // handleCheckoutCompleted processes successful checkout events.
 func (pwh *PolarWebhookHandler) handleCheckoutCompleted(ctx context.Context, event *PolarEvent) {
+	if pwh.redis == nil {
+		log.Println("[ERROR] Redis not configured — cannot apply Polar credits")
+		return
+	}
+
 	// Extract relevant data from Polar event
 	data := event.Data
 
@@ -191,6 +198,11 @@ func (pwh *PolarWebhookHandler) handleOrderCreated(ctx context.Context, event *P
 
 // handleSubscriptionCreated processes subscription events.
 func (pwh *PolarWebhookHandler) handleSubscriptionCreated(ctx context.Context, event *PolarEvent) {
+	if pwh.redis == nil {
+		log.Println("[ERROR] Redis not configured — cannot apply subscription credits")
+		return
+	}
+
 	data := event.Data
 
 	userID, ok := data["user_id"].(string)
