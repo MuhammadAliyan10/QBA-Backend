@@ -1181,7 +1181,11 @@ async def browser_automation_activity(payload: dict) -> dict:
             # INDUSTRIAL: Capture screenshot for debugging
             failure_screenshot = b""
             if 'page' in locals() and page:
-                failure_screenshot = await capture_failure_screenshot(page, job_id, e)
+                try:
+                    if not page.is_closed():
+                        failure_screenshot = await page.screenshot(type='jpeg', quality=60)
+                except:
+                    pass
 
             # TELEMETRY: Failure with Stack Trace
             stack_trace = traceback.format_exc()

@@ -150,12 +150,12 @@ async def example_workflow_with_secrets():
     # Workflow payload from Temporal/API
     workflow_payload = {
         "params": {
-            "url": "https://secure-site.com",
-            "username": "{username}"
+            "url": os.getenv("DEMO_URL", "https://example.com"),
+            "username": os.getenv("DEMO_USERNAME", "{username}")
         },
         "secrets": {
-            "username": "admin@company.com",
-            "password": "SuperSecret123!"  # NEVER logged
+            "username": os.getenv("SECURE_USERNAME", "admin@internal.local"),
+            "password": os.getenv("SECURE_PASSWORD", "REDACTED_PASSWORD")
         }
     }
 

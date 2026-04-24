@@ -368,7 +368,7 @@ class SessionManager:
             # Use ElementMatcher to look for "Logout" or "Sign Out"
             matcher = ElementMatcher()
 
-            # We use a dummy Intent for the matcher to look for auth markers
+            # We use a provisional Intent for the matcher to look for auth markers
             auth_intent = Intent(
                 action="CLICK",
                 targetDescription="Logout or Sign Out or Log off",

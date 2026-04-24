@@ -196,6 +196,7 @@ services:
       - NATS_URL=nats://nats:4222
       - TEMPORAL_HOST=temporal:7233
       - NVIDIA_API_KEY=${NVIDIA_API_KEY:-dummy_key_to_pass_validation}
+      - SKIP_AUTH=true
       # For local dev: use local postgres. For production: use Supabase DATABASE_URL
       - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@app_postgres:5432/quanta}
     depends_on:

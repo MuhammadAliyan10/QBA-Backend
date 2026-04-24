@@ -55,6 +55,10 @@ class ActionType(str, Enum):
     HOVER = "hover"
     SELECT = "select_option"
     CHECK = "check_checkbox"
+    SET_FILTER = "set_filter"
+    OPEN_RESULT = "open_result"
+    APPLY_SORT = "apply_sort"
+    SEARCH = "search"
 
 
 
@@ -400,6 +404,11 @@ class Node(BaseModel):
 
     # Telemetry (optional)
     telemetry: Optional[TelemetryConfig] = None
+
+    # Exit points (V2 DAG controls)
+    on_success: Optional[str] = None
+    on_failure: Optional[str] = None
+    on_timeout: Optional[str] = None
 
     # Node-specific configs (only one should be set based on type)
     loop: Optional[LoopConfig] = None

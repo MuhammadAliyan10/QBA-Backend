@@ -65,11 +65,13 @@ logger = logging.getLogger("smartFinderV2")
 
 class FinderLayer(Enum):
     """Which layer found the element."""
+    DOMAIN_MEMORY = -2 # Domain-specific history prior
     STRUCTURAL = 0  # Keyword→CSS deterministic lookup (<5ms)
     REFLEX = 1      # SimHash match (<10ms)
     HEURISTIC = 2   # Levenshtein match (~50ms)
     SEMANTIC = 3    # Vector DB match (~200ms)
-    COGNITIVE = 4   # AI recovery (slow)
+    RECOVERY = 4    # Structured LLM recovery (from ladder/rescue)
+    COGNITIVE = 5   # Legacy AI recovery (slow)
     NONE = -1       # Not found
 
 
@@ -104,6 +106,75 @@ class ElementCandidate:
     attributes: dict[str, str] = field(default_factory=dict)
     score: float = 0.0
     simhash: str = ""
+
+
+@dataclass
+class CandidateRow:
+    """One row in the Candidate Table — compact element representation."""
+    handle: ElementHandle
+    role: str = ""           # "button", "link", "input", "checkbox", "select"
+    text: str = ""           # innerText (truncated to 80 chars)
+    aria_name: str = ""      # aria-label or name attribute
+    selector: str = ""       # unique CSS selector for this element
+    visible: bool = True
+    enabled: bool = True
+    region: str = "main"     # "header", "sidebar", "main", "footer", "modal", "nav"
+    tag: str = ""
+    input_type: str = ""     # for inputs: "text", "email", "password", "checkbox"
+    score: float = 0.0
+    classes: list[str] = field(default_factory=list)
+
+
+# =============================================================================
+# ACTION CONSTRAINTS — Hard-filter candidates by action type
+# =============================================================================
+ACTION_CONSTRAINTS: dict[str, dict] = {
+    "type_text": {
+        "tags": {"input", "textarea"},
+        "roles": {"textbox", "searchbox", "combobox", "spinbutton"},
+        "attrs": {"contenteditable"},
+    },
+    "find_and_click": {
+        "tags": {"a", "button", "label", "summary", "div", "span", "li", "td"},
+        "roles": {"button", "link", "tab", "menuitem", "checkbox", "switch",
+                  "option", "treeitem", "radio", "menuitemcheckbox", "menuitemradio"},
+    },
+    "extract_text": {
+        "tags": {"*"},  # any visible element
+        "roles": {"*"},
+    },
+    "extract_table": {
+        "tags": {"table", "tbody", "thead", "div"},
+        "roles": {"table", "grid", "treegrid"},
+    },
+    "select_option": {
+        "tags": {"select", "div", "ul"},
+        "roles": {"listbox", "combobox", "menu"},
+    },
+    "check_element": {
+        "tags": {"input", "div", "span", "button"},
+        "roles": {"checkbox", "switch", "radio"},
+        "input_types": {"checkbox", "radio"},
+    },
+    "hover_element": {
+        "tags": {"a", "button", "div", "span", "li", "td", "img"},
+        "roles": {"button", "link", "menuitem", "tooltip"},
+    },
+    "scroll_page": {
+        "tags": {"*"},
+        "roles": {"*"},
+    },
+}
+
+# Region detection tag/role mapping
+REGION_SELECTORS: dict[str, str] = {
+    "header": "header, [role='banner']",
+    "nav": "nav, [role='navigation']",
+    "sidebar": "aside, [role='complementary'], .sidebar, #sidebar",
+    "footer": "footer, [role='contentinfo']",
+    "modal": "[role='dialog'], dialog, .modal, [data-modal]",
+    "main": "main, [role='main'], #content, .content",
+}
 
 
 # =============================================================================
@@ -211,11 +282,12 @@ class QdrantVectorDB:
 
             if response.points:
                 match = response.points[0]
+                payload = match.payload or {}
                 return {
-                    "selector": match.payload.get("selector"),
+                    "selector": payload.get("selector"),
                     "score": match.score,
-                    "intent": match.payload.get("intent"),
-                    "attributes": match.payload.get("attributes", {})
+                    "intent": payload.get("intent"),
+                    "attributes": payload.get("attributes", {})
                 }
 
         except Exception as e:
@@ -479,7 +551,12 @@ class SmartFinder:
     ]
 
     # Minimum scores for each layer
-    LAYER2_THRESHOLD = 0.8   # Heuristic match threshold
+    # FIX RC2: Lowered from 0.8 to 0.55.
+    # 0.8 required near-perfect text equality, rejecting synonym pairs that
+    # score 0.55–0.79 (e.g. "login" → "Sign in" ≈ 0.62 with fixed weights).
+    # 0.55 is above random noise (unrelated strings score 0.1–0.3) while
+    # allowing confident synonym matches through.
+    LAYER2_THRESHOLD = 0.55   # Heuristic match threshold
     LAYER3_THRESHOLD = 0.7   # Semantic match threshold
     SIMHASH_THRESHOLD = 0.85 # SimHash similarity threshold
 
@@ -521,83 +598,107 @@ class SmartFinder:
         # These are EXACT DOM lookups — pure logic, zero AI, zero fuzzy math.
         # =======================================================================
         self.STRUCTURAL_SELECTORS: dict[str, list[str]] = {
-            # Search
+            # ── Search ───────────────────────────────────────────────
             "search": [
-                "input[type='search']",
-                "[role='searchbox']",
-                "input[placeholder*='search' i]",
-                "input[aria-label*='search' i]",
-                "input[name*='search' i]",
-                "input[name='q']",
-                "input[name='query']",
+                "input[type='search']", "[role='searchbox']",
+                "input[placeholder*='search' i]", "input[aria-label*='search' i]",
+                "input[name*='search' i]", "input[name='q']", "input[name='query']",
                 "[data-testid*='search' i]",
             ],
-            # Password
-            "password": [
-                "input[type='password']",
-                "input[name*='password' i]",
-                "input[placeholder*='password' i]",
-            ],
-            # Email
-            "email": [
-                "input[type='email']",
-                "input[name*='email' i]",
-                "input[placeholder*='email' i]",
-                "input[autocomplete='email']",
-            ],
-            # Username / Login
-            "username": [
-                "input[name='username']",
-                "input[name='user']",
-                "input[name='login']",
-                "input[placeholder*='username' i]",
-                "input[autocomplete='username']",
-            ],
-            # Submit / Login button
-            "submit": [
-                "[type='submit']",
-                "button[type='submit']",
-            ],
-            "login": [
-                "button[type='submit']",
-                "[type='submit']",
-                "button:has-text('Sign in')",
-                "button:has-text('Log in')",
-                "a:has-text('Sign in')",
-            ],
-            "sign in": [
-                "button:has-text('Sign in')",
-                "a:has-text('Sign in')",
-                "button:has-text('Sign In')",
-                "[type='submit']",
-            ],
-            # Navigation
-            "home": ["a[href='/'], a[href='#home'], [aria-label*='home' i], a:has-text('Home')"],
+            # ── Auth ─────────────────────────────────────────────────
+            "password": ["input[type='password']", "input[name*='password' i]", "input[placeholder*='password' i]"],
+            "email": ["input[type='email']", "input[name*='email' i]", "input[placeholder*='email' i]", "input[autocomplete='email']"],
+            "username": ["input[name='username']", "input[name='user']", "input[name='login']", "input[placeholder*='username' i]"],
+            "submit": ["[type='submit']", "button[type='submit']"],
+            "login": ["button[type='submit']", "[type='submit']", "button:has-text('Sign in')", "button:has-text('Log in')", "a:has-text('Sign in')"],
+            "sign in": ["button:has-text('Sign in')", "a:has-text('Sign in')", "button:has-text('Sign In')", "[type='submit']"],
+            "sign up": ["a:has-text('Sign up')", "button:has-text('Sign up')", "a:has-text('Register')", "button:has-text('Create account')"],
+
+            # ── Navigation ───────────────────────────────────────────
+            "home": ["a[href='/']", "a[href='#home']", "[aria-label*='home' i]", "a:has-text('Home')"],
             "back": ["[aria-label*='back' i]", "button:has-text('Back')", "a:has-text('Back')"],
-            # Accept / Confirm
-            "accept": [
-                "button:has-text('Accept')",
-                "button:has-text('Allow')",
-                "button:has-text('OK')",
-                "button:has-text('Agree')",
-            ],
-            "close": [
-                "[aria-label*='close' i]",
-                "button:has-text('Close')",
-                "[data-testid*='close' i]",
-                ".close",
-            ],
-            # Cart / Checkout
+            "next": ["button:has-text('Next')", "a:has-text('Next')", "[aria-label*='next' i]", "a[rel='next']"],
+            "previous": ["button:has-text('Prev')", "button:has-text('Previous')", "[aria-label*='prev' i]", "a[rel='prev']"],
+            "navbar": ["nav a", "[role='navigation'] a", ".nav-link", "header a"],
+
+            # ── Dialogs ──────────────────────────────────────────────
+            "accept": ["button:has-text('Accept')", "button:has-text('Allow')", "button:has-text('OK')", "button:has-text('Agree')"],
+            "close": ["[aria-label*='close' i]", "button:has-text('Close')", "[data-testid*='close' i]", ".close"],
+            "cancel": ["button:has-text('Cancel')", "[aria-label*='cancel' i]", "button:has-text('Dismiss')"],
+            "confirm": ["button:has-text('Confirm')", "button:has-text('Yes')", "button:has-text('Proceed')"],
+
+            # ── Commerce ─────────────────────────────────────────────
             "cart": ["[aria-label*='cart' i]", "a[href*='cart']", "[data-testid*='cart' i]"],
             "checkout": ["button:has-text('Checkout')", "a:has-text('Checkout')", "a[href*='checkout']"],
-            # Navigation links
-            "next": ["button:has-text('Next')", "a:has-text('Next')", "[aria-label*='next' i]"],
-            "previous": ["button:has-text('Prev')", "button:has-text('Previous')", "[aria-label*='prev' i]"],
-            # Stars / Rating
+            "add to cart": ["button:has-text('Add to cart')", "button:has-text('Add to bag')", "[data-testid*='add-to-cart' i]"],
+            "buy": ["button:has-text('Buy')", "button:has-text('Purchase')", "button:has-text('Order')"],
+
+            # ── Filter / Sidebar ─────────────────────────────────────
+            "filter": [
+                "aside a", "[role='complementary'] a", "nav.filter a",
+                "[data-testid*='filter' i]", ".sidebar a", ".filter a",
+                "[aria-label*='filter' i]", "button:has-text('Filter')",
+            ],
+            "sidebar": [
+                "aside", "[role='complementary']", ".sidebar", "#sidebar",
+                "nav[aria-label*='filter' i]", "nav.sidebar",
+            ],
+
+            # ── Language filters (common on GitHub, npm, SO) ─────────
+            "python": ["a:has-text('Python')", "label:has-text('Python')", "input[value*='python' i]", "[data-value='python' i]"],
+            "javascript": ["a:has-text('JavaScript')", "label:has-text('JavaScript')", "input[value*='javascript' i]"],
+            "typescript": ["a:has-text('TypeScript')", "label:has-text('TypeScript')", "input[value*='typescript' i]"],
+            "java": ["a:has-text('Java')", "label:has-text('Java')", "input[value*='java' i]"],
+            "go": ["a:has-text('Go')", "label:has-text('Go')", "input[value*='go' i]"],
+            "rust": ["a:has-text('Rust')", "label:has-text('Rust')", "input[value*='rust' i]"],
+            "c++": ["a:has-text('C++')", "label:has-text('C++')", "input[value*='cpp' i]"],
+
+            # ── Tabs ─────────────────────────────────────────────────
+            "tab": ["[role='tab']", "[role='tablist'] button", ".tab", "[data-tab]", "button[aria-selected]"],
+
+            # ── Dropdown / Select ────────────────────────────────────
+            "dropdown": ["select", "[role='listbox']", "[role='combobox']", "[data-dropdown]", ".dropdown"],
+            "select": ["select", "[role='listbox']", "[role='combobox']"],
+            "menu": ["[role='menu']", "[role='menubar']", "nav", ".menu"],
+
+            # ── Checkboxes / Toggles ─────────────────────────────────
+            "checkbox": ["input[type='checkbox']", "[role='checkbox']"],
+            "toggle": ["[role='switch']", ".toggle", "input[type='checkbox']"],
+            "radio": ["input[type='radio']", "[role='radio']"],
+
+            # ── Pagination ───────────────────────────────────────────
+            "pagination": ["[aria-label*='pagination']", "nav.pagination", ".pagination", "a[rel='next']"],
+            "page": ["[aria-label*='pagination'] a", "nav.pagination a", ".pagination a"],
+            "load more": ["button:has-text('Load more')", "button:has-text('Show more')", "a:has-text('Load more')"],
+
+            # ── Sort ─────────────────────────────────────────────────
+            "sort": ["[aria-label*='sort' i]", "button:has-text('Sort')", "select[name*='sort']", "[data-testid*='sort' i]"],
+
+            # ── Date / Calendar ──────────────────────────────────────
+            "date": ["input[type='date']", "input[type='datetime-local']", "[role='grid']", ".calendar", "[data-testid*='date']"],
+
+            # ── File Upload ──────────────────────────────────────────
+            "upload": ["input[type='file']", "[role='button']:has-text('Upload')", ".dropzone", "button:has-text('Upload')"],
+            "file": ["input[type='file']", "button:has-text('Choose file')", "button:has-text('Browse')"],
+
+            # ── Result / List Items ──────────────────────────────────
+            "first result": ["li:first-of-type a", "article:first-of-type a", "[data-testid*='result']:first-of-type a"],
+            "first": ["li:first-of-type a", "article:first-of-type a", "tr:first-of-type a"],
+            "result": ["article a", "li a", "[data-testid*='result'] a", ".search-result a"],
+
+            # ── About / Description ──────────────────────────────────
+            "about": [".about", "[itemprop='description']", "p.description", "h2:has-text('About')", ".BorderGrid-cell p"],
+            "description": ["[itemprop='description']", "meta[name='description']", "p.description", ".repo-description"],
+
+            # ── Content ──────────────────────────────────────────────
             "star": ["[aria-label*='star' i]", "button:has-text('Star')", "[data-testid*='star' i]"],
-            # Text area / Comment
             "comment": ["textarea[name*='comment' i]", "textarea[placeholder*='comment' i]", "textarea"],
             "message": ["textarea[name*='message' i]", "textarea[placeholder*='message' i]", "textarea"],
+
+            # ── Form Elements ────────────────────────────────────────
+            "phone": ["input[type='tel']", "input[name*='phone' i]", "input[placeholder*='phone' i]"],
+            "name": ["input[name*='name' i]", "input[placeholder*='name' i]", "input[autocomplete='name']"],
+            "address": ["input[name*='address' i]", "input[placeholder*='address' i]", "textarea[name*='address' i]"],
         }
 
         # Cache for element signatures (avoid recomputing)
@@ -612,7 +713,8 @@ class SmartFinder:
         timeout: int = 3000,      # NEW: Timeout in ms
         interval: int = 500,      # NEW: Polling interval in ms
         position: Optional[int] = None,  # NEW: Index for list items (0=first, 1=second)
-        discovery_mode: bool = False  # NEW: Lowers Layer 2 threshold for first-time generation
+        discovery_mode: bool = False,  # NEW: Lowers Layer 2 threshold for first-time generation
+        action_type: str = "interactive"
     ) -> FindResult:
         """
         Find an element using the 4-layer fallback system with Smart Wait.
@@ -667,11 +769,69 @@ class SmartFinder:
                     f"[Layer 0] ✅ STRUCTURAL HIT in {time.time() - layer0_start:.3f}s "
                     f"(confidence: {result.confidence:.2f})"
                 )
+                # LEARN from success
+                try:
+                    selector = await result.element.evaluate("el => { \
+                        if (el.id) return '#' + el.id; \
+                        if (el.name) return '[name=\"' + el.name + '\"]'; \
+                        return null; \
+                    }")
+                    if selector:
+                        memory.learn(self.page.url, intent, {
+                            "selector": selector,
+                            "layer": result.layer.name,
+                            "timestamp": time.time()
+                        })
+                except Exception:
+                    pass
                 return result
             else:
-                logger.debug("[Layer 0] No structural match, falling through to math layers.")
+                logger.debug("[Layer 0] No structural match, falling through to deterministic scorer.")
         except Exception as e:
             logger.warning(f"[Layer 0] ⚠️ STRUCTURAL ERROR: {e}")
+
+        # =====================================================================
+        # LAYER 0.5: DETERMINISTIC SCORER (Candidate Table) - ~30ms
+        # =====================================================================
+        # Build top-20 candidate table filtered by action type,
+        # score using exact text match + containment. No AI.
+        # =====================================================================
+        action_type = self._infer_action_type(intent, scan_mode)
+        logger.debug(f"[Layer 0.5] DETERMINISTIC: Candidate Table (action={action_type})...")
+        try:
+            det_result = await self.find_deterministic(
+                intent=intent,
+                action_type=action_type,
+                container_selector=container_selector,
+                position=position,
+            )
+            if det_result.found:
+                det_result.new_signature = await self._compute_element_signature(det_result.element)
+                det_result.duration_ms = int((time.time() - start_time) * 1000)
+                logger.info(
+                    f"[Layer 0.5] ✅ DETERMINISTIC HIT in {det_result.duration_ms}ms "
+                    f"(confidence: {det_result.confidence:.2f})"
+                )
+                # LEARN from success
+                try:
+                    selector = await det_result.element.evaluate("el => { \
+                        if (el.id) return '#' + el.id; \
+                        if (el.name) return '[name=\"' + el.name + '\"]'; \
+                        return null; \
+                    }")
+                    if selector:
+                        memory.learn(self.page.url, intent, {
+                            "selector": selector,
+                            "layer": det_result.layer.name,
+                            "timestamp": time.time()
+                        })
+                except Exception:
+                    pass
+                return det_result
+            else:
+                logger.debug("[Layer 0.5] Deterministic miss, falling through to legacy layers.")
+        except Exception as e:
+            logger.warning(f"[Layer 0.5] ⚠️ DETERMINISTIC ERROR: {e}")
 
         # SMART WAIT + LAZY-SCROLL LOOP
         iteration = 0
@@ -699,6 +859,21 @@ class SmartFinder:
                             f"[Layer 1] ✅ REFLEX HIT in {time.time() - layer1_start:.3f}s "
                             f"(confidence: {result.confidence:.2f})"
                         )
+                        # LEARN from success
+                        try:
+                            selector = await result.element.evaluate("el => { \
+                                if (el.id) return '#' + el.id; \
+                                if (el.name) return '[name=\"' + el.name + '\"]'; \
+                                return null; \
+                            }")
+                            if selector:
+                                memory.learn(self.page.url, intent, {
+                                    "selector": selector,
+                                    "layer": result.layer.name,
+                                    "timestamp": time.time()
+                                })
+                        except Exception:
+                            pass
                         return result
                     else:
                         logger.info("[Layer 1] ❌ REFLEX MISS: SimHash not found, falling back...")
@@ -731,6 +906,21 @@ class SmartFinder:
                         f"[Layer 2] ✅ HEURISTIC HIT in {time.time() - layer2_start:.3f}s "
                         f"(score: {result.confidence:.2f}, checked: {result.candidates_checked})"
                     )
+                    # LEARN from success
+                    try:
+                        selector = await result.element.evaluate("el => { \
+                            if (el.id) return '#' + el.id; \
+                            if (el.name) return '[name=\"' + el.name + '\"]'; \
+                            return null; \
+                        }")
+                        if selector:
+                            memory.learn(self.page.url, intent, {
+                                "selector": selector,
+                                "layer": result.layer.name,
+                                "timestamp": time.time()
+                            })
+                    except Exception:
+                        pass
                     return result
                 else:
                     logger.info(
@@ -755,6 +945,21 @@ class SmartFinder:
                         f"[Layer 3] ✅ SEMANTIC HIT in {time.time() - layer3_start:.3f}s "
                         f"(confidence: {result.confidence:.2f})"
                     )
+                    # LEARN from success
+                    try:
+                        selector = await result.element.evaluate("el => { \
+                            if (el.id) return '#' + el.id; \
+                            if (el.name) return '[name=\"' + el.name + '\"]'; \
+                            return null; \
+                        }")
+                        if selector:
+                            memory.learn(self.page.url, intent, {
+                                "selector": selector,
+                                "layer": result.layer.name,
+                                "timestamp": time.time()
+                            })
+                    except Exception:
+                        pass
                     return result
                 else:
                     logger.info("[Layer 3] ❌ SEMANTIC MISS: No vector match found")
@@ -789,35 +994,42 @@ class SmartFinder:
                 break
 
         # =====================================================================
-        # LAYER 4: COGNITIVE (AI Recovery) - Slow (Run ONLY after timeout)
+        # RECOVERY LADDER (replaces old Layer 4 full-AXTree)
+        # Step 1: Expanded candidate pool (top 40)
+        # Step 2: Re-scan DOM after 500ms (lazy/dynamic content)
+        # Step 3: LLM rescue with compact top-20 table (~200 tokens)
         # =====================================================================
-        logger.info(f"[SmartFinder] ⚠️ Timeout ({timeout}ms) reached. Invoking AI recovery...")
-        logger.debug("[Layer 4] COGNITIVE: Invoking AI agent...")
-        layer4_start = time.time()
+        logger.info(f"[SmartFinder] ⚠️ Timeout ({timeout}ms) reached. Invoking recovery ladder...")
 
         try:
-            import json
-            try:
-                tree = await self.page.accessibility.snapshot()
-                tree_context = json.dumps(tree, indent=2)[:20000] if tree and tree.get("children") else None
-            except:
-                tree_context = None
-
-            result = await self._layer4_cognitive(intent, tree_context=tree_context)
-            if result.found:
-                result.new_signature = await self._compute_element_signature(result.element)
-                result.duration_ms = int((time.time() - start_time) * 1000)
-                logger.info(
-                    f"[Layer 4] ✅ COGNITIVE HIT in {time.time() - layer4_start:.3f}s"
-                )
-                return result
-            else:
-                logger.info("[Layer 4] ❌ COGNITIVE MISS: AI could not locate element")
+            recovery_result = await self._recovery_ladder(
+                intent=intent,
+                action_type=action_type if 'action_type' in dir() else self._infer_action_type(intent, scan_mode),
+                container_selector=container_selector,
+            )
+            if recovery_result.found:
+                recovery_result.duration_ms = int((time.time() - start_time) * 1000)
+                # LEARN from success
+                try:
+                    selector = await recovery_result.element.evaluate("el => { \
+                        if (el.id) return '#' + el.id; \
+                        if (el.name) return '[name=\"' + el.name + '\"]'; \
+                        return null; \
+                    }")
+                    if selector:
+                        memory.learn(self.page.url, intent, {
+                            "selector": selector,
+                            "layer": recovery_result.layer.name,
+                            "timestamp": time.time()
+                        })
+                except Exception:
+                    pass
+                return recovery_result
         except Exception as e:
-            logger.warning(f"[Layer 4] ⚠️ COGNITIVE ERROR: {e}")
+            logger.warning(f"[Recovery] ⚠️ Recovery ladder error: {e}")
 
         # =====================================================================
-        # ALL LAYERS FAILED
+        # ALL LAYERS + RECOVERY FAILED
         # =====================================================================
         total_duration = int((time.time() - start_time) * 1000)
         logger.error(f"[SmartFinder] ❌ ELEMENT NOT FOUND: '{intent}' (total: {total_duration}ms)")
@@ -883,6 +1095,449 @@ class SmartFinder:
 
         return FindResult(layer=FinderLayer.STRUCTURAL, candidates_checked=len(selectors_to_try))
 
+    # -------------------------------------------------------------------------
+    # DOM-AWARE EXECUTION: Candidate Table + Deterministic Scorer
+    # -------------------------------------------------------------------------
+
+    async def _build_candidate_table(
+        self,
+        action_type: str = "find_and_click",
+        container_selector: Optional[str] = None,
+        max_candidates: int = 20
+    ) -> list[CandidateRow]:
+        """
+        Build a compact table of the top interactable elements
+        relevant to the given action type from the LIVE page.
+
+        This replaces full DOM scanning. Only elements that match
+        the action constraints are included. Region detection
+        gives context (header/sidebar/main/footer/modal).
+        """
+        constraints = ACTION_CONSTRAINTS.get(action_type, ACTION_CONSTRAINTS["find_and_click"])
+        allowed_tags = constraints.get("tags", {"*"})
+        allowed_roles = constraints.get("roles", {"*"})
+        allowed_input_types = constraints.get("input_types", set())
+        allowed_attrs = constraints.get("attrs", set())
+
+        # Build CSS selector list based on constraints
+        css_parts: list[str] = []
+        if "*" not in allowed_tags:
+            for tag in allowed_tags:
+                css_parts.append(f"{tag}:visible")
+        if "*" not in allowed_roles:
+            for role in allowed_roles:
+                css_parts.append(f"[role='{role}']:visible")
+        if allowed_attrs:
+            for attr in allowed_attrs:
+                css_parts.append(f"[{attr}]:visible")
+
+        # Fallback: if wildcard, use broad interactive selectors
+        if "*" in allowed_tags:
+            css_parts = [
+                "a:visible", "button:visible", "input:visible", "select:visible",
+                "textarea:visible", "[role]:visible", "label:visible",
+                "h1:visible", "h2:visible", "h3:visible", "h4:visible",
+                "p:visible", "span:visible", "li:visible", "td:visible",
+            ]
+
+        # Scope to container if provided
+        scope = self.page
+        if container_selector:
+            try:
+                container = await self.page.query_selector(container_selector)
+                if container:
+                    scope = container
+            except Exception:
+                pass
+
+        # Collect unique elements
+        seen_handles: set = set()
+        candidates: list[CandidateRow] = []
+
+        for css in css_parts:
+            if len(candidates) >= max_candidates:
+                break
+            try:
+                if hasattr(scope, 'query_selector_all'):
+                    elements = await scope.query_selector_all(css)
+                else:
+                    elements = await self.page.query_selector_all(css)
+            except Exception:
+                continue
+
+            for el in elements:
+                if len(candidates) >= max_candidates:
+                    break
+
+                # Deduplicate by handle identity
+                el_id = id(el)
+                if el_id in seen_handles:
+                    continue
+                seen_handles.add(el_id)
+
+                try:
+                    # Extract properties
+                    props = await self.page.evaluate("""(el) => {
+                        const rect = el.getBoundingClientRect();
+                        return {
+                            tag: el.tagName.toLowerCase(),
+                            text: (el.innerText || el.textContent || '').trim().substring(0, 80),
+                            role: el.getAttribute('role') || '',
+                            aria: el.getAttribute('aria-label') || el.getAttribute('name') || el.getAttribute('placeholder') || '',
+                            type: el.getAttribute('type') || '',
+                            disabled: el.disabled || el.getAttribute('aria-disabled') === 'true',
+                            classes: Array.from(el.classList).slice(0, 5),
+                            visible: rect.width > 0 && rect.height > 0,
+                        };
+                    }""", el)
+
+                    if not props.get("visible", False):
+                        continue
+
+                    # Apply input_type filter for check_element actions
+                    if allowed_input_types and props.get("type", "") not in allowed_input_types:
+                        if props.get("tag") == "input" and not props.get("role"):
+                            continue
+
+                    region = await self._detect_region(el)
+
+                    candidates.append(CandidateRow(
+                        handle=el,
+                        role=props.get("role") or self._infer_role(props.get("tag", ""), props.get("type", "")),
+                        text=props.get("text", ""),
+                        aria_name=props.get("aria", ""),
+                        selector="",  # Computed lazily if needed
+                        visible=True,
+                        enabled=not props.get("disabled", False),
+                        region=region,
+                        tag=props.get("tag", ""),
+                        input_type=props.get("type", ""),
+                        classes=props.get("classes", []),
+                    ))
+                except Exception:
+                    continue
+
+        logger.debug(f"[CandidateTable] Built {len(candidates)} candidates for action={action_type}")
+        return candidates
+
+    def _infer_role(self, tag: str, input_type: str) -> str:
+        """Infer ARIA role from tag name and input type."""
+        role_map = {
+            "a": "link", "button": "button", "input": "textbox",
+            "select": "combobox", "textarea": "textbox", "label": "label",
+            "h1": "heading", "h2": "heading", "h3": "heading", "h4": "heading",
+            "p": "text", "span": "text", "li": "listitem", "td": "cell",
+            "img": "img", "table": "table",
+        }
+        if tag == "input":
+            type_role_map = {
+                "checkbox": "checkbox", "radio": "radio", "submit": "button",
+                "search": "searchbox", "email": "textbox", "password": "textbox",
+                "file": "button", "button": "button",
+            }
+            return type_role_map.get(input_type, "textbox")
+        return role_map.get(tag, "generic")
+
+    async def _detect_region(self, element: ElementHandle) -> str:
+        """Detect which page region (header/sidebar/main/footer/modal/nav) an element belongs to."""
+        try:
+            region = await self.page.evaluate("""(el) => {
+                let node = el;
+                while (node && node !== document.body) {
+                    const tag = node.tagName ? node.tagName.toLowerCase() : '';
+                    const role = node.getAttribute ? (node.getAttribute('role') || '') : '';
+                    const cls = node.className || '';
+
+                    if (tag === 'header' || role === 'banner') return 'header';
+                    if (tag === 'footer' || role === 'contentinfo') return 'footer';
+                    if (tag === 'aside' || role === 'complementary' ||
+                        cls.includes('sidebar') || cls.includes('Sidebar')) return 'sidebar';
+                    if (tag === 'nav' || role === 'navigation') return 'nav';
+                    if (role === 'dialog' || tag === 'dialog' ||
+                        cls.includes('modal') || cls.includes('Modal')) return 'modal';
+                    if (tag === 'main' || role === 'main') return 'main';
+                    node = node.parentElement;
+                }
+                return 'main';
+            }""", element)
+            return region
+        except Exception:
+            return "main"
+
+    def _score_candidate_deterministic(
+        self,
+        candidate: CandidateRow,
+        anchors: list[str]
+    ) -> float:
+        """
+        Score a candidate against intent anchors using ONLY deterministic
+        string operations. No Levenshtein. No N-grams. No embeddings.
+
+        Signal 1: EXACT TEXT MATCH → 1.0
+          candidate.text.lower() == anchor.lower()
+
+        Signal 2: CONTAINMENT → 0.85
+          anchor.lower() in candidate.text.lower() and len(text) < 80
+
+        Signal 3: ARIA/NAME MATCH → 0.8
+          anchor.lower() in candidate.aria_name.lower()
+
+        Signal 4: CLASS MATCH → 0.6
+          anchor.lower() in any class name
+
+        Returns the highest score across all anchors.
+        """
+        best_score = 0.0
+        candidate_text = candidate.text.lower().strip()
+        candidate_aria = candidate.aria_name.lower().strip()
+        candidate_classes = " ".join(candidate.classes).lower()
+
+        for anchor in anchors:
+            anchor_clean = anchor.lower().strip()
+            if not anchor_clean:
+                continue
+
+            # Signal 1: Exact match
+            if candidate_text == anchor_clean:
+                return 1.0
+
+            # Signal 2: Containment (bidirectional for short strings)
+            if len(candidate_text) < 80 and len(anchor_clean) >= 2:
+                if anchor_clean in candidate_text:
+                    score = 0.85
+                    # Boost if text is very close in length (near-exact)
+                    if len(candidate_text) <= len(anchor_clean) * 1.5:
+                        score = 0.92
+                    best_score = max(best_score, score)
+                elif candidate_text in anchor_clean and len(candidate_text) >= 3:
+                    best_score = max(best_score, 0.82)
+
+            # Signal 3: ARIA/name match
+            if candidate_aria and anchor_clean in candidate_aria:
+                best_score = max(best_score, 0.8)
+
+            # Signal 4: Class name match (weak signal)
+            if anchor_clean in candidate_classes:
+                best_score = max(best_score, 0.6)
+
+        return best_score
+
+    async def find_deterministic(
+        self,
+        intent: str,
+        action_type: str = "find_and_click",
+        container_selector: Optional[str] = None,
+        position: Optional[int] = None,
+    ) -> FindResult:
+        """
+        DOM-Aware Execution entry point: find element using Candidate Table
+        + deterministic scoring. No AI, no fuzzy math.
+
+        Pipeline:
+        1. Build Candidate Table (top 20 interactables filtered by action)
+        2. Parse intent into anchors
+        3. Score each candidate deterministically
+        4. Return best match above threshold (0.7)
+
+        Returns FindResult with layer=HEURISTIC if found.
+        """
+        start_time = time.time()
+
+        # Parse anchors from comma-separated intent
+        anchors = [a.strip() for a in intent.split(",") if a.strip()]
+
+        # Build constrained candidate table
+        candidates = await self._build_candidate_table(
+            action_type=action_type,
+            container_selector=container_selector,
+            max_candidates=20
+        )
+
+        if not candidates:
+            return FindResult(layer=FinderLayer.NONE, candidates_checked=0)
+
+        # Score all candidates
+        scored: list[tuple[CandidateRow, float]] = []
+        for candidate in candidates:
+            score = self._score_candidate_deterministic(candidate, anchors)
+            candidate.score = score
+            if score > 0.0:
+                scored.append((candidate, score))
+
+        # Sort by score descending
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        # Check position hint (e.g., "first result" → position=0)
+        if position is not None and scored:
+            # Filter to only matching candidates, then pick by position
+            matching = [(c, s) for c, s in scored if s >= 0.5]
+            if position < len(matching):
+                best_candidate, best_score = matching[position]
+                duration = int((time.time() - start_time) * 1000)
+                logger.info(
+                    f"[Deterministic] ✅ Position match #{position}: "
+                    f"'{best_candidate.text[:40]}' (score: {best_score:.2f}, "
+                    f"region: {best_candidate.region}, {duration}ms)"
+                )
+                return FindResult(
+                    element=best_candidate.handle,
+                    layer=FinderLayer.HEURISTIC,
+                    confidence=best_score,
+                    duration_ms=duration,
+                    candidates_checked=len(candidates),
+                )
+
+        # Return best match above threshold
+        threshold = 0.7
+        if scored and scored[0][1] >= threshold:
+            best_candidate, best_score = scored[0]
+            duration = int((time.time() - start_time) * 1000)
+            logger.info(
+                f"[Deterministic] ✅ HIT: '{best_candidate.text[:40]}' "
+                f"(score: {best_score:.2f}, role: {best_candidate.role}, "
+                f"region: {best_candidate.region}, {duration}ms)"
+            )
+            return FindResult(
+                element=best_candidate.handle,
+                layer=FinderLayer.HEURISTIC,
+                confidence=best_score,
+                duration_ms=duration,
+                candidates_checked=len(candidates),
+            )
+
+        # Log top candidates for debugging
+        duration = int((time.time() - start_time) * 1000)
+        if scored:
+            top3 = scored[:3]
+            for i, (c, s) in enumerate(top3):
+                logger.debug(
+                    f"[Deterministic] Candidate #{i+1}: '{c.text[:40]}' "
+                    f"score={s:.2f} role={c.role} region={c.region}"
+                )
+            logger.info(
+                f"[Deterministic] ❌ MISS: best={scored[0][1]:.2f} < {threshold} "
+                f"(checked: {len(candidates)}, {duration}ms)"
+            )
+        else:
+            logger.info(f"[Deterministic] ❌ MISS: No candidates scored > 0 ({duration}ms)")
+
+        return FindResult(
+            layer=FinderLayer.NONE,
+            confidence=scored[0][1] if scored else 0.0,
+            duration_ms=duration,
+            candidates_checked=len(candidates),
+        )
+
+    async def _recovery_ladder(
+        self,
+        intent: str,
+        action_type: str = "find_and_click",
+        container_selector: Optional[str] = None,
+    ) -> FindResult:
+        """
+        3-step recovery when deterministic matching fails.
+
+        Step 1: Retry with expanded candidate pool (top 40)
+        Step 2: Re-scan DOM after 500ms wait (handles lazy/dynamic content)
+        Step 3: LLM rescue with compact Candidate Table (~200 tokens)
+        """
+        start_time = time.time()
+        anchors = [a.strip() for a in intent.split(",") if a.strip()]
+
+        # ── Step 1: Expanded candidate pool ──────────────────────────
+        logger.info("[Recovery] Step 1: Expanding candidate pool to 40...")
+        candidates = await self._build_candidate_table(
+            action_type=action_type,
+            container_selector=container_selector,
+            max_candidates=40
+        )
+        scored = []
+        for c in candidates:
+            s = self._score_candidate_deterministic(c, anchors)
+            c.score = s
+            if s > 0.0:
+                scored.append((c, s))
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        if scored and scored[0][1] >= 0.6:
+            best, best_score = scored[0]
+            duration = int((time.time() - start_time) * 1000)
+            logger.info(f"[Recovery] ✅ Step 1 HIT: '{best.text[:40]}' (score: {best_score:.2f}, {duration}ms)")
+            return FindResult(
+                element=best.handle, layer=FinderLayer.HEURISTIC,
+                confidence=best_score, duration_ms=duration,
+                candidates_checked=len(candidates),
+            )
+
+        # ── Step 2: Re-scan after 500ms wait ─────────────────────────
+        logger.info("[Recovery] Step 2: Waiting 500ms for dynamic content...")
+        await asyncio.sleep(0.5)
+        candidates = await self._build_candidate_table(
+            action_type=action_type,
+            container_selector=container_selector,
+            max_candidates=40
+        )
+        scored = []
+        for c in candidates:
+            s = self._score_candidate_deterministic(c, anchors)
+            c.score = s
+            if s > 0.0:
+                scored.append((c, s))
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        if scored and scored[0][1] >= 0.55:
+            best, best_score = scored[0]
+            duration = int((time.time() - start_time) * 1000)
+            logger.info(f"[Recovery] ✅ Step 2 HIT: '{best.text[:40]}' (score: {best_score:.2f}, {duration}ms)")
+            return FindResult(
+                element=best.handle, layer=FinderLayer.HEURISTIC,
+                confidence=best_score, duration_ms=duration,
+                candidates_checked=len(candidates),
+            )
+
+        # ── Step 3: LLM rescue with compact top-20 table ─────────────
+        logger.info("[Recovery] Step 3: LLM rescue with compact candidate table...")
+        try:
+            # Build compact text representation for the LLM
+            compact_table = self._format_candidate_table_for_llm(candidates[:20], intent)
+            tree_context = compact_table
+
+            result = await self._layer4_cognitive(intent, tree_context=tree_context)
+            if result.found:
+                result.new_signature = await self._compute_element_signature(result.element)
+                result.duration_ms = int((time.time() - start_time) * 1000)
+                logger.info(f"[Recovery] ✅ Step 3 LLM HIT in {result.duration_ms}ms")
+                return result
+        except Exception as e:
+            logger.warning(f"[Recovery] Step 3 LLM failed: {e}")
+
+        duration = int((time.time() - start_time) * 1000)
+        logger.error(f"[Recovery] ❌ ALL 3 STEPS FAILED for '{intent}' ({duration}ms)")
+        return FindResult(
+            layer=FinderLayer.NONE, confidence=0.0,
+            duration_ms=duration, error=f"Recovery ladder exhausted: {intent}",
+        )
+
+    def _format_candidate_table_for_llm(
+        self,
+        candidates: list[CandidateRow],
+        intent: str
+    ) -> str:
+        """Format compact candidate table for LLM rescue (~200 tokens)."""
+        lines = [f"Target: \"{intent}\"", "", "CANDIDATES:"]
+        for i, c in enumerate(candidates):
+            enabled_str = "enabled" if c.enabled else "disabled"
+            text_display = c.text[:50] if c.text else "(empty)"
+            aria_display = f" aria=\"{c.aria_name[:30]}\"" if c.aria_name else ""
+            lines.append(
+                f"#{i+1}  {c.role:<10} \"{text_display}\"{aria_display}  "
+                f"{c.region:<8} {enabled_str}"
+            )
+        lines.append("")
+        lines.append("Return ONLY the candidate number (1-20).")
+        return "\n".join(lines)
+
+
     def _parse_container_hint(self, intent: str) -> Optional[str]:
         """
         Parse container hints from intent string.
@@ -911,6 +1566,43 @@ class SmartFinder:
                 return selector
 
         return None
+
+    def _infer_action_type(self, intent: str, scan_mode: str) -> str:
+        """
+        Infer action constraint type from intent keywords and scan mode.
+
+        Maps the semantic intent to ACTION_CONSTRAINTS keys so the
+        Candidate Table is filtered appropriately.
+        """
+        intent_lower = intent.lower()
+
+        # Explicit extraction signals
+        extraction_keywords = {"extract", "read", "get", "text", "value", "price", "description", "about", "title"}
+        if any(k in intent_lower for k in extraction_keywords) or scan_mode == "all":
+            return "extract_text"
+
+        # Type/input signals
+        type_keywords = {"type", "enter", "input", "write", "fill", "search term", "query"}
+        if any(k in intent_lower for k in type_keywords):
+            return "type_text"
+
+        # Select/dropdown signals
+        select_keywords = {"select", "choose", "pick", "dropdown", "option"}
+        if any(k in intent_lower for k in select_keywords):
+            return "select_option"
+
+        # Checkbox/toggle signals
+        check_keywords = {"check", "toggle", "switch", "enable", "disable"}
+        if any(k in intent_lower for k in check_keywords):
+            return "check_element"
+
+        # Hover signals
+        hover_keywords = {"hover", "tooltip", "mouseover"}
+        if any(k in intent_lower for k in hover_keywords):
+            return "hover_element"
+
+        # Default: click
+        return "find_and_click"
 
     # -------------------------------------------------------------------------
     # LAYER 1: REFLEX (SimHash)

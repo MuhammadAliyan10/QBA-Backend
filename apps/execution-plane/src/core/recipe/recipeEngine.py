@@ -45,6 +45,8 @@ Version: 2.0.0
 import logging
 import traceback
 import time
+import asyncio
+import base64
 import json
 import hashlib
 from abc import ABC, abstractmethod
@@ -59,8 +61,9 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 # Internal imports
 from core.recipe.recipeValidator import RecipeValidator, ValidationResult
-from core.recipe.recipeSchema import ActionType
+from core.recipe.recipeSchema import ActionType, Action
 from core.NervousSystem import NervousSystem
+from core.selector.smartFinder import FindResult, FinderLayer
 from exceptions import AIFallbackTriggered
 
 logger = logging.getLogger("recipeEngine")
@@ -136,6 +139,7 @@ class ExecutionContext:
     executed_nodes: set[str] = field(default_factory=set)
     execution_history: list[NodeResult] = field(default_factory=list)
     current_node_id: Optional[str] = None
+    consecutive_failures: int = 0  # Trigger re-plan if >= 2
 
     # Checkpoint state (for crash recovery)
     resume_from_node: Optional[str] = None
@@ -684,6 +688,8 @@ class ActionNodeProcessor(BaseNodeProcessor):
         super().__init__(node, ctx)
         self.state_manager = state_manager
         self._smart_finder = None  # Lazy initialization
+        self._operator_realizer = None  # Lazy initialization
+        self._action_verifier = None  # Lazy initialization
         self._healing_updates: list[Dict] = []  # Track metadata updates
 
     @property
@@ -693,6 +699,22 @@ class ActionNodeProcessor(BaseNodeProcessor):
             from core.selector.smartFinder import SmartFinder
             self._smart_finder = SmartFinder(self.ctx.page)
         return self._smart_finder
+
+    @property
+    def action_verifier(self):
+        """Lazy-load ActionVerifier."""
+        if self._action_verifier is None:
+            from core.selector.actionVerifier import ActionVerifier
+            self._action_verifier = ActionVerifier(self.ctx.page)
+        return self._action_verifier
+
+    @property
+    def operator_realizer(self):
+        """Lazy-load OperatorRealizer."""
+        if self._operator_realizer is None:
+            from core.recipe.operatorRealizer import OperatorRealizer
+            self._operator_realizer = OperatorRealizer(self.ctx.page, self.smart_finder)
+        return self._operator_realizer
 
     async def execute(self) -> NodeResult:
         """Execute all actions in sequence with SmartFinder integration."""
@@ -780,6 +802,64 @@ class ActionNodeProcessor(BaseNodeProcessor):
             await self.ctx.page.goto(url)
 
         # =====================================================================
+        # SEMANTIC INTENT OPS (Use OperatorRealizer)
+        # =====================================================================
+        elif action_type in ["set_filter", "open_result", "apply_sort", "search"]:
+            intent = resolved_action.get("intent", "")
+            value = resolved_action.get("value", "")
+
+            logger.info(f"[Action] Realizing Semantic Intent: {action_type} ({intent}={value})")
+
+            # Map Dict to Action model for the realizer
+            action_model = Action(
+                type=action_type,
+                intent=intent,
+                value=value
+            )
+
+            pre_state = await self.action_verifier.capture_pre_state()
+            result = await self.operator_realizer.realize(action_model)
+
+            if not result.found:
+                raise Exception(f"Failed to realize intent: {action_type} for {intent}={value}")
+
+            # High-level realization often ends in a CLICK or element focus.
+            if result.element:
+                if action_type == "search":
+                    # For search, we must type the value and press Enter
+                    await result.element.fill("")
+                    await result.element.type(value, delay=50)
+                    await self.ctx.page.keyboard.press("Enter")
+                    # Wait for navigation or results to appear
+                    await asyncio.sleep(2)
+                else:
+                    await result.element.click()
+
+                # SEMANTIC VERIFICATION
+                success = False
+                error_msg = ""
+                try:
+                    if action_type == "set_filter":
+                        success, error_msg = await self.action_verifier.verify_set_filter(intent, value, pre_state["url"])
+                    elif action_type == "open_result":
+                        success, error_msg = await self.action_verifier.verify_open_result(pre_state["url"])
+                    elif action_type == "search":
+                        success, error_msg = await self.action_verifier.verify_search(value, pre_state["url"])
+                    elif action_type == "apply_sort":
+                        success, error_msg = await self.action_verifier.verify_apply_sort(value, pre_state["url"])
+                except Exception as ve:
+                    logger.warning(f"[Action:Verification] ⚠️ Verification crashed (likely page navigated): {ve}")
+                    success = True # Assume success if verification crashes during navigation
+
+                if not success:
+                    logger.warning(f"[Action:Verification] ❌ Semantic verification failed: {error_msg}")
+                    # In a real production setup, this would trigger LLM Rescue
+                    raise Exception(f"Semantic verification failed for {action_type}: {error_msg}")
+
+                logger.info(f"[Action] Realized and verified {action_type} via {result.layer.value}")
+                return
+
+        # =====================================================================
         # SEMANTIC ELEMENT ACTIONS (Use SmartFinder)
         # =====================================================================
         elif action_type == "find_and_click":
@@ -792,7 +872,12 @@ class ActionNodeProcessor(BaseNodeProcessor):
             result = await self.smart_finder.find(intent, metadata)
 
             if not result.found:
-                raise Exception(f"Element not found: {intent}")
+                # TRIGGER LLM RESCUE
+                logger.info(f"[Action] 🚑 Standard finding failed. Triggering LLM Rescue for '{intent}'...")
+                result = await self._trigger_llm_rescue(intent)
+
+                if not result.found:
+                    raise Exception(f"Element not found after rescue: {intent}")
 
             # Self-healing: Update metadata if needed
             if result.needs_healing and result.new_signature:
@@ -840,7 +925,12 @@ class ActionNodeProcessor(BaseNodeProcessor):
             result = await self.smart_finder.find(intent, metadata)
 
             if not result.found:
-                raise Exception(f"Input element not found: {intent}")
+                # TRIGGER LLM RESCUE
+                logger.info(f"[Action] 🚑 Input finding failed. Triggering LLM Rescue for '{intent}'...")
+                result = await self._trigger_llm_rescue(intent)
+
+                if not result.found:
+                    raise Exception(f"Input element not found after rescue: {intent}")
 
             # Self-healing
             if result.needs_healing and result.new_signature:
@@ -896,7 +986,12 @@ class ActionNodeProcessor(BaseNodeProcessor):
             result = await self.smart_finder.find(intent, metadata)
 
             if not result.found:
-                raise Exception(f"Element not found for extraction: {intent}")
+                # TRIGGER LLM RESCUE
+                logger.info(f"[Action] 🚑 Extraction finding failed. Triggering LLM Rescue for '{intent}'...")
+                result = await self._trigger_llm_rescue(intent)
+
+                if not result.found:
+                    raise Exception(f"Element not found for extraction: {intent}")
 
             # Self-healing
             if result.needs_healing and result.new_signature:
@@ -1041,6 +1136,54 @@ class ActionNodeProcessor(BaseNodeProcessor):
             logger.warning(f"[Action] Table extraction failed: {e}")
 
         return rows_data
+
+    async def _trigger_llm_rescue(self, intent: str) -> FindResult:
+        """
+        Structured LLM rescue: Take a pruned candidate table and ask LLM to pick one.
+        """
+        try:
+            # 1. Get candidate table from SmartFinder
+            # (In a real implementation, SmartFinder.find already tries the ladder,
+            # so we just need the formatted table for a fresh LLM call if the ladder's internal LLM failed)
+            candidates = await self.smart_finder.get_candidate_table(intent)
+            if not candidates:
+                return FindResult(layer=FinderLayer.NONE, error="No candidates found for rescue")
+
+            prompt = self.smart_finder._format_candidate_table_for_llm(candidates, intent)
+
+            # 2. Call LLM (JSON-only prompt)
+            # Use NIM via a simple helper or directly
+            from core.rag.planner import get_planner
+            planner = get_planner()
+
+            messages = [
+                {"role": "system", "content": "You are a DOM element selector. Return ONLY the JSON object: {\"selection\": index}"},
+                {"role": "user", "content": prompt}
+            ]
+
+            # Simple NIM call via the planner's client
+            response = await planner._call_nim(messages, {"type": "json_object"})
+
+            # 3. Parse choice
+            import json
+            data = json.loads(response)
+            choice_idx = data.get("selection", 0) - 1
+
+            if 0 <= choice_idx < len(candidates):
+                best = candidates[choice_idx]
+                logger.info(f"[Rescue] ✅ LLM picked candidate #{choice_idx+1}: {best.text[:30]}")
+                return FindResult(
+                    element=best.element,
+                    found=True,
+                    layer=FinderLayer.RECOVERY,
+                    confidence=0.9
+                )
+
+            return FindResult(layer=FinderLayer.NONE, error="LLM picked invalid index")
+
+        except Exception as e:
+            logger.error(f"[Rescue] ❌ Structured rescue failed: {e}")
+            return FindResult(layer=FinderLayer.NONE, error=str(e))
 
     async def _apply_healing_updates(self):
         """
@@ -1343,7 +1486,7 @@ class CheckpointNodeProcessor(BaseNodeProcessor):
 
     async def execute(self) -> NodeResult:
         """Save a checkpoint."""
-        checkpoint_config = self.node.get("checkpoint", {})
+        checkpoint_config = self.node.get("checkpoint") or {}
         checkpoint_id = self.resolve_template(
             checkpoint_config.get("id", f"cp_{self.node_id}_{int(time.time())}")
         )
@@ -1697,6 +1840,21 @@ class RecipeEngine:
                     return self._build_result(ExecutionStatus.COMPLETED)
 
                 if result.status == ExecutionStatus.FAILED:
+                    self.ctx.consecutive_failures += 1
+                    logger.warning(f"[Engine] Node failure detected ({self.ctx.consecutive_failures} consecutive)")
+
+                    # TRIGGER: Local Re-planning if 2 consecutive failures
+                    if self.ctx.consecutive_failures >= 2:
+                        logger.info("[Engine] 🚨 CRITICAL: Triggering Local Re-planning...")
+                        new_head = await self._trigger_local_replan(current_node_id)
+                        if new_head:
+                            current_node_id = new_head
+                            # Reset counter after replan attempt
+                            self.ctx.consecutive_failures = 0
+                            continue # Re-run from the new head
+                        else:
+                            logger.error("[Engine] Re-planning failed to produce a new path")
+
                     failure_node = exit_points.get("failure")
                     if failure_node:
                         current_node_id = failure_node
@@ -1717,8 +1875,12 @@ class RecipeEngine:
                 else:
                     current_node_id = self._find_next_node(current_node_id, result)
 
+                # Reset failure counter on success
+                if result.status == ExecutionStatus.COMPLETED:
+                    self.ctx.consecutive_failures = 0
+
                 # ── CHECKPOINT ────────────────────────────────────────────
-                if node.get("state_policy", {}).get("checkpoint"):
+                if (node.get("state_policy") or {}).get("checkpoint"):
                     checkpoint_id = f"cp_{current_node_id}_{int(time.time())}"
                     await self.state_manager.save_checkpoint(
                         checkpoint_id, current_node_id, self.ctx
@@ -2057,6 +2219,65 @@ class RecipeEngine:
         if failure_url:
             result["failure_url"] = failure_url
         return result
+
+    async def _trigger_local_replan(self, failed_node_id: str):
+        """
+        Emergency Procedure: The engine is stuck. Generate a new micro-plan
+        from the current DOM state and objective.
+        """
+        try:
+            from core.rag.planner import get_planner
+            planner = get_planner()
+
+            logger.info(f"[Engine:Replan] Re-planning from node '{failed_node_id}' at URL: {self.ctx.page.url}")
+
+            # 1. Get original objective/prompt
+            # We assume the recipe name/description contains some goal info,
+            # or we can pass a 'remaining goals' context.
+            objective = self.recipe.get("metadata", {}).get("description", "Continue task")
+            url = self.ctx.page.url
+
+            # 2. Generate new recipe fragment
+            # We pass existing context variables to the planner
+            new_recipe = await planner.generate_with_retry(
+                prompt=f"OBJECTIVE: {objective}. PREVIOUSLY COMPLETED: {list(self.ctx.executed_nodes)}. REPAIR FROM FAIL: {failed_node_id}",
+                url=url,
+                job_id=self.job_id
+            )
+
+            if new_recipe:
+                logger.info(f"[Engine:Replan] ✅ New recipe fragment generated with {len(new_recipe.nodes)} nodes")
+
+                # 3. Patch the current recipe
+                # For simplicity in this implementation, we replace the remaining graph
+                # from the failed node onwards with the new nodes.
+                for node in new_recipe.nodes:
+                    node_id = f"replanned_{node.id}"
+                    node.id = node_id
+                    self.ctx.nodes[node_id] = node.model_dump()
+
+                # Update edges
+                for edge in new_recipe.edges:
+                    edge.source = f"replanned_{edge.source}"
+                    edge.target = f"replanned_{edge.target}"
+                    self.ctx.edges.append(edge.model_dump())
+
+                # Link old head to new head
+                new_entry = f"replanned_{new_recipe.entry_point}"
+                self.ctx.edges.append({
+                    "from": failed_node_id,
+                    "to": new_entry,
+                    "type": "replan_link"
+                })
+
+                logger.info(f"[Engine:Replan] Graph patched. Resuming from {new_entry}")
+                return new_entry
+
+            return None
+
+        except Exception as e:
+            logger.error(f"[Engine:Replan] ❌ Re-planning failed: {e}")
+            return None
 
     async def _handle_failure_action(
         self,

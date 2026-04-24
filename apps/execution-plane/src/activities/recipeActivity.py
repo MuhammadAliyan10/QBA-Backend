@@ -92,18 +92,39 @@ async def execute_recipe_activity(payload: dict) -> dict:
     params = payload.get("params", {})
     config = payload.get("config", {})
 
-    # Validate recipe exists
+    # --- AUTONOMOUS RECOVERY: NO RECIPE PROVIDED ---
     if not recipe:
-        logger.error(f"[{job_id}] No recipe provided")
-        await NervousSystem.publish_update(
-            job_id, "FAILED", "No recipe provided", "init"
-        )
-        return RecipeExecutionResult(
-            success=False,
-            job_id=job_id,
-            status="FAILED",
-            error="No recipe provided"
-        ).to_dict()
+        target_url = payload.get("target_url")
+        objective = payload.get("objective")
+
+        if not target_url or not objective:
+            logger.error(f"[{job_id}] No recipe AND no target_url/objective provided")
+            return RecipeExecutionResult(
+                success=False, job_id=job_id, status="FAILED", error="Missing instructions"
+            ).to_dict()
+
+        logger.info(f"[{job_id}] No recipe found. Invoking Autonomous Preflight for objective: {objective}")
+        await NervousSystem.publish_update(job_id, "RUNNING", "Generating autonomous plan...", "init")
+
+        try:
+            from core.rag.preflight import PreflightPipeline
+            pipeline = PreflightPipeline()
+            preflight_result = await pipeline.run(target_url, objective, skip_justification=True, job_id=job_id)
+
+            if preflight_result.success and preflight_result.recipe:
+                recipe = preflight_result.recipe
+                logger.info(f"[{job_id}] Autonomously generated recipe for {target_url}")
+                await NervousSystem.publish_update(job_id, "RUNNING", "Autonomous plan generated", "init")
+            else:
+                err = f"Autonomous planning failed: {getattr(preflight_result, 'errors', 'Unknown error')}"
+                logger.error(f"[{job_id}] {err}")
+                await NervousSystem.publish_update(job_id, "FAILED", err, "init")
+                return RecipeExecutionResult(success=False, job_id=job_id, status="FAILED", error=err).to_dict()
+        except Exception as e:
+            err = f"Preflight crashed: {str(e)}"
+            logger.error(f"[{job_id}] {err}", exc_info=True)
+            await NervousSystem.publish_update(job_id, "FAILED", err, "init")
+            return RecipeExecutionResult(success=False, job_id=job_id, status="FAILED", error=err).to_dict()
 
     # Notify start
     await NervousSystem.publish_update(
@@ -142,16 +163,13 @@ async def execute_recipe_activity(payload: dict) -> dict:
             engine = RecipeEngine(job_id=job_id)
 
             # Load the recipe (validates Schema v2.0 internally)
+            # This initializes engine.ctx
             await engine.load_recipe(recipe)
 
             # Inject user params into context
-            if params:
+            if params and engine.ctx:
                 for key, value in params.items():
-                    engine.context.set(f"inputs.{key}", value)
-
-            # Inject browser page
-            engine.context.page = page
-            engine.context.browser = browser
+                    engine.ctx.set(f"inputs.{key}", value)
 
             await NervousSystem.publish_update(
                 job_id, "RUNNING",
@@ -162,7 +180,12 @@ async def execute_recipe_activity(payload: dict) -> dict:
             # =====================================================================
             # 3. EXECUTE RECIPE (DAG Traversal)
             # =====================================================================
-            result = await engine.run()
+            # We let the engine manage the browser context for full diagnostic capture
+            result = await engine.run(
+                browser=browser,
+                inputs=params,
+                secrets=payload.get("secrets", {})
+            )
 
             duration_ms = int((time.time() - start_time) * 1000)
 

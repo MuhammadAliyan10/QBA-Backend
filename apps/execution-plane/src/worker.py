@@ -33,6 +33,7 @@ from activities.hybridActivities import (
     generateIntentSequenceActivity,
     executeHybridWorkflowActivity
 )
+from activities.recipeActivity import execute_recipe_activity
 from activities.publishActivities import publish_event_activity
 from telemetry import init_telemetry, shutdown_telemetry
 
@@ -89,6 +90,9 @@ async def main():
                 # Hybrid Agentic DOM-Walker Layer
                 generateIntentSequenceActivity,
                 executeHybridWorkflowActivity,
+
+                # Unified Recipe Engine
+                execute_recipe_activity,
             ],
             # CRITICAL: Allow enough time for Browser to close gracefully
             graceful_shutdown_timeout=timedelta(seconds=15)

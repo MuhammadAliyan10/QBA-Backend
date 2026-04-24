@@ -357,7 +357,8 @@ class RecipeValidator:
     def _rule_8_retry_limits(self, recipe: Dict, result: ValidationResult):
         """retry.max_attempts MUST NOT exceed 5."""
         for node in recipe.get("nodes", []):
-            retry = node.get("execution", {}).get("retry", {})
+            execution = node.get("execution") or {}
+            retry = execution.get("retry") or {}
             max_attempts = retry.get("max_attempts", 0)
 
             if max_attempts > MAX_RETRY_ATTEMPTS:
@@ -589,7 +590,7 @@ class RecipeValidator:
 
             # Check post_conditions fallbacks
             for post_cond in node.get("post_conditions", []):
-                on_failure = post_cond.get("on_failure", {})
+                on_failure = post_cond.get("on_failure") or {}
                 target = on_failure.get("target", "")
 
                 if target == node_id:
@@ -603,8 +604,8 @@ class RecipeValidator:
                     ))
 
                 # Check nested conditions
-                for condition in on_failure.get("conditions", []):
-                    then_target = condition.get("then", {}).get("target", "")
+                for condition in on_failure.get("conditions") or []:
+                    then_target = (condition.get("then") or {}).get("target", "")
                     if then_target == node_id:
                         result.add_error(ValidationError(
                             rule_id=15,

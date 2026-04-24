@@ -417,30 +417,32 @@ if __name__ == "__main__":
         print(f"FERNET_KEY={key.decode()}")
         sys.exit(0)
 
-    # Test the account manager
-    try:
-        mgr = AccountManager()
+    async def test_mgr():
+        try:
+            mgr = AccountManager()
 
-        # Add a test account
-        account_id = mgr.add_account(
-            domain="example.com",
-            username="testuser",
-            password="secret123",
-            cookies={"session": "abc123"}
-        )
-        print(f"Added account: {account_id}")
+            # Add a test account (Example only)
+            account_id = await mgr.add_account(
+                domain="example.local",
+                username="dev-proxy",
+                password="dev-password-redacted",
+                cookies={"session": "dev-token"}
+            )
+            print(f"Added test account: {account_id}")
 
-        # Lease the account
-        account = mgr.lease_account("example.com")
-        if account:
-            print(f"Leased account: {account['username']}")
-            print(f"Has cookies: {account['cookies'] is not None}")
+            # Lease the account
+            account = await mgr.lease_account("example.com")
+            if account:
+                print(f"Leased account: {account['username']}")
+                print(f"Has cookies: {account['cookies'] is not None}")
 
-            # Release it
-            mgr.release_account(account['id'], success=True)
-            print("Released account")
-        else:
-            print("No accounts available")
+                # Release it (Synchronous release)
+                mgr.release_account(account['id'], success=True)
+                print("Released account")
+            else:
+                print("No accounts available")
 
-    except Exception as e:
-        print(f"Error: {e}")
+        except Exception as e:
+            print(f"Error: {e}")
+
+    asyncio.run(test_mgr())
