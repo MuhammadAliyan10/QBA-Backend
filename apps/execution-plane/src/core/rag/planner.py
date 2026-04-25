@@ -170,7 +170,7 @@ class RecipePlanner:
 
     async def generate_with_retry(self, prompt: str, url: str, classification: Optional[Dict] = None, job_id: Optional[str] = None) -> Recipe:
         messages = [
-            {"role": "system", "content": PLANNER_V2_PROMPT},
+            {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
             {"role": "user", "content": f"## TARGET_URL\n{url}\n\n## USER_REQUEST\n{prompt}\n\nNow output STRICT JSON only, no markdown, no commentary."}
         ]
 
@@ -208,7 +208,7 @@ class RecipePlanner:
         st = time.time()
         try:
             r = await self.generate_with_retry(prompt, url, job_id=kwargs.get('job_id'))
-            return PlannerResult(success=True, recipe=r.model_dump(), generation_ms=int((time.time()-st)*1000))
+            return PlannerResult(success=True, recipe=r.model_dump(mode='json'), generation_ms=int((time.time()-st)*1000))
         except Exception as e:
             return PlannerResult(success=False, error=str(e), generation_ms=int((time.time()-st)*1000))
 

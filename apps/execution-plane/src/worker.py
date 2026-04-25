@@ -35,6 +35,7 @@ from activities.hybridActivities import (
 )
 from activities.recipeActivity import execute_recipe_activity
 from activities.publishActivities import publish_event_activity
+from activities.sightedActivity import sighted_execution_activity
 from telemetry import init_telemetry, shutdown_telemetry
 
 # --- 2. LOGGING ---
@@ -93,6 +94,9 @@ async def main():
 
                 # Unified Recipe Engine
                 execute_recipe_activity,
+
+                # Sighted Pipeline (Harvest → Plan → Execute)
+                sighted_execution_activity,
             ],
             # CRITICAL: Allow enough time for Browser to close gracefully
             graceful_shutdown_timeout=timedelta(seconds=15)

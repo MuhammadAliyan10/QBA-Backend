@@ -9,8 +9,10 @@ Set via environment variables:
 """
 
 import os
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from functools import lru_cache
+from typing import Dict
 
 
 @dataclass(frozen=True)
@@ -148,6 +150,16 @@ class TimeoutConfig:
     # Worker graceful shutdown timeout
     graceful_shutdown_sec: int = 15
 
+    # Remediation: Dynamic Step Timeouts (LOG_001)
+    # Default 20s for initial navigation/hydration because of SPA boot times.
+    initial_step_timeout_ms: int = 20000
+    # Default 10s for subsequent actions as they are typically faster state changes.
+    default_step_timeout_ms: int = 10000
+    # Global cap to prevent infinite hanging
+    max_step_timeout_ms: int = 60000
+    # Domain-specific overrides (JSON string in .env: {"airbnb.com": 30000})
+    timeout_profile_by_domain: Dict[str, int] = field(default_factory=dict)
+
     # Browser action timeouts
     click_timeout_ms: int = 5000  # 5 seconds
     navigation_timeout_ms: int = 30000  # 30 seconds
@@ -178,6 +190,10 @@ def get_timeouts() -> TimeoutConfig:
         max_retry_attempts=get_env_int("MAX_RETRY_ATTEMPTS", 3),
         initial_retry_interval_sec=get_env_int("INITIAL_RETRY_INTERVAL_SEC", 2),
         retry_backoff_coefficient=float(get_env("RETRY_BACKOFF_COEFFICIENT", "2.0")),
+        initial_step_timeout_ms=get_env_int("INITIAL_STEP_TIMEOUT_MS", 20000),
+        default_step_timeout_ms=get_env_int("DEFAULT_STEP_TIMEOUT_MS", 10000),
+        max_step_timeout_ms=get_env_int("MAX_STEP_TIMEOUT_MS", 60000),
+        timeout_profile_by_domain=json.loads(get_env("TIMEOUT_PROFILE_BY_DOMAIN", "{}")),
     )
 
 
@@ -200,3 +216,20 @@ def get_llm_timeout_sec() -> int:
 def get_max_retry_attempts() -> int:
     """Get maximum retry attempts."""
     return get_timeouts().max_retry_attempts
+
+
+def get_step_timeout(domain: str, is_initial: bool = False) -> int:
+    """
+    Get the appropriate timeout for a step based on its position and domain.
+    """
+    config = get_timeouts()
+
+    # 1. Check for domain-specific override
+    if domain in config.timeout_profile_by_domain:
+        return config.timeout_profile_by_domain[domain]
+
+    # 2. Return initial vs default based on flag
+    timeout = config.initial_step_timeout_ms if is_initial else config.default_step_timeout_ms
+
+    # 3. Apply global cap
+    return min(timeout, config.max_step_timeout_ms)

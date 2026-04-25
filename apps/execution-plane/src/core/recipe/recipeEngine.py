@@ -1152,16 +1152,14 @@ class ActionNodeProcessor(BaseNodeProcessor):
         """
         try:
             # 1. Get candidate table from SmartFinder
-            # (In a real implementation, SmartFinder.find already tries the ladder,
-            # so we just need the formatted table for a fresh LLM call if the ladder's internal LLM failed)
-            candidates = await self.smart_finder.get_candidate_table(intent)
+            # Use general action_type for discovery
+            candidates = await self.smart_finder._build_candidate_table(action_type="find_and_click", max_candidates=20)
             if not candidates:
                 return FindResult(layer=FinderLayer.NONE, error="No candidates found for rescue")
 
             prompt = self.smart_finder._format_candidate_table_for_llm(candidates, intent)
 
             # 2. Call LLM (JSON-only prompt)
-            # Use NIM via a simple helper or directly
             from core.rag.planner import get_planner
             planner = get_planner()
 
@@ -1765,7 +1763,14 @@ class RecipeEngine:
         else:
             current_node_id = self.recipe.get("entry_point")
 
-        # 3. Main execution loop
+        # 3. SPA READINESS GATE (Remediation: B)
+        # Perform a global readiness check before starting the sequence
+        try:
+            await self._wait_for_spa_ready()
+        except Exception as e:
+            logger.warning(f"[Engine] SPA Readiness Gate failed/timed out: {e}. Attempting execution anyway.")
+
+        # 4. Main execution loop
         exit_points = self.recipe.get("exit_points", {})
         max_steps = 10000
         step_count = 0
@@ -1781,6 +1786,20 @@ class RecipeEngine:
                         ExecutionStatus.FAILED,
                         error=f"DAG broken: node '{current_node_id}' not found"
                     )
+
+                # ── DYNAMIC TIMEOUT OVERRIDE (Remediation: A) ─────────────
+                url = self.ctx.page.url if self.ctx.page else ""
+                domain = url.split("/")[2] if url.startswith("http") else "unknown"
+                is_initial_step = (step_count == 1)
+                from config import get_step_timeout
+
+                node_exec = node.get("execution", {})
+                override_timeout = get_step_timeout(domain, is_initial=is_initial_step)
+
+                # Remediation: A - Force override for Step 1 regardless of planner emission
+                if is_initial_step or node_exec.get("timeout_ms", 30000) < override_timeout:
+                    logger.info(f"[Engine] Applying Dynamic Timeout: {override_timeout}ms for node '{current_node_id}'")
+                    node_exec["timeout_ms"] = override_timeout
 
                 # ── PRE-FLIGHT: Page Health Check ─────────────────────────
                 page_alive = await self._verify_page_health()
@@ -1945,6 +1964,56 @@ class RecipeEngine:
         except Exception as e:
             logger.error(f"[PageHealth] Page is dead: {e}")
             return False
+
+    async def _wait_for_spa_ready(self, timeout_ms: int = 30000):
+        """
+        Remediation: B - Deterministic Readiness Gate.
+        Waits for document, main search control, and UI stability.
+        """
+        if not self.ctx.page:
+            return
+
+        logger.info(f"[ReadinessGate] Waiting up to {timeout_ms}ms for SPA stability...")
+        st = time.monotonic()
+
+        # 1. Document ReadyState
+        try:
+            await self.ctx.page.wait_for_function("document.readyState === 'complete'", timeout=5000)
+        except: pass # Non-blocking, just preferred
+
+        # 2. Main Search Control Visibility (Site-Aware)
+        # We look for common global anchors if available
+        url = self.ctx.page.url if self.ctx.page else ""
+        domain = url.split("/")[2] if url.startswith("http") else "unknown"
+        selector = "input" # Lowest common denominator for 'search'
+        if "airbnb" in domain:
+            # Specific hint for Airbnb Search Bar
+            selector = "[data-testid='structured-search-input-field-query']"
+
+        try:
+            # Use 50% of the budget for the primary control check
+            control_timeout = timeout_ms / 2
+            await self.ctx.page.wait_for_selector(selector, state="visible", timeout=control_timeout)
+        except Exception as e:
+            logger.warning(f"[ReadinessGate] Primary control '{selector}' not found in time: {e}")
+
+        # 3. Signature Stability
+        from core.browser.stateSignature import StateSignatureGenerator
+        last_sig = ""
+        stable_count = 0
+        for _ in range(5):
+            curr_sig = await StateSignatureGenerator.generate(self.ctx.page)
+            if curr_sig == last_sig:
+                stable_count += 1
+            else:
+                stable_count = 0
+            if stable_count >= 2:
+                break
+            last_sig = curr_sig
+            await asyncio.sleep(0.5)
+
+        elapsed = int((time.monotonic() - st) * 1000)
+        logger.info(f"[ReadinessGate] SPA Ready in {elapsed}ms")
 
     async def _capture_failure_screenshot(self) -> str:
         """Capture a base64 screenshot of the current failure state."""

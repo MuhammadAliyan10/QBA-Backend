@@ -591,6 +591,9 @@ class SmartFinder:
         self.ai_agent = ai_agent or MockAIAgent()
         self.glass = GlassBoxEngine()
 
+        # Remediation: C - VectorDB Degradation (INF_001)
+        self.semantic_layer_available = True
+
         # Heuristic Intent Map (Synonyms)
         self.INTENT_SYNONYMS = {
             "buy": ["add to cart", "checkout", "purchase", "order", "subscribe"],
@@ -775,7 +778,7 @@ class SmartFinder:
         layer0_start = time.time()
         try:
             result = await self._layer0_structural(intent)
-            if result.found:
+            if result and result.found:
                 result.duration_ms = int((time.time() - start_time) * 1000)
                 logger.info(
                     f"[Layer 0] ✅ STRUCTURAL HIT in {time.time() - layer0_start:.3f}s "
@@ -817,7 +820,7 @@ class SmartFinder:
                 container_selector=container_selector,
                 position=position,
             )
-            if det_result.found:
+            if det_result and det_result.found:
                 det_result.new_signature = await self._compute_element_signature(det_result.element)
                 det_result.duration_ms = int((time.time() - start_time) * 1000)
                 logger.info(
@@ -865,7 +868,7 @@ class SmartFinder:
 
                 try:
                     result = await self._layer1_reflex(intent, metadata["simhash"], container_selector, scan_mode=scan_mode)
-                    if result.found:
+                    if result and result.found:
                         result.duration_ms = int((time.time() - start_time) * 1000)
                         logger.info(
                             f"[Layer 1] ✅ REFLEX HIT in {time.time() - layer1_start:.3f}s "
@@ -902,16 +905,20 @@ class SmartFinder:
 
             try:
                 result = await self._layer2_heuristic(intent, container_selector, scan_mode=scan_mode, position=position, discovery_mode=discovery_mode)
-                if result.found:
+                if result and result.found:
                     result.new_signature = await self._compute_element_signature(result.element)
 
                     # LAYER 3 POPULATE: Learn from Layer 2
-                    if result.new_signature and "selector" in result.new_signature:
-                        asyncio.create_task(self.vector_db.store(
-                            intent=intent,
-                            selector=result.new_signature.get("selector", "unknown"),
-                            attributes=result.new_signature.get("attributes", {})
-                        ))
+                    if self.semantic_layer_available:
+                        try:
+                            asyncio.create_task(self.vector_db.store(
+                                intent=intent,
+                                selector=result.new_signature.get("selector", "unknown"),
+                                attributes=result.new_signature.get("attributes", {})
+                            ))
+                        except Exception as e:
+                            logger.warning(f"[SmartFinder] Disabling semantic storage due to error: {e}")
+                            self.semantic_layer_available = False
 
                     result.duration_ms = int((time.time() - start_time) * 1000)
                     logger.info(
@@ -950,7 +957,7 @@ class SmartFinder:
 
             try:
                 result = await self._layer3_semantic(intent, container_selector, scan_mode=scan_mode)
-                if result.found:
+                if result and result.found:
                     result.new_signature = await self._compute_element_signature(result.element)
                     result.duration_ms = int((time.time() - start_time) * 1000)
                     logger.info(
@@ -1019,7 +1026,7 @@ class SmartFinder:
                 action_type=action_type if 'action_type' in dir() else self._infer_action_type(intent, scan_mode),
                 container_selector=container_selector,
             )
-            if recovery_result.found:
+            if recovery_result and recovery_result.found:
                 recovery_result.duration_ms = int((time.time() - start_time) * 1000)
                 # LEARN from success
                 try:
@@ -1543,7 +1550,7 @@ class SmartFinder:
             tree_context = compact_table
 
             result = await self._layer4_cognitive(intent, tree_context=tree_context)
-            if result.found:
+            if result and result.found:
                 result.new_signature = await self._compute_element_signature(result.element)
                 result.duration_ms = int((time.time() - start_time) * 1000)
                 logger.info(f"[Recovery] ✅ Step 3 LLM HIT in {result.duration_ms}ms")
@@ -1991,7 +1998,21 @@ class SmartFinder:
         Queries the vector database for semantically similar elements.
         """
         # Query vector DB
-        match = await self.vector_db.search(intent)
+    async def _layer_3_semantic_match(self, intent: str) -> Optional[FindResult]:
+        """Layer 3: VectorDB lookups (decoupled for infra robustness)."""
+        if not self.semantic_layer_available:
+            return None
+
+        try:
+            match = await self.vector_db.search(intent)
+            if match:
+                # ... rest of matching logic
+                return match
+        except Exception as e:
+            logger.warning(f"[SmartFinder] Semantic Layer unavailable: {e}")
+            self.semantic_layer_available = False
+
+        return None
 
         if not match:
             return FindResult(layer=FinderLayer.SEMANTIC)
