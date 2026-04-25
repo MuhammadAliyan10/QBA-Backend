@@ -24,41 +24,20 @@ logger = logging.getLogger("planner")
 # V2 PLANNER SCHEMA
 # =============================================================================
 
-class Constraints(BaseModel):
-    role_hints: List[str] = Field(default_factory=list)
-    text_hints: List[str] = Field(default_factory=list)
-    scope_hints: List[str] = Field(default_factory=list)
-    position_hint: Optional[str] = None
-    must_be_visible: bool = True
-
-class SuccessPredicate(BaseModel):
-    type: str # string, one of url_contains|url_matches|dom_text_present|state_applied|navigation_happened|value_set|count_at_least|custom
-    expected: str
-
-class FallbackPolicy(BaseModel):
-    allow_alternates: bool = True
-    max_retries: int = 2
-    escalate_to_llm_judge_on_failure: bool = True
-
 class StepDirection(BaseModel):
-    id: str
+    step_id: str
     intent_type: str
-    target_name: str
-    action_value: Optional[str] = None
-    constraints: Constraints
-    success_predicate: SuccessPredicate
-    fallback_policy: FallbackPolicy
-
-class FinalOutput(BaseModel):
-    type: str
-    fields: List[str]
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+    success_criteria: str
+    fallback_intents: List[str] = Field(default_factory=list)
+    timeout_ms: int = 5000
+    max_retries: int = 2
 
 class QuantaPlan(BaseModel):
-    plan_version: str = "2.0"
+    plan_version: str = "3.0"
     target_url: str
     goal: str
-    steps: List[StepDirection]
-    final_output: Optional[FinalOutput] = None
+    subtasks: List[StepDirection]
 
 # =============================================================================
 # CONFIGURATION
@@ -72,87 +51,7 @@ class CompilationFailedError(Exception):
     """Raised when the LLM fails to generate a valid recipe after multiple retries."""
     pass
 
-PLANNER_V2_PROMPT = """You are Quanta Planner v2.
-
-ROLE
-Convert a user's web automation request into a strict JSON execution plan.
-You MUST NOT guess DOM selectors, CSS, XPath, element IDs, classes, or page layout.
-You are intent-only.
-
-CONTEXT
-- You receive:
-  1) TARGET_URL
-  2) USER_REQUEST
-- The runtime engine will execute on live DOM.
-- Your job is to produce semantic steps with verification criteria.
-
-CRITICAL RULES
-1) Do NOT output selectors.
-2) Do NOT assume UI placement (e.g., "left sidebar", "top-right button") unless explicitly stated by user.
-3) Use only semantic actions.
-4) Every step must include a success_predicate.
-5) Prefer domain-agnostic intents; allow multiple realization strategies via constraints/fallback_policy.
-6) Keep plan minimal: no redundant steps.
-
-ALLOWED intent_type VALUES
-- GO_TO_URL
-- NAVIGATE
-- SEARCH
-- SET_FILTER
-- SET_SORT
-- OPEN_RESULT
-- OPEN_SECTION
-- CLICK_INTENT
-- TYPE_TEXT
-- SELECT_OPTION
-- EXTRACT
-- VERIFY
-- LOOP
-- IF
-
-STEP SCHEMA (STRICT)
-Each step object must be:
-{
-  "id": "S1",
-  "intent_type": "...",
-  "target_name": "human-readable target",
-  "action_value": "string or null",
-  "constraints": {
-    "role_hints": ["button","link","input","tab","menuitem","option"] or [],
-    "text_hints": ["..."] or [],
-    "scope_hints": ["header","main","nav","modal","table","list","form"] or [],
-    "position_hint": "first|last|index:N|null",
-    "must_be_visible": true
-  },
-  "success_predicate": {
-    "type": "url_contains|url_matches|dom_text_present|state_applied|navigation_happened|value_set|count_at_least|custom",
-    "expected": "..."
-  },
-  "fallback_policy": {
-    "allow_alternates": true,
-    "max_retries": 2,
-    "escalate_to_llm_judge_on_failure": true
-  }
-}
-
-OUTPUT SCHEMA (STRICT JSON ONLY)
-{
-  "plan_version": "2.0",
-  "target_url": "...",
-  "goal": "...",
-  "steps": [ ...step objects in order... ],
-  "final_output": {
-    "type": "text|json",
-    "fields": ["..."]
-  }
-}
-
-PLANNING HEURISTICS
-- If request says "first result", represent with OPEN_RESULT + position_hint index:0.
-- If request says "filter by X", use SET_FILTER with action_value=X.
-- If request says "give me", include EXTRACT step and final_output fields.
-- Add VERIFY steps only when needed for major transitions; otherwise encode verification in each step's success_predicate.
-"""
+from core.rag.prompts import PLANNER_SYSTEM_PROMPT
 
 from dataclasses import dataclass
 
@@ -186,8 +85,8 @@ def build_dag_from_directions(plan: QuantaPlan, context: str) -> Recipe:
     previous_node_id = None
     entry_point = None
 
-    for idx, direction in enumerate(plan.steps):
-        node_id = f"node_{direction.id}"
+    for idx, direction in enumerate(plan.subtasks):
+        node_id = f"node_{direction.step_id}"
         if idx == 0:
             entry_point = node_id
 
@@ -208,38 +107,40 @@ def build_dag_from_directions(plan: QuantaPlan, context: str) -> Recipe:
             "VERIFY": ActionType.WAIT,
         }
 
-        mapped_type = action_map.get(action_intent, ActionType.CLICK)
+        # Fallback to generic action if no strict mapping
+        mapped_type = action_map.get(action_intent) or ActionType(direction.intent_type) if direction.intent_type in [e.value for e in ActionType] else ActionType.CLICK
 
         action = Action(
             seq=1,
             type=mapped_type,
-            intent=direction.target_name,
-            value=direction.action_value or "",
+            intent=direction.intent_type,
+            value=str(direction.arguments.get("value", "")),
+            data=direction.arguments
         )
 
         post_conditions = [
             Condition(
-                check="url_contains" if "url" in direction.success_predicate.type else "state_applied",
-                pattern="",
-                id=f"verify_{direction.success_predicate.type}"
+                check="custom_verification",
+                value=direction.success_criteria,
+                id=f"verify_{direction.step_id}"
             )
         ]
 
         node = Node(
             id=node_id,
-            name=action_intent,
+            name=direction.intent_type,
             type=NodeType.ACTION,
             execution=ExecutionConfig(
-                timeout_ms=30000,
+                timeout_ms=direction.timeout_ms,
                 retry={
-                    "max_attempts": direction.fallback_policy.max_retries,
+                    "max_attempts": direction.max_retries,
                     "backoff_ms": 2000,
                     "strategy": "constant"
                 }
             ),
             actions=[action],
             post_conditions=post_conditions,
-            on_success=f"node_{plan.steps[idx+1].id}" if idx < len(plan.steps)-1 else "node_success",
+            on_success=f"node_{plan.subtasks[idx+1].step_id}" if idx < len(plan.subtasks)-1 else "node_success",
             on_failure="node_failure",
             on_timeout="node_timeout"
         )

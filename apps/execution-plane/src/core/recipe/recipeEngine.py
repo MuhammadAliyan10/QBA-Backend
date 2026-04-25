@@ -728,11 +728,20 @@ class ActionNodeProcessor(BaseNodeProcessor):
             try:
                 await self._execute_action(action, action_index=idx)
             except Exception as e:
-                logger.error(f"[Action] Failed: {action_type} - {e}")
+                err_msg = str(e)
+                # Taxonomy parsing fallback if not explicitly thrown
+                if ":" not in err_msg or err_msg.split(":")[0] not in [
+                    "ELEMENT_NOT_FOUND", "ELEMENT_NOT_UNIQUE",
+                    "PAGE_SIGNATURE_MISMATCH", "INTERACTION_BLOCKED_MODAL",
+                    "TIMEOUT_WAITING_STATE", "POST_ACTION_VERIFICATION_FAILED"
+                ]:
+                    err_msg = f"SYSTEM_ERROR: {err_msg}"
+
+                logger.error(f"[Action] Failed: {action_type} - {err_msg}")
                 return NodeResult(
                     node_id=self.node_id,
                     status=ExecutionStatus.FAILED,
-                    error=f"Action '{action_type}' failed: {str(e)}",
+                    error=f"Action '{action_type}' failed: {err_msg}",
                     duration_ms=int((time.time() - start_time) * 1000)
                 )
 
@@ -821,7 +830,7 @@ class ActionNodeProcessor(BaseNodeProcessor):
             result = await self.operator_realizer.realize(action_model)
 
             if not result.found:
-                raise Exception(f"Failed to realize intent: {action_type} for {intent}={value}")
+                raise Exception(f"ELEMENT_NOT_FOUND: Failed to realize intent: {action_type} for {intent}={value}")
 
             # High-level realization often ends in a CLICK or element focus.
             if result.element:
@@ -854,7 +863,7 @@ class ActionNodeProcessor(BaseNodeProcessor):
                 if not success:
                     logger.warning(f"[Action:Verification] ❌ Semantic verification failed: {error_msg}")
                     # In a real production setup, this would trigger LLM Rescue
-                    raise Exception(f"Semantic verification failed for {action_type}: {error_msg}")
+                    raise Exception(f"POST_ACTION_VERIFICATION_FAILED: Semantic verification failed for {action_type}: {error_msg}")
 
                 logger.info(f"[Action] Realized and verified {action_type} via {result.layer.value}")
                 return

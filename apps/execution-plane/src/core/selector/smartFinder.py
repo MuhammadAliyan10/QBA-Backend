@@ -79,8 +79,15 @@ class FinderLayer(Enum):
 class FindResult:
     """Result of element finding operation."""
     element: Optional[ElementHandle] = None
-    layer: FinderLayer = FinderLayer.NONE
+    # --- Phase 15 Selector Bundle Contract ---
+    selector_id: str = ""
+    locator_type: str = ""     # css | xpath | text | role
+    locator_value: str = ""
     confidence: float = 0.0
+    reason_codes: list[str] = field(default_factory=list)
+    fingerprint: Optional[Dict] = None
+    # --- Legacy Fields (Preserved for backwards compat during migration) ---
+    layer: FinderLayer = FinderLayer.NONE
     duration_ms: int = 0
     new_signature: Optional[Dict] = None  # For self-healing
     candidates_checked: int = 0
@@ -88,7 +95,7 @@ class FindResult:
 
     @property
     def found(self) -> bool:
-        return self.element is not None
+        return self.element is not None or self.locator_value != ""
 
     @property
     def needs_healing(self) -> bool:
@@ -123,6 +130,11 @@ class CandidateRow:
     input_type: str = ""     # for inputs: "text", "email", "password", "checkbox"
     score: float = 0.0
     classes: list[str] = field(default_factory=list)
+    # --- Phase 15 Proximity Fields ---
+    center_x: float = 0.0
+    center_y: float = 0.0
+    dom_path: str = ""
+    container_id: str = ""
 
 
 # =============================================================================
@@ -1179,6 +1191,26 @@ class SmartFinder:
                     # Extract properties
                     props = await self.page.evaluate("""(el) => {
                         const rect = el.getBoundingClientRect();
+
+                        // Simple deterministic DOM path
+                        let path = '';
+                        let temp = el;
+                        while(temp && temp.nodeType === 1) {
+                            path = temp.tagName + '/' + path;
+                            temp = temp.parentNode;
+                        }
+
+                        // Find closest semantic container
+                        let containerId = '';
+                        let p = el.parentElement;
+                        while(p) {
+                            if (p.tagName === 'FORM' || p.tagName === 'DIALOG' || p.getAttribute('role') === 'dialog' || p.tagName === 'NAV') {
+                                containerId = p.tagName + (p.id ? '#' + p.id : '');
+                                break;
+                            }
+                            p = p.parentElement;
+                        }
+
                         return {
                             tag: el.tagName.toLowerCase(),
                             text: (el.innerText || el.textContent || '').trim().substring(0, 80),
@@ -1188,6 +1220,10 @@ class SmartFinder:
                             disabled: el.disabled || el.getAttribute('aria-disabled') === 'true',
                             classes: Array.from(el.classList).slice(0, 5),
                             visible: rect.width > 0 && rect.height > 0,
+                            center_x: rect.x + (rect.width / 2),
+                            center_y: rect.y + (rect.height / 2),
+                            dom_path: path,
+                            container_id: containerId
                         };
                     }""", el)
 
@@ -1213,6 +1249,10 @@ class SmartFinder:
                         tag=props.get("tag", ""),
                         input_type=props.get("type", ""),
                         classes=props.get("classes", []),
+                        center_x=props.get("center_x", 0.0),
+                        center_y=props.get("center_y", 0.0),
+                        dom_path=props.get("dom_path", ""),
+                        container_id=props.get("container_id", "")
                     ))
                 except Exception:
                     continue
@@ -1791,9 +1831,61 @@ class SmartFinder:
             # Cap score at 1.0
             candidate.score = min(candidate.score, 1.0)
 
-            if candidate.score > best_score:
-                best_score = candidate.score
-                best_match = candidate
+        # ---------------------------------------------------------------------
+        # PHASE 15 DETERMINISTIC PROXIMITY HEURISTIC
+        # ---------------------------------------------------------------------
+        # 1. Select the top text-matching anchor candidate
+        anchor_candidate = None
+        best_text_score = 0.0
+        for candidate in candidates:
+            if candidate.score > best_text_score:
+                best_text_score = candidate.score
+                anchor_candidate = candidate
+
+        # 2. Rescore all candidates against the geometric/DOM anchor
+        best_score = 0.0
+        best_match = None
+        if anchor_candidate and len(candidates) > 1:
+            for candidate in candidates:
+                geo_closeness = 0.0
+                dom_closeness = 0.0
+                same_container = 0.0
+                import math
+
+                if candidate != anchor_candidate:
+                    dist = math.hypot(candidate.center_x - anchor_candidate.center_x, candidate.center_y - anchor_candidate.center_y)
+                    geo_closeness = max(0.0, 1.0 - (dist / 1500.0))
+
+                    if candidate.container_id and candidate.container_id == anchor_candidate.container_id:
+                        same_container = 1.0
+
+                    cp1 = candidate.dom_path.split('/')
+                    cp2 = anchor_candidate.dom_path.split('/')
+                    common = sum(1 for a, b in zip(cp1, cp2) if a == b and a)
+                    dom_closeness = float(common) / max(len(cp1), 1)
+                else:
+                    geo_closeness = 1.0
+                    dom_closeness = 1.0
+                    same_container = 1.0
+
+                # Check for role matches defined in layer configuration
+                roles = ACTION_CONSTRAINTS.get(scan_mode, {}).get("roles", set())
+                role_match = 1.0 if any(r in intent_normalized for r in roles) and candidate.role in intent_normalized else 0.0
+                reading_order = 0.5  # Neutral baseline
+
+                # Proximity Formula
+                prox = 0.35 * dom_closeness + 0.35 * geo_closeness + 0.15 * same_container + 0.10 * reading_order + 0.05 * role_match
+
+                # Combine base textual score with the deterministic proximity context
+                candidate.score = (candidate.score * 0.4) + (prox * 0.6)
+                candidate.score = min(candidate.score, 1.0)
+
+                if candidate.score > best_score:
+                    best_score = candidate.score
+                    best_match = candidate
+        else:
+            best_match = anchor_candidate
+            best_score = best_text_score
 
         # ---------------------------------------------------------------------
         # VISUAL SORT & POSITION SELECTION
@@ -1825,8 +1917,13 @@ class SmartFinder:
                         idx = position if position >= 0 else max(0, len(enriched_matches) + position)
                         selected_match, y, x = enriched_matches[idx]
                         logger.info(f"[Visual Sort] Selected item {idx} (pos={position}) at Y={y} (score: {selected_match.score:.2f})")
+                        import uuid
                         return FindResult(
                             element=selected_match.handle,
+                            selector_id=f"sel_{uuid.uuid4().hex[:8]}",
+                            locator_type="semantic",
+                            locator_value=selected_match.dom_path,
+                            reason_codes=["VISUAL_SORT_SUCCESS", "HEURISTIC_MATCH"],
                             layer=FinderLayer.HEURISTIC,
                             confidence=selected_match.score,
                             candidates_checked=len(candidates)
@@ -1843,9 +1940,14 @@ class SmartFinder:
         else:
             threshold = self.LAYER2_THRESHOLD
 
+        import uuid
         if best_match and best_score >= threshold:
             return FindResult(
                 element=best_match.handle,
+                selector_id=f"sel_{uuid.uuid4().hex[:8]}",
+                locator_type="semantic",
+                locator_value=best_match.dom_path,
+                reason_codes=["DETERMINISTIC_PROXIMITY_SUCCESS"],
                 layer=FinderLayer.HEURISTIC,
                 confidence=best_score,
                 candidates_checked=len(candidates)
@@ -1856,6 +1958,10 @@ class SmartFinder:
             logger.info(f"[Layer 2] ⚠️ BEST EFFORT MATCH: {best_score:.2f} (threshold: {self.LAYER2_THRESHOLD})")
             return FindResult(
                 element=best_match.handle,
+                selector_id=f"sel_{uuid.uuid4().hex[:8]}",
+                locator_type="semantic",
+                locator_value=best_match.dom_path,
+                reason_codes=["LOW_CONFIDENCE_BEST_EFFORT"],
                 layer=FinderLayer.HEURISTIC,
                 confidence=best_score,
                 candidates_checked=len(candidates),
@@ -1865,7 +1971,9 @@ class SmartFinder:
         return FindResult(
             layer=FinderLayer.HEURISTIC,
             candidates_checked=len(candidates),
-            confidence=best_score
+            confidence=best_score,
+            error="ELEMENT_NOT_FOUND",
+            reason_codes=["SCORE_BELOW_THRESHOLD"]
         )
 
     # -------------------------------------------------------------------------

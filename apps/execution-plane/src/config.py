@@ -19,6 +19,7 @@ class FeatureFlags:
     enable_billing: bool = False
     enable_s3_upload: bool = False
     enable_notifications: bool = False
+    allow_xpath_only: bool = False
 
 
 def _parse_bool(value: str, default: bool = False) -> bool:
@@ -39,6 +40,7 @@ def get_flags() -> FeatureFlags:
         enable_billing=_parse_bool(os.getenv("ENABLE_BILLING"), False),
         enable_s3_upload=_parse_bool(os.getenv("ENABLE_S3_UPLOAD"), False),
         enable_notifications=_parse_bool(os.getenv("ENABLE_NOTIFICATIONS"), False),
+        allow_xpath_only=_parse_bool(os.getenv("ALLOW_XPATH_ONLY"), False),
     )
 
 
@@ -55,6 +57,11 @@ def is_s3_upload_enabled() -> bool:
 def is_notifications_enabled() -> bool:
     """Check if notification integrations are active."""
     return get_flags().enable_notifications
+
+
+def is_xpath_only_allowed() -> bool:
+    """Check if XPath-only selectors are allowed."""
+    return get_flags().allow_xpath_only
 
 
 # Convenience getters for common config values
