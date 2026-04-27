@@ -469,6 +469,11 @@ func main() {
 	compute.POST("/api/v1/workflows/:id/run", workflowCtrl.HandleExecute)
 	compute.POST("/api/v1/workflow/execute", workflowCtrl.HandleExecute)
 
+	// Sighted Pipeline (Harvest → Plan → Execute)
+	sightedCtrl := controllers.NewSightedController(db.GetDB(), tm)
+	compute.POST("/v1/sighted", sightedCtrl.HandleSightedAsync)
+	compute.POST("/v1/sighted/sync", sightedCtrl.HandleSightedSync)
+
 	protected.GET("/v1/jobs", workflowCtrl.HandleListJobs)
 	protected.GET("/v1/jobs/:id", workflowCtrl.HandleGetJob)
 	protected.POST("/v1/jobs/:id/cancel", workflowCtrl.HandleCancelJob)
