@@ -13,17 +13,23 @@ class NervousSystem:
     @classmethod
     async def get_nc(cls):
         if not cls._nc:
-            cls._nc = NATS()
-            nats_url = os.getenv("NATS_URL", "nats://localhost:4222")
-            await cls._nc.connect(nats_url)
-        return cls._nc
+            try:
+                cls._nc = NATS()
+                nats_url = os.getenv("NATS_URL", "nats://localhost:4222")
+                # Shorter timeout for local connection check
+                await cls._nc.connect(nats_url, connect_timeout=2)
+            except Exception as e:
+                logger.warning(f"NATS connection failed: {e}. NervousSystem will skip publishing.")
+                cls._nc = "UNAVAILABLE"
+        return None if cls._nc == "UNAVAILABLE" else cls._nc
 
     @classmethod
     async def publish(cls, subject: str, payload: str):
         """Generic JSON-over-NATS publisher for telemetry."""
         try:
             nc = await cls.get_nc()
-            await nc.publish(subject, payload.encode("utf-8"))
+            if nc:
+                await nc.publish(subject, payload.encode("utf-8"))
         except Exception as e:
             logger.error(f"Failed to publish to telemetry subject {subject}: {e}")
 
@@ -34,8 +40,15 @@ class NervousSystem:
         1. Protobuf to job.update.{job_id} (Internal status/metrics)
         2. JSON to quanta.telemetry.{job_id} (Consolidated SSE stream)
         """
+        if not job_id:
+            logger.info(f"[{status}] {message}")
+            return
+
         try:
             nc = await cls.get_nc()
+            if not nc:
+                logger.info(f"[{status}] {message} (NATS Unavailable)")
+                return
 
             # 1. LEGACY/INTERNAL: Protobuf Broadcast
             event = JobEvent(

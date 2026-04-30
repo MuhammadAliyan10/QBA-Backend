@@ -113,6 +113,12 @@ class ElementCandidate:
     attributes: dict[str, str] = field(default_factory=dict)
     score: float = 0.0
     simhash: str = ""
+    # Phase 15 proximity fields (must match CandidateRow interface)
+    role: str = ""
+    center_x: float = 0.0
+    center_y: float = 0.0
+    dom_path: str = ""
+    container_id: str = ""
 
 
 @dataclass
@@ -2248,12 +2254,50 @@ class SmartFinder:
 
                 attributes[name_lower] = val
 
+            # Phase 15: Compute proximity fields for deterministic scoring
+            proximity = await element.evaluate("""el => {
+                const rect = el.getBoundingClientRect();
+                // Build DOM path
+                let path = '';
+                let node = el;
+                while (node && node !== document.body) {
+                    const tag = node.tagName ? node.tagName.toLowerCase() : '';
+                    const idx = node.parentElement
+                        ? Array.from(node.parentElement.children).filter(c => c.tagName === node.tagName).indexOf(node)
+                        : 0;
+                    path = tag + '[' + idx + ']/' + path;
+                    node = node.parentElement;
+                }
+                // Find closest semantic container
+                let containerId = '';
+                let p = el.parentElement;
+                while (p) {
+                    if (p.tagName === 'FORM' || p.tagName === 'DIALOG' || p.getAttribute('role') === 'dialog' || p.tagName === 'NAV' || p.tagName === 'SECTION') {
+                        containerId = p.tagName + (p.id ? '#' + p.id : '');
+                        break;
+                    }
+                    p = p.parentElement;
+                }
+                return {
+                    center_x: rect.x + (rect.width / 2),
+                    center_y: rect.y + (rect.height / 2),
+                    dom_path: path,
+                    container_id: containerId,
+                    role: el.getAttribute('role') || ''
+                };
+            }""")
+
             return ElementCandidate(
                 handle=element,
                 tag=tag,
                 text=text.strip()[:100],  # Limit text length
                 classes=classes[:10],      # Limit classes
-                attributes=attributes
+                attributes=attributes,
+                role=proximity.get("role", ""),
+                center_x=proximity.get("center_x", 0.0),
+                center_y=proximity.get("center_y", 0.0),
+                dom_path=proximity.get("dom_path", ""),
+                container_id=proximity.get("container_id", ""),
             )
 
         except Exception:
