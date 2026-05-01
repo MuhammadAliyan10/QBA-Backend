@@ -170,7 +170,7 @@ class StaticValidator:
     def _check_schema_compliance(self, recipe: Dict, result: ValidationResult):
         """Validate against Pydantic RecipeSchema."""
         try:
-            from core.recipe.recipeSchema import Recipe
+            from core.recipe.recipe_schema import Recipe
             Recipe.model_validate(recipe)
             logger.debug("[StaticValidator] Schema validation passed")
         except Exception as e:

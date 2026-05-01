@@ -9,7 +9,7 @@ The SmartFinder replaces brittle CSS selectors with intent-based element finding
 enabling automation that survives UI changes through self-healing.
 """
 
-from core.selector.smartFinder import (
+from core.selector.smart_finder import (
     SmartFinder,
     FindResult,
     FinderLayer,

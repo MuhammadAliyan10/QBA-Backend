@@ -60,10 +60,10 @@ from playwright.async_api import Page, Browser, BrowserContext
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 # Internal imports
-from core.recipe.recipeValidator import RecipeValidator, ValidationResult
-from core.recipe.recipeSchema import ActionType, Action
-from core.NervousSystem import NervousSystem
-from core.selector.smartFinder import FindResult, FinderLayer
+from core.recipe.recipe_validator import RecipeValidator, ValidationResult
+from core.recipe.recipe_schema import ActionType, Action
+from core.nervous_system import NervousSystem
+from core.selector.smart_finder import FindResult, FinderLayer
 from exceptions import AIFallbackTriggered
 
 logger = logging.getLogger("recipeEngine")
@@ -696,7 +696,7 @@ class ActionNodeProcessor(BaseNodeProcessor):
     def smart_finder(self):
         """Lazy-load SmartFinder to avoid import issues."""
         if self._smart_finder is None:
-            from core.selector.smartFinder import SmartFinder
+            from core.selector.smart_finder import SmartFinder
             self._smart_finder = SmartFinder(self.ctx.page)
         return self._smart_finder
 
@@ -712,7 +712,7 @@ class ActionNodeProcessor(BaseNodeProcessor):
     def operator_realizer(self):
         """Lazy-load OperatorRealizer."""
         if self._operator_realizer is None:
-            from core.recipe.operatorRealizer import OperatorRealizer
+            from core.recipe.operator_realizer import OperatorRealizer
             self._operator_realizer = OperatorRealizer(self.ctx.page, self.smart_finder)
         return self._operator_realizer
 
@@ -1998,7 +1998,7 @@ class RecipeEngine:
             logger.warning(f"[ReadinessGate] Primary control '{selector}' not found in time: {e}")
 
         # 3. Signature Stability
-        from core.browser.stateSignature import StateSignatureGenerator
+        from core.browser.state_signature import StateSignatureGenerator
         last_sig = ""
         stable_count = 0
         for _ in range(5):

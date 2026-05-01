@@ -20,8 +20,8 @@ from temporalio import activity
 from playwright.async_api import async_playwright
 
 # Core imports
-from core.NervousSystem import NervousSystem
-from core.recipe.recipeEngine import RecipeEngine
+from core.nervous_system import NervousSystem
+from core.recipe.recipe_engine import RecipeEngine
 
 logger = logging.getLogger("recipeActivity")
 

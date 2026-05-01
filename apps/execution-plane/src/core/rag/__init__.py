@@ -10,9 +10,9 @@ This module provides:
 - PreflightPipeline: Full quality control orchestrator
 """
 
-from core.rag.ragService import RAGService, get_rag_service, TemplateMatch
+from core.rag.rag_service import RAGService, get_rag_service, TemplateMatch
 from core.rag.classifier import URLClassifier, classify_url, ClassificationResult
-from core.rag.staticValidator import (
+from core.rag.static_validator import (
     StaticValidator,
     validate_recipe_static,
     ValidationResult,

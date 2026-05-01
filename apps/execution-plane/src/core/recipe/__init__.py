@@ -8,7 +8,7 @@ This module contains all components for the Universal Recipe Schema v2.0:
 - recipeManager.py: Recipe storage/retrieval with Qdrant vector search
 """
 
-from core.recipe.recipeEngine import (
+from core.recipe.recipe_engine import (
     RecipeEngine,
     StateManager,
     StepGuard,
@@ -25,9 +25,9 @@ from core.recipe.recipeEngine import (
     NodeProcessorFactory,
 )
 
-from core.recipe.recipeValidator import RecipeValidator
+from core.recipe.recipe_validator import RecipeValidator
 
-from core.recipe.recipeSchema import (
+from core.recipe.recipe_schema import (
     Recipe as RecipeModel,
     Node as NodeModel,
     Edge as EdgeModel,

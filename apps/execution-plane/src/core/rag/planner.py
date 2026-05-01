@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, ValidationError, Field
 
 from core.utils.httpclient import GetClient
-from core.recipe.recipeSchema import Recipe
+from core.recipe.recipe_schema import Recipe
 
 logger = logging.getLogger("planner")
 
@@ -66,7 +66,7 @@ class PlannerResult:
     tokens_used: int = 0
 
 def build_dag_from_directions(plan: QuantaPlan, context: str) -> Recipe:
-    from core.recipe.recipeSchema import RecipeMetadata, Node, Edge, ExitPoints, Action, ActionType, NodeType, ExecutionConfig, Condition
+    from core.recipe.recipe_schema import RecipeMetadata, Node, Edge, ExitPoints, Action, ActionType, NodeType, ExecutionConfig, Condition
 
     recipe_id = f"rec_{uuid.uuid4().hex[:8]}"
     name = "Auto-generated"
@@ -191,7 +191,7 @@ class RecipePlanner:
                 recipe = build_dag_from_directions(plan, prompt)
 
                 if job_id:
-                    from core.NervousSystem import NervousSystem
+                    from core.nervous_system import NervousSystem
                     await NervousSystem.publish(f"quanta.telemetry.{job_id}", json.dumps({"type": "log", "message": "Compiled DAG"}))
 
                 return recipe

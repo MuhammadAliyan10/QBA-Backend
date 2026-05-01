@@ -104,7 +104,7 @@ class PreflightPipeline:
     @property
     def rag(self):
         if self._rag is None:
-            from core.rag.ragService import RAGService
+            from core.rag.rag_service import RAGService
             self._rag = RAGService()
         return self._rag
 
@@ -118,7 +118,7 @@ class PreflightPipeline:
     @property
     def validator(self):
         if self._validator is None:
-            from core.rag.staticValidator import StaticValidator
+            from core.rag.static_validator import StaticValidator
             self._validator = StaticValidator()
         return self._validator
 
@@ -198,7 +198,7 @@ class PreflightPipeline:
         logger.info(f"[{job_id}] Phase 1: Preflight Oracle Validation")
         oracle_start = time.time()
         try:
-            from core.llm.safeClient import SafeLLMClient
+            from core.llm.safe_client import SafeLLMClient
             from core.rag.prompts import PREFLIGHT_ORACLE_PROMPT
             import json
 
@@ -226,7 +226,7 @@ class PreflightPipeline:
 
             # Check Auth Session if required
             if auth_required:
-                from core.AccountManager import AccountManager
+                from core.account_manager import AccountManager
                 from urllib.parse import urlparse
                 domain = urlparse(url).netloc.replace("www.", "")
                 try:

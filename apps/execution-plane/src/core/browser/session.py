@@ -33,9 +33,9 @@ from playwright.async_api import BrowserContext, Page, Response
 
 
 # Deferred imports inside methods to break circular dependencies
-# from core.planning.elementMatcher import ElementMatcher, Intent
+# from core.planning.element_matcher import ElementMatcher, Intent
 
-from core.browser.domHarvester import DOMHarvester
+from core.browser.dom_harvester import DOMHarvester
 
 logger = logging.getLogger("session_manager")
 
@@ -362,8 +362,8 @@ class SessionManager:
             snapshot = await harvester.harvest(page)
 
             # Deferred import to break circular dependency with core.browser
-            from core.planning.elementMatcher import ElementMatcher
-            from core.planning.intentParser import Intent
+            from core.planning.element_matcher import ElementMatcher
+            from core.planning.intent_parser import Intent
 
             # Use ElementMatcher to look for "Logout" or "Sign Out"
             matcher = ElementMatcher()

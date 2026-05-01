@@ -151,7 +151,7 @@ class JustifierEngine:
                 await asyncio.sleep(1)  # Let page settle
 
                 # Initialize SmartFinder with page
-                from core.selector.smartFinder import SmartFinder
+                from core.selector.smart_finder import SmartFinder
                 self._smart_finder = SmartFinder(self._page)
 
                 # Verify each node's actions

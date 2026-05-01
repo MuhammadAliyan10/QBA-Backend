@@ -14,7 +14,7 @@ import logging
 import random
 import asyncio
 from typing import Optional, Dict, Any
-from core.NervousSystem import NervousSystem
+from core.nervous_system import NervousSystem
 
 logger = logging.getLogger("user_logger")
 

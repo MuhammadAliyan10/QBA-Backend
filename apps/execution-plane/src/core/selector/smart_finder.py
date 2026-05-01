@@ -46,7 +46,7 @@ import json
 from playwright.async_api import Page, ElementHandle, Locator
 
 # Internal imports
-from core.selector.utils.mathUtils import (
+from core.selector.utils.math_utils import (
     compute_simhash,
     simhash_similarity,
     levenshtein_ratio,

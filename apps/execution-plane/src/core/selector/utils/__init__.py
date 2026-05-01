@@ -2,7 +2,7 @@
 __init__.py for utils module
 """
 
-from core.selector.utils.mathUtils import (
+from core.selector.utils.math_utils import (
     compute_simhash,
     simhash_distance,
     simhash_similarity,

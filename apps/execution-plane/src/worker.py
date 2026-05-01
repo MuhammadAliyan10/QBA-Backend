@@ -18,24 +18,24 @@ from dotenv import load_dotenv
 # Import Business Logic
 from workflows import BrowserWorkflow, GenerateWorkflowRecipe
 from activities.activities import browser_automation_activity
-from activities.discoveryActivities import (
+from activities.discovery_activities import (
     harvest_and_plan_activity,    # NEW: Math-first one-shot planner (replaces evaluate_next_step)
     execute_action_activity,
     cleanup_browser_activity
 )
-from activities.healingActivities import (
+from activities.healing_activities import (
     validateRequestActivity,
     generateWorkflowMapActivity,
     executeWorkflowStrictlyActivity,
     healWorkflowActivity
 )
-from activities.hybridActivities import (
+from activities.hybrid_activities import (
     generateIntentSequenceActivity,
     executeHybridWorkflowActivity
 )
-from activities.recipeActivity import execute_recipe_activity
-from activities.publishActivities import publish_event_activity
-from activities.sightedActivity import sighted_execution_activity
+from activities.recipe_activity import execute_recipe_activity
+from activities.publish_activities import publish_event_activity
+from activities.sighted_activity import sighted_execution_activity
 from telemetry import init_telemetry, shutdown_telemetry
 
 # --- 2. LOGGING ---

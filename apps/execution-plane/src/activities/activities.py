@@ -26,23 +26,23 @@ from core.storage import get_storage, is_storage_available, StorageUploadError
 
 # --- IMPORTS ---
 # 1. The Nervous System (Snake Case - Infrastructure)
-from core.NervousSystem import NervousSystem
+from core.nervous_system import NervousSystem
 from core.utils.params import substitute_variables, validate_and_substitute
 
 # 2. The Glass Box Engine (Camel Case - Logic)
-from core.selector.smartFinder import SmartFinder
+from core.selector.smart_finder import SmartFinder
 
 # 3. The Network Sniffer (Level 5 - Protocol Reverse Engineering)
-from core.NetworkSniffer import NetworkSniffer
+from core.network_sniffer import NetworkSniffer
 
 # 4. The Account Pool Manager (Session Rehydration)
-from core.AccountManager import AccountManager, SessionHydrationTimeout
+from core.account_manager import AccountManager, SessionHydrationTimeout
 
 # 5. The Recipe Manager (Dynamic RAG)
-from core.recipe.recipeManager import RecipeManager
+from core.recipe.recipe_manager import RecipeManager
 
 # 6. User-Facing Logger (The Voice of the Glass Box)
-from core.UserFacingLogger import UserFriendlyLogger
+from core.user_facing_logger import UserFriendlyLogger
 
 logger = logging.getLogger("activity")
 
@@ -466,7 +466,7 @@ async def browser_automation_activity(payload: dict) -> dict:
                              await context.add_cookies(leased_account['cookies'])
 
                 # --- 7. Initialize Global Network Sniffer ---
-                from core.NetworkSniffer import NetworkSniffer
+                from core.network_sniffer import NetworkSniffer
                 global_sniffer = NetworkSniffer(target_domain=target_domain)
                 await global_sniffer.start_sniffing(page)
 
