@@ -9,42 +9,41 @@ import (
 // Job represents a single execution of a workflow
 // Mapped from Prisma: model Job
 type Job struct {
-	ID         string `gorm:"primaryKey;type:uuid;column:id;default:gen_random_uuid()"`
+	// NOTE: Local dev schema (backend/docker-compose.yml -> app_postgres) uses a minimal `jobs` table.
+	// Keep this struct aligned to that schema to avoid insert/update failures.
+	ID         string `gorm:"primaryKey;column:id;type:text"`
+	WorkflowID string `gorm:"column:workflow_id;type:text"`
 	UserID     string `gorm:"column:user_id;type:uuid;index"`
-	WorkflowID string `gorm:"column:workflow_id;type:uuid;index"`
-	Status     string `gorm:"column:status;index"`
+	Status     string `gorm:"column:status;type:text;index"`
 
-	// Timing
-	ScheduledAt *time.Time `gorm:"column:scheduled_at;index"`
-	StartedAt   *time.Time `gorm:"column:started_at"`
+	WebhookURL *string        `gorm:"column:webhook_url;type:text"`
+	Params     datatypes.JSON `gorm:"column:params;type:jsonb"`
+	Result     datatypes.JSON `gorm:"column:result;type:jsonb"`
+
+	ErrorMessage *string `gorm:"column:error_message;type:text"`
+
+	RunID       *string    `gorm:"column:run_id;type:text"`
+	CreatedAt   time.Time  `gorm:"column:created_at;index"`
+	UpdatedAt   time.Time  `gorm:"column:updated_at"`
 	CompletedAt *time.Time `gorm:"column:completed_at"`
-	DurationMs  *int       `gorm:"column:duration_ms"`
 
-	// Checkpointing for resumability
-	CurrentStep  *int            `gorm:"column:current_step"`
-	CurrentState *datatypes.JSON `gorm:"column:current_state;type:jsonb"`
+	// Compatibility fields for other controllers (not present in local dev `jobs` table).
+	ScheduledAt *time.Time      `gorm:"-"`
+	StartedAt   *time.Time      `gorm:"-"`
+	DurationMs  *int            `gorm:"-"`
+	CurrentStep *int            `gorm:"-"`
+	CurrentState *datatypes.JSON `gorm:"-"`
 
-	// Cost tracking
-	CreditsUsed int `gorm:"column:credits_used;default:0"`
-
-	// Token telemetry
-	PromptTokens     int    `gorm:"column:prompt_tokens;default:0"`
-	CompletionTokens int    `gorm:"column:completion_tokens;default:0"`
-	TotalTokens      int    `gorm:"column:total_tokens;default:0"`
-	ModelUsed        string `gorm:"column:model_used;default:''"`
-	LLMCalls         int    `gorm:"column:llm_calls;default:0"`
-
-	// Error handling
-	ErrorMessage *string `gorm:"column:error_message"`
-	ErrorStack   *string `gorm:"column:error_stack"`
-	RetryCount   int     `gorm:"column:retry_count;default:0"`
-
-	// Result
-	ResultJSON *datatypes.JSON `gorm:"column:result_json;type:jsonb"`
-	ResultURL  *string         `gorm:"column:result_url"`
-
-	CreatedAt time.Time `gorm:"index"`
-	UpdatedAt time.Time
+	CreditsUsed       int    `gorm:"-"`
+	PromptTokens      int    `gorm:"-"`
+	CompletionTokens  int    `gorm:"-"`
+	TotalTokens       int    `gorm:"-"`
+	ModelUsed         string `gorm:"-"`
+	LLMCalls          int    `gorm:"-"`
+	ErrorStack        *string `gorm:"-"`
+	RetryCount        int     `gorm:"-"`
+	ResultJSON        *datatypes.JSON `gorm:"-"`
+	ResultURL         *string         `gorm:"-"`
 }
 
 // TableName specifies the table name for GORM

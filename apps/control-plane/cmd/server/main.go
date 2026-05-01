@@ -93,7 +93,7 @@ func (c *Consumer) StartListening() {
 			now := time.Now()
 			db.DB.Model(&models.Job{}).Where("id = ?", jobID).Updates(map[string]interface{}{
 				"status":     "RUNNING",
-				"started_at": &now,
+				"updated_at": &now,
 			})
 			metrics.DecrementJobQueueCount("queued")
 			metrics.IncrementJobQueueCount("running")
@@ -102,6 +102,7 @@ func (c *Consumer) StartListening() {
 			db.DB.Model(&models.Job{}).Where("id = ?", jobID).Updates(map[string]interface{}{
 				"status":       "COMPLETED",
 				"completed_at": &now,
+				"updated_at":   &now,
 			})
 			metrics.DecrementJobQueueCount("running")
 			metrics.IncrementJobQueueCount("completed")
@@ -150,6 +151,7 @@ func (c *Consumer) StartListening() {
 				"status":        "FAILED",
 				"completed_at":  &now,
 				"error_message": &errMsg,
+				"updated_at":    &now,
 			})
 			metrics.DecrementJobQueueCount("running")
 			metrics.IncrementJobQueueCount("failed")
@@ -208,21 +210,21 @@ func (c *Consumer) StartListening() {
 			c.ws.BroadcastToJob(jobID, logJSON)
 		}
 
-		// 5.5 PERSIST LOG TO DATABASE (Industrial Persistence)
-		// This enables historical log retrieval and Data Export (V1 Readiness)
+		// 5.5 PERSIST LOG TO DATABASE (best-effort; local schema may not include job_logs)
 		var metaData datatypes.JSON
 		if event.Data != "" {
 			metaData = datatypes.JSON(event.Data)
 		}
-
-		db.DB.Create(&models.JobLog{
+		if err := db.DB.Create(&models.JobLog{
 			JobID:     jobID,
 			Level:     event.Status,
 			Message:   event.Message,
 			NodeID:    &event.NodeId,
 			Metadata:  &metaData,
 			Timestamp: time.Now(),
-		})
+		}).Error; err != nil {
+			// Not critical for API/webhook flow
+		}
 
 		// Send WORKFLOW_STATUS on terminal states
 		if event.Status == "COMPLETED" || event.Status == "FAILED" {
@@ -240,15 +242,9 @@ func (c *Consumer) StartListening() {
 		// 6. TRIGGER WEBHOOK ON JOB COMPLETION/FAILURE
 		// Only dispatch webhooks for terminal states
 		if event.Status == "COMPLETED" || event.Status == "FAILED" {
-			// Look up webhook URL from the user profile (via job -> user relation)
-			// The Prisma schema stores webhook config on UserProfile, not on Job
 			var webhookURL sql.NullString
-			err := db.DB.Raw(`
-				SELECT up.webhook_url
-				FROM jobs j
-				JOIN user_profiles up ON j.user_id = up.id
-				WHERE j.id = ?
-			`, jobID).Scan(&webhookURL).Error
+			// Local/dev schema stores webhook_url on jobs. This also supports per-job callback_url.
+			err := db.DB.Raw(`SELECT webhook_url FROM jobs WHERE id = ?`, jobID).Scan(&webhookURL).Error
 
 			if err != nil {
 				log.Printf("[Webhook] Could not look up webhook for job %s: %v", jobID, err)

@@ -192,13 +192,15 @@ services:
       - "8080:8080"
     environment:
       - GIN_MODE=release
-      - REDIS_URL=redis:6379
+      - REDIS_URL=redis://redis:6379
       - NATS_URL=nats://nats:4222
       - TEMPORAL_HOST=temporal:7233
       - NVIDIA_API_KEY=${NVIDIA_API_KEY:-dummy_key_to_pass_validation}
       - SKIP_AUTH=true
-      # For local dev: use local postgres. For production: use Supabase DATABASE_URL
-      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@app_postgres:5432/quanta}
+      - DEV_USER_ID=${DEV_USER_ID:-00000000-0000-0000-0000-000000000000}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-test_secret_123}
+      # Local dev DB (avoid leaking host DATABASE_URL into container)
+      - DATABASE_URL=postgresql://postgres:postgres@app_postgres:5432/quanta
     depends_on:
       nats:
         condition: service_started
@@ -237,8 +239,8 @@ services:
       - QDRANT_URL=http://qdrant:6333
       # AI Keys (Passed from host .env)
       - NVIDIA_API_KEY=${NVIDIA_API_KEY}
-      # For local dev: use local postgres. For production: use Supabase DATABASE_URL
-      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@app_postgres:5432/quanta}
+      # Local dev DB (avoid leaking host DATABASE_URL into container)
+      - DATABASE_URL=postgresql://postgres:postgres@app_postgres:5432/quanta
     depends_on:
       temporal:
         condition: service_started
