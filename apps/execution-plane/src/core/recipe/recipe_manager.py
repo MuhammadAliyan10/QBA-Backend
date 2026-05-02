@@ -30,8 +30,8 @@ from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger("recipeManager")
 
-# Import existing TensorEngine to share the model
-from core.TensorEngine import TensorEngine
+# Instantiate the sentence transformer model directly
+
 
 
 class RecipeManager:
@@ -68,9 +68,8 @@ class RecipeManager:
         # Initialize collection if it doesn't exist
         self._initialize_collection()
 
-        # Share the sentence-transformer model with TensorEngine (singleton)
-        tensor_engine = TensorEngine()
-        self.model: SentenceTransformer = tensor_engine.model
+        # Load the sentence-transformer model
+        self.model = SentenceTransformer('all-MiniLM-L6-v2')
 
         # LRU Cache with TTL
         self.cache: dict[str, Dict] = {}  # {query_hash: {recipe, timestamp}}

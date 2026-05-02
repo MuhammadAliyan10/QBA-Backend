@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     config JSONB DEFAULT '{}',
     result JSONB,
     error_message TEXT,
+    run_id VARCHAR(255),
     created_at TIMESTAMP DEFAULT NOW(),
     started_at TIMESTAMP,
     completed_at TIMESTAMP,

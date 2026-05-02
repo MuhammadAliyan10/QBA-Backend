@@ -8,14 +8,49 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
     retry_if_exception_type,
-    before_sleep_log
 )
+
+from security.pii_scrubber import sanitize_payload
 
 logger = logging.getLogger("safe_llm_client")
 
 class LLMValidationException(Exception):
     """Raised when LLM output fails validation."""
     pass
+
+
+def _estimate_tokens_heuristic(prompt: str, response: str) -> int:
+    """Crude but effective token approximation: (len(prompt) + len(response)) // 4."""
+    return (len(prompt) + len(response)) // 4
+
+
+def _extract_token_usage(api_data: dict, prompt_text: str, response_text: str) -> dict:
+    """
+    Extracts token usage from the API response. Falls back to local
+    heuristic if the provider omits the usage object or returns 0.
+    """
+    usage = api_data.get("usage", {})
+    prompt_tokens = usage.get("prompt_tokens", 0) or 0
+    completion_tokens = usage.get("completion_tokens", 0) or 0
+    total_tokens = usage.get("total_tokens", 0) or 0
+
+    is_heuristic = False
+    if total_tokens == 0:
+        total_tokens = _estimate_tokens_heuristic(prompt_text, response_text)
+        prompt_tokens = len(prompt_text) // 4
+        completion_tokens = len(response_text) // 4
+        is_heuristic = True
+        logger.warning(
+            f"Nvidia API omitted usage stats. "
+            f"Using local heuristic approximation: {total_tokens} tokens"
+        )
+
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "is_heuristic": is_heuristic,
+    }
 
 class SafeLLMClient:
     """
@@ -24,6 +59,9 @@ class SafeLLMClient:
 
     FIX RC7: Now respects LLM_PROVIDER environment variable.
     Supported providers: "gemini" (Google), "nvidia" (default).
+
+    FIX RC8: Tracks cumulative token usage with local heuristic fallback
+    when Nvidia NIM omits the usage object from API responses.
     """
 
     def __init__(self, api_key: str = None, base_url: str = None):
@@ -46,6 +84,11 @@ class SafeLLMClient:
             logger.warning(
                 f"No API key configured for SafeLLMClient (provider: {self.provider})"
             )
+
+        # Cumulative token counter for financial telemetry
+        self.total_tokens_used = 0
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
 
     @retry(
         stop=stop_after_attempt(3),
@@ -70,6 +113,10 @@ class SafeLLMClient:
         if not self.api_key:
              raise ValueError("API key missing")
 
+        # PII Shield: Sanitize payloads before network transmission
+        system_prompt = sanitize_payload(system_prompt)
+        prompt = sanitize_payload(prompt)
+
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 self.base_url,
@@ -93,6 +140,18 @@ class SafeLLMClient:
 
             data = response.json()
             content = data["choices"][0]["message"]["content"]
+
+            # TOKEN TELEMETRY: Extract or estimate
+            prompt_text = f"{system_prompt}\n{prompt}"
+            token_info = _extract_token_usage(data, prompt_text, content)
+            self.total_tokens_used += token_info["total_tokens"]
+            self.total_prompt_tokens += token_info["prompt_tokens"]
+            self.total_completion_tokens += token_info["completion_tokens"]
+            logger.info(
+                f"[Tokens] safe_plan_recipe: {token_info['total_tokens']} "
+                f"({'heuristic' if token_info['is_heuristic'] else 'api'}) | "
+                f"cumulative: {self.total_tokens_used}"
+            )
 
             # PARSING & CLEANING
             content = self._clean_json(content)
@@ -131,6 +190,10 @@ class SafeLLMClient:
         if not self.api_key:
              raise ValueError("API key missing")
 
+        # PII Shield: Sanitize payloads before network transmission
+        system_prompt = sanitize_payload(system_prompt)
+        prompt = sanitize_payload(prompt)
+
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 self.base_url,
@@ -154,6 +217,19 @@ class SafeLLMClient:
 
             data = response.json()
             content = data["choices"][0]["message"]["content"]
+
+            # TOKEN TELEMETRY: Extract or estimate
+            prompt_text = f"{system_prompt}\n{prompt}"
+            token_info = _extract_token_usage(data, prompt_text, content)
+            self.total_tokens_used += token_info["total_tokens"]
+            self.total_prompt_tokens += token_info["prompt_tokens"]
+            self.total_completion_tokens += token_info["completion_tokens"]
+            logger.info(
+                f"[Tokens] safe_evaluate_step: {token_info['total_tokens']} "
+                f"({'heuristic' if token_info['is_heuristic'] else 'api'}) | "
+                f"cumulative: {self.total_tokens_used}"
+            )
+
             content = self._clean_json(content)
 
             try:
@@ -191,6 +267,10 @@ class SafeLLMClient:
         if not self.api_key:
              raise ValueError("API key missing")
 
+        # PII Shield: Sanitize payloads before network transmission
+        system_prompt = sanitize_payload(system_prompt)
+        user_prompt = sanitize_payload(user_prompt)
+
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 self.base_url,
@@ -213,5 +293,19 @@ class SafeLLMClient:
                 raise httpx.RequestError(f"API Error {response.status_code}: {response.text}")
 
             data = response.json()
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
+
+            # TOKEN TELEMETRY: Extract or estimate
+            prompt_text = f"{system_prompt}\n{user_prompt}"
+            token_info = _extract_token_usage(data, prompt_text, content)
+            self.total_tokens_used += token_info["total_tokens"]
+            self.total_prompt_tokens += token_info["prompt_tokens"]
+            self.total_completion_tokens += token_info["completion_tokens"]
+            logger.info(
+                f"[Tokens] call: {token_info['total_tokens']} "
+                f"({'heuristic' if token_info['is_heuristic'] else 'api'}) | "
+                f"cumulative: {self.total_tokens_used}"
+            )
+
+            return content
 

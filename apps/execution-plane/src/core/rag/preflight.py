@@ -134,7 +134,8 @@ class PreflightPipeline:
         url: str,
         prompt: str,
         skip_justification: bool = False,
-        job_id: Optional[str] = None
+        job_id: Optional[str] = None,
+        is_byos_session: bool = False
     ) -> PreflightResult:
         """
         Execute the full preflight pipeline.
@@ -143,6 +144,17 @@ class PreflightPipeline:
         start_time = time.time()
         layer_ms = {}
         warnings = []
+
+        if is_byos_session:
+            logger.info(f"[{job_id}] BYOS session detected. Bypassing Oracle feasibility gate.")
+            return PreflightResult(
+                success=True,
+                recipe=None,
+                source="byos_bypass",
+                warnings=["BYOS Session override: Oracle feasibility check bypassed."],
+                total_ms=0,
+                layer_ms={}
+            )
 
         # ---------------------------------------------------------------------
         # PHASE 1: HTTP Verification
@@ -197,6 +209,7 @@ class PreflightPipeline:
         # ---------------------------------------------------------------------
         logger.info(f"[{job_id}] Phase 1: Preflight Oracle Validation")
         oracle_start = time.time()
+        classification = None
         try:
             from core.llm.safe_client import SafeLLMClient
             from core.rag.prompts import PREFLIGHT_ORACLE_PROMPT
@@ -212,12 +225,18 @@ class PreflightPipeline:
 
             is_possible = oracle_data.get("is_possible", True)
             if not is_possible:
-                reason = oracle_data.get("reasoning", "Unknown logical constraint")
-                return PreflightResult(
-                    success=False, recipe=None, source="oracle_gatekeeper",
-                    warnings=[f"Feasibility Failure: {reason}"],
-                    total_ms=int((time.time() - start_time) * 1000), layer_ms=layer_ms
-                )
+                if byos_active:
+                    logger.warning(
+                        f"[{job_id}] Oracle rejected intent but BYOS session is active — overriding feasibility gate"
+                    )
+                    warnings.append("Oracle feasibility overridden by BYOS session")
+                else:
+                    reason = oracle_data.get("reasoning", "Unknown logical constraint")
+                    return PreflightResult(
+                        success=False, recipe=None, source="oracle_gatekeeper",
+                        warnings=[f"Feasibility Failure: {reason}"],
+                        total_ms=int((time.time() - start_time) * 1000), layer_ms=layer_ms
+                    )
 
             # Store oracle findings for downstream consumption
             auth_required = oracle_data.get("auth_required", False)

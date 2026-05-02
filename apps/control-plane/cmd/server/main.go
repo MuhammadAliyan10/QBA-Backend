@@ -412,7 +412,14 @@ func main() {
 	//     StreamManager initializes JetStream for real-time telemetry SSE.
 	tm := temporal.Wrap(temporalClient)
 	streamMgr := streaming.NewStreamManager(nc, db.GetDB())
+	
+	// Start the data accumulator for webhooks
+	if err := streaming.StartDataSubscriber(natsURL); err != nil {
+		log.Printf("[Error] Failed to start data subscriber: %v", err)
+	}
+
 	executeCtrl := controllers.NewExecuteController(db.GetDB(), tm, logicValidator)
+	credentialCtrl := controllers.NewCredentialController(db.GetDB())
 
 	// 8. Setup Gin Router
 	r := gin.Default()
@@ -475,6 +482,11 @@ func main() {
 	protected.POST("/v1/jobs/:id/cancel", workflowCtrl.HandleCancelJob)
 	protected.GET("/v1/jobs/:id/logs", workflowCtrl.HandleGetJobLogs)
 	protected.POST("/v1/jobs/:id/resume", workflowCtrl.HandleResumeJob)
+
+	// Credentials Vault (BYOS encrypted session storage)
+	protected.POST("/v1/credentials", credentialCtrl.HandleCreate)
+	protected.GET("/v1/credentials", credentialCtrl.HandleList)
+	protected.DELETE("/v1/credentials/:id", credentialCtrl.HandleDelete)
 
 	protected.GET("/v1/execute/:job_id/stream", streamMgr.HandleSSE)
 

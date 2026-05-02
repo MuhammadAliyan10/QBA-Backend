@@ -15,7 +15,9 @@ The pipeline catches StateDesyncException, re-harvests, and re-plans.
 """
 
 import asyncio
+import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -106,8 +108,9 @@ class GoalExecutor:
     def __init__(self, context: BrowserContext, job_id: str = ""):
         self.context = context
         self.job_id = job_id
-        self.active_page: Optional[Page] = None
+        self.active_tabs: Dict[str, Page] = {}
         self._smart_finder_cache: Dict[int, Any] = {}
+        self.max_concurrent_tabs = int(os.getenv("MAX_CONCURRENT_TABS", "5"))
 
     # ------------------------------------------------------------------
     # SMART FINDER ACCESSOR
@@ -126,63 +129,128 @@ class GoalExecutor:
 
     async def execute_epoch(self, epoch: EpochPlan, active_page: Page) -> EpochReport:
         """
-        Execute all tactical intents in an epoch sequentially.
-
-        Raises StateDesyncException if a major state change is detected,
-        aborting the remainder of the epoch so the pipeline can re-plan.
+        Execute all tactical intents in an epoch. Supports parallel batching.
         """
-        self.active_page = active_page
-        pre_url = active_page.url
-        pre_tab_count = len(self.context.pages)
+        # Register the primary page
+        primary_id = "primary"
+        if primary_id not in self.active_tabs:
+            self.active_tabs[primary_id] = active_page
 
         report = EpochReport(
             success=True,
             strategic_objective=epoch.strategic_objective,
             is_final=epoch.is_final_step,
         )
+        
+        # Check if this epoch is a fan-out intent (simple heuristic for parallel)
+        is_fan_out = any(g.action in (ActionEnum.NEW_TAB, ActionEnum.SWITCH_TAB) for g in epoch.intents) and len(epoch.intents) > 3
 
-        for goal in epoch.intents:
-            logger.info(
-                f"[GoalExecutor] [{goal.goal_id}] {goal.action.value} → "
-                f"intent='{goal.intent}' value='{goal.value}'"
-            )
-
-            await NervousSystem.publish_update(
-                self.job_id, "RUNNING",
-                f"[Epoch] {goal.action.value}: {goal.intent or goal.value}",
-                goal.goal_id,
-            )
-
-            result = await self._execute_single(goal)
-            report.results.append(result)
-
-            if not result.success:
-                report.success = False
-                report.error = result.error
-                break
-
-            # --- State Desync Detection ---
-            await self._detect_desync(goal, pre_url, pre_tab_count)
-
-            # Update references for next iteration
-            pre_url = self.active_page.url
+        if is_fan_out:
+            logger.info(f"[GoalExecutor] Fan-out intent detected. Executing {len(epoch.intents)} goals concurrently.")
+            batch_results = await self._execute_parallel_batch(epoch.intents, active_page)
+            for res in batch_results:
+                report.results.append(res)
+                if res.extracted_data is not None:
+                    # simplistic store mapping for batch
+                    report.extracted_data.setdefault("batch_data", []).append(res.extracted_data)
+                if not res.success:
+                    report.success = False
+                    report.error = res.error
+        else:
+            current_page = active_page
+            pre_url = current_page.url
             pre_tab_count = len(self.context.pages)
 
-            # Collect extracted data
-            if result.extracted_data is not None and goal.store_as:
-                report.extracted_data[goal.store_as] = result.extracted_data
+            for goal in epoch.intents:
+                logger.info(
+                    f"[GoalExecutor] [{goal.goal_id}] {goal.action.value} → "
+                    f"intent='{goal.intent}' value='{goal.value}'"
+                )
+
+                await NervousSystem.publish_update(
+                    self.job_id, "RUNNING",
+                    f"[Epoch] {goal.action.value}: {goal.intent or goal.value}",
+                    goal.goal_id,
+                )
+
+                result = await self._execute_single(goal, current_page)
+                report.results.append(result)
+
+                if not result.success:
+                    report.success = False
+                    report.error = result.error
+                    break
+
+                # --- State Desync Detection ---
+                await self._detect_desync(goal, current_page, pre_url, pre_tab_count)
+
+                # Update references for next iteration
+                pre_url = current_page.url
+                pre_tab_count = len(self.context.pages)
+
+                if result.extracted_data is not None and goal.store_as:
+                    report.extracted_data[goal.store_as] = result.extracted_data
+                    # Fire-and-forget to NATS
+                    asyncio.create_task(NervousSystem.publish(
+                        f"quanta.data.extracted.{self.job_id}", 
+                        json.dumps({goal.store_as: result.extracted_data})
+                    ))
 
         # Verify expected transition
         if report.success and epoch.expected_outcome:
-            report.transition_verified = await self._verify_transition(epoch.expected_outcome)
+            report.transition_verified = await self._verify_transition(epoch.expected_outcome, active_page)
 
         return report
+
+    async def _execute_parallel_batch(self, goals: List[GoalAction], base_page: Page) -> List[GoalResult]:
+        semaphore = asyncio.Semaphore(self.max_concurrent_tabs)
+        results = []
+        
+        async def _bounded_execute(goal: GoalAction, context_id: str):
+            async with semaphore:
+                page = None
+                try:
+                    if goal.action == ActionEnum.NEW_TAB and goal.value:
+                        page = await self.context.new_page()
+                        self.active_tabs[context_id] = page
+                        await page.goto(goal.value, wait_until="domcontentloaded", timeout=self.NAVIGATION_WAIT_MS)
+                        
+                        # Execute extraction or other actions defined in this parallel goal
+                        # Here we assume a composite intent or we treat NEW_TAB as the entry
+                        res = await self._execute_single(goal, page)
+                        return res
+                    else:
+                        return await self._execute_single(goal, base_page)
+                except Exception as exc:
+                    return GoalResult(goal_id=goal.goal_id, success=False, error=str(exc))
+                finally:
+                    if page and not page.is_closed():
+                        await page.close()
+                    if context_id in self.active_tabs:
+                        del self.active_tabs[context_id]
+
+        tasks = [_bounded_execute(goal, f"tab_{i}_{goal.goal_id}") for i, goal in enumerate(goals)]
+        completed = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for c in completed:
+            if isinstance(c, GoalResult):
+                results.append(c)
+                if c.extracted_data is not None:
+                    # Fire-and-forget to NATS
+                    asyncio.create_task(NervousSystem.publish(
+                        f"quanta.data.extracted.{self.job_id}", 
+                        json.dumps(c.extracted_data)
+                    ))
+            elif isinstance(c, Exception):
+                results.append(GoalResult(goal_id="unknown", success=False, error=str(c)))
+                
+        return results
 
     # ------------------------------------------------------------------
     # SINGLE INTENT DISPATCH
     # ------------------------------------------------------------------
 
-    async def _execute_single(self, goal: GoalAction) -> GoalResult:
+    async def _execute_single(self, goal: GoalAction, page: Page) -> GoalResult:
         start = time.time()
         try:
             handler = self._ACTION_DISPATCH.get(goal.action)
@@ -191,7 +259,7 @@ class GoalExecutor:
                     goal_id=goal.goal_id, success=False,
                     error=f"Unsupported action: {goal.action.value}",
                 )
-            result = await handler(self, goal)
+            result = await handler(self, goal, page)
             result.duration_ms = int((time.time() - start) * 1000)
             result.action = goal.action.value
             return result
@@ -210,11 +278,10 @@ class GoalExecutor:
     # ACTION HANDLERS
     # ------------------------------------------------------------------
 
-    async def _action_click(self, goal: GoalAction) -> GoalResult:
-        element = await self._resolve_intent(goal)
+    async def _action_click(self, goal: GoalAction, page: Page) -> GoalResult:
+        element = await self._resolve_intent(goal, page)
         await element.scroll_into_view_if_needed()
 
-        # Auto-promote: if LLM emitted click with a value on an input, treat as type
         if goal.value:
             tag = await element.evaluate("el => el.tagName.toLowerCase()")
             if tag in ("input", "textarea"):
@@ -225,7 +292,7 @@ class GoalExecutor:
                 await element.click()
                 await element.fill("")
                 await element.type(goal.value, delay=30)
-                await self.active_page.wait_for_timeout(self.ACTION_SETTLE_MS)
+                await page.wait_for_timeout(self.ACTION_SETTLE_MS)
                 return GoalResult(goal_id=goal.goal_id, success=True)
 
         try:
@@ -239,11 +306,11 @@ class GoalExecutor:
                 await element.click(force=True, timeout=5000)
             else:
                 raise
-        await self.active_page.wait_for_timeout(self.ACTION_SETTLE_MS)
+        await page.wait_for_timeout(self.ACTION_SETTLE_MS)
         return GoalResult(goal_id=goal.goal_id, success=True)
 
-    async def _action_type(self, goal: GoalAction) -> GoalResult:
-        element = await self._resolve_intent(goal)
+    async def _action_type(self, goal: GoalAction, page: Page) -> GoalResult:
+        element = await self._resolve_intent(goal, page)
         await element.scroll_into_view_if_needed()
         try:
             await element.click(timeout=5000)
@@ -251,22 +318,22 @@ class GoalExecutor:
             await element.click(force=True, timeout=5000)
         await element.fill("")
         await element.type(goal.value or "", delay=30)
-        await self.active_page.wait_for_timeout(self.ACTION_SETTLE_MS)
+        await page.wait_for_timeout(self.ACTION_SETTLE_MS)
         return GoalResult(goal_id=goal.goal_id, success=True)
 
-    async def _action_select_option(self, goal: GoalAction) -> GoalResult:
-        element = await self._resolve_intent(goal)
+    async def _action_select_option(self, goal: GoalAction, page: Page) -> GoalResult:
+        element = await self._resolve_intent(goal, page)
         await element.select_option(label=goal.value)
-        await self.active_page.wait_for_timeout(self.ACTION_SETTLE_MS)
+        await page.wait_for_timeout(self.ACTION_SETTLE_MS)
         return GoalResult(goal_id=goal.goal_id, success=True)
 
-    async def _action_extract_text(self, goal: GoalAction) -> GoalResult:
-        element = await self._resolve_intent(goal)
+    async def _action_extract_text(self, goal: GoalAction, page: Page) -> GoalResult:
+        element = await self._resolve_intent(goal, page)
         text = await element.inner_text()
         return GoalResult(goal_id=goal.goal_id, success=True, extracted_data=text.strip())
 
-    async def _action_extract_list(self, goal: GoalAction) -> GoalResult:
-        element = await self._resolve_intent(goal)
+    async def _action_extract_list(self, goal: GoalAction, page: Page) -> GoalResult:
+        element = await self._resolve_intent(goal, page)
         items = await element.query_selector_all("li, tr, [role='listitem'], article")
         texts = []
         for item in items[:50]:
@@ -276,8 +343,8 @@ class GoalExecutor:
                 texts.append(stripped)
         return GoalResult(goal_id=goal.goal_id, success=True, extracted_data=texts)
 
-    async def _action_extract_table(self, goal: GoalAction) -> GoalResult:
-        element = await self._resolve_intent(goal)
+    async def _action_extract_table(self, goal: GoalAction, page: Page) -> GoalResult:
+        element = await self._resolve_intent(goal, page)
         rows = await element.query_selector_all("tr")
         table_data: List[List[str]] = []
         for row in rows[:100]:
@@ -289,42 +356,42 @@ class GoalExecutor:
             table_data.append(row_data)
         return GoalResult(goal_id=goal.goal_id, success=True, extracted_data=table_data)
 
-    async def _action_hover(self, goal: GoalAction) -> GoalResult:
-        element = await self._resolve_intent(goal)
+    async def _action_hover(self, goal: GoalAction, page: Page) -> GoalResult:
+        element = await self._resolve_intent(goal, page)
         await element.hover()
-        await self.active_page.wait_for_timeout(self.ACTION_SETTLE_MS)
+        await page.wait_for_timeout(self.ACTION_SETTLE_MS)
         return GoalResult(goal_id=goal.goal_id, success=True)
 
-    async def _action_check(self, goal: GoalAction) -> GoalResult:
-        element = await self._resolve_intent(goal)
+    async def _action_check(self, goal: GoalAction, page: Page) -> GoalResult:
+        element = await self._resolve_intent(goal, page)
         is_checked = await element.is_checked()
         if not is_checked:
             await element.click()
-        await self.active_page.wait_for_timeout(self.ACTION_SETTLE_MS)
+        await page.wait_for_timeout(self.ACTION_SETTLE_MS)
         return GoalResult(goal_id=goal.goal_id, success=True)
 
-    async def _action_navigate(self, goal: GoalAction) -> GoalResult:
+    async def _action_navigate(self, goal: GoalAction, page: Page) -> GoalResult:
         target_url = goal.value
         if not target_url:
             return GoalResult(goal_id=goal.goal_id, success=False, error="Navigate requires a URL in 'value'.")
-        await self.active_page.goto(target_url, wait_until="domcontentloaded", timeout=self.NAVIGATION_WAIT_MS)
+        await page.goto(target_url, wait_until="domcontentloaded", timeout=self.NAVIGATION_WAIT_MS)
         return GoalResult(goal_id=goal.goal_id, success=True)
 
-    async def _action_scroll(self, goal: GoalAction) -> GoalResult:
+    async def _action_scroll(self, goal: GoalAction, page: Page) -> GoalResult:
         direction = (goal.value or "down").lower()
         delta = -500 if direction == "up" else 500
-        await self.active_page.mouse.wheel(0, delta)
-        await self.active_page.wait_for_timeout(self.ACTION_SETTLE_MS)
+        await page.mouse.wheel(0, delta)
+        await page.wait_for_timeout(self.ACTION_SETTLE_MS)
         return GoalResult(goal_id=goal.goal_id, success=True)
 
-    async def _action_wait(self, goal: GoalAction) -> GoalResult:
+    async def _action_wait(self, goal: GoalAction, page: Page) -> GoalResult:
         ms = 2000
         if goal.value and goal.value.isdigit():
             ms = min(int(goal.value), 10000)
-        await self.active_page.wait_for_timeout(ms)
+        await page.wait_for_timeout(ms)
         return GoalResult(goal_id=goal.goal_id, success=True)
 
-    async def _action_switch_tab(self, goal: GoalAction) -> GoalResult:
+    async def _action_switch_tab(self, goal: GoalAction, page: Page) -> GoalResult:
         pages = self.context.pages
         idx = goal.target_tab_index
         if idx < 0 or idx >= len(pages):
@@ -332,21 +399,21 @@ class GoalExecutor:
                 goal_id=goal.goal_id, success=False,
                 error=f"Tab index {idx} out of range (have {len(pages)} tabs).",
             )
-        self.active_page = pages[idx]
-        await self.active_page.bring_to_front()
-        await self.active_page.wait_for_timeout(self.ACTION_SETTLE_MS)
-        self._smart_finder_cache.pop(id(self.active_page), None)
+        target_page = pages[idx]
+        await target_page.bring_to_front()
+        await target_page.wait_for_timeout(self.ACTION_SETTLE_MS)
+        self._smart_finder_cache.pop(id(target_page), None)
         return GoalResult(goal_id=goal.goal_id, success=True)
 
-    async def _action_new_tab(self, goal: GoalAction) -> GoalResult:
+    async def _action_new_tab(self, goal: GoalAction, page: Page) -> GoalResult:
         new_page = await self.context.new_page()
         if goal.value:
             await new_page.goto(goal.value, wait_until="domcontentloaded", timeout=self.NAVIGATION_WAIT_MS)
-        self.active_page = new_page
-        await self.active_page.bring_to_front()
+        self.active_tabs[f"tab_{goal.goal_id}"] = new_page
+        await new_page.bring_to_front()
         return GoalResult(goal_id=goal.goal_id, success=True)
 
-    async def _action_close_tab(self, goal: GoalAction) -> GoalResult:
+    async def _action_close_tab(self, goal: GoalAction, page: Page) -> GoalResult:
         pages = self.context.pages
         idx = goal.target_tab_index
         if idx < 0 or idx >= len(pages):
@@ -355,18 +422,13 @@ class GoalExecutor:
                 error=f"Tab index {idx} out of range.",
             )
         target = pages[idx]
-        if target == self.active_page:
-            remaining = [p for p in pages if p != target]
-            self.active_page = remaining[0] if remaining else None
         await target.close()
-        if self.active_page:
-            await self.active_page.bring_to_front()
         return GoalResult(goal_id=goal.goal_id, success=True)
 
-    async def _action_press_key(self, goal: GoalAction) -> GoalResult:
+    async def _action_press_key(self, goal: GoalAction, page: Page) -> GoalResult:
         key = goal.value or "Enter"
-        await self.active_page.keyboard.press(key)
-        await self.active_page.wait_for_timeout(self.ACTION_SETTLE_MS)
+        await page.keyboard.press(key)
+        await page.wait_for_timeout(self.ACTION_SETTLE_MS)
         return GoalResult(goal_id=goal.goal_id, success=True)
 
     # Dispatch table
@@ -392,14 +454,11 @@ class GoalExecutor:
     # SEMANTIC LATE BINDING
     # ------------------------------------------------------------------
 
-    async def _resolve_intent(self, goal: GoalAction) -> ElementHandle:
+    async def _resolve_intent(self, goal: GoalAction, page: Page) -> ElementHandle:
         """
         Resolve a semantic intent string to a live ElementHandle via SmartFinder.
-
-        Raises StateDesyncException if the element cannot be found, signaling
-        the pipeline to re-harvest and re-plan.
         """
-        finder = self._get_smart_finder(self.active_page)
+        finder = self._get_smart_finder(page)
         result = await finder.find(
             intent=goal.intent,
             timeout=self.SMART_FINDER_TIMEOUT_MS,
@@ -411,7 +470,7 @@ class GoalExecutor:
         raise StateDesyncException(
             reason=f"SmartFinder failed to resolve intent: '{goal.intent}'",
             goal_id=goal.goal_id,
-            context={"url": self.active_page.url, "intent": goal.intent},
+            context={"url": page.url, "intent": goal.intent},
         )
 
     # ------------------------------------------------------------------
@@ -419,21 +478,17 @@ class GoalExecutor:
     # ------------------------------------------------------------------
 
     async def _detect_desync(
-        self, goal: GoalAction, pre_url: str, pre_tab_count: int
+        self, goal: GoalAction, page: Page, pre_url: str, pre_tab_count: int
     ) -> None:
         """
         Check if a navigation or new-tab event fired unexpectedly.
-
-        Only actions that are NOT explicitly navigational should trigger
-        a desync when the URL changes. If CLICK caused a navigation, that
-        is a legitimate state transition the pipeline should re-harvest for.
         """
         navigational_actions = {ActionEnum.NAVIGATE, ActionEnum.SWITCH_TAB, ActionEnum.NEW_TAB}
 
         if goal.action in navigational_actions:
             return
 
-        current_url = self.active_page.url
+        current_url = page.url
         current_tab_count = len(self.context.pages)
 
         url_changed = current_url != pre_url
@@ -456,20 +511,20 @@ class GoalExecutor:
     # TRANSITION VERIFICATION
     # ------------------------------------------------------------------
 
-    async def _verify_transition(self, expected_outcome: str) -> bool:
+    async def _verify_transition(self, expected_outcome: str, page: Page) -> bool:
         """Best-effort check that the epoch's expected outcome occurred."""
         outcome_lower = expected_outcome.lower()
         deadline = time.time() + 5.0
 
         while time.time() < deadline:
             if "url" in outcome_lower:
-                url_lower = self.active_page.url.lower()
+                url_lower = page.url.lower()
                 for token in outcome_lower.split():
                     if "/" in token and token in url_lower:
                         return True
 
             try:
-                title = await self.active_page.title()
+                title = await page.title()
                 if any(word in title.lower() for word in outcome_lower.split() if len(word) > 3):
                     return True
             except Exception:

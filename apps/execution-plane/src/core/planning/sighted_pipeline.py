@@ -314,7 +314,6 @@ class SightedPipeline:
                             )
 
                             report = await executor.execute_epoch(epoch_plan, active_page)
-                            active_page = executor.active_page
 
                             result.goals_completed += sum(
                                 1 for r in report.results if r.success
@@ -356,7 +355,6 @@ class SightedPipeline:
                         remaining = context.pages
                         if remaining:
                             active_page = remaining[-1]
-                            executor.active_page = active_page
                             await active_page.bring_to_front()
 
                         try:
@@ -451,7 +449,6 @@ class SightedPipeline:
                                 "act",
                             )
                             report = await executor.execute_epoch(epoch_plan, active_page)
-                            active_page = executor.active_page
 
                             result.goals_completed += sum(
                                 1 for r in report.results if r.success
@@ -512,7 +509,6 @@ class SightedPipeline:
                             remaining_pages = context.pages
                             if remaining_pages:
                                 active_page = remaining_pages[-1]
-                                executor.active_page = active_page
                                 await active_page.bring_to_front()
 
                             try:

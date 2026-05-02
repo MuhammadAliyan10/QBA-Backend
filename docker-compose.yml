@@ -199,6 +199,9 @@ services:
       - SKIP_AUTH=true
       - DEV_USER_ID=${DEV_USER_ID:-00000000-0000-0000-0000-000000000000}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET:-test_secret_123}
+      # AES-256-GCM master key for the Credentials Vault — MUST be exactly 32 bytes.
+      # Override in production via secrets manager; never commit real keys.
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-quanta-dev-key-00000000000000000}
       # Local dev DB (avoid leaking host DATABASE_URL into container)
       - DATABASE_URL=postgresql://postgres:postgres@app_postgres:5432/quanta
     depends_on:

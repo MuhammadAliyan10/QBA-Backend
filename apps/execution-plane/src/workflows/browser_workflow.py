@@ -117,22 +117,35 @@ class BrowserWorkflow:
 
                 # --- STEP 2: EXECUTION ---
                 engine_mode = payload.get("engine_settings", {}).get("engine_mode", "legacy")
-
                 if engine_mode == "sighted":
                     workflow.logger.info("[Workflow] Dispatching sighted execution activity")
-                    return await workflow.execute_activity(
+                    result = await workflow.execute_activity(
                         "sighted_execution_activity",
                         payload,
                         start_to_close_timeout=timedelta(seconds=DEFAULT_ACTIVITY_TIMEOUT_SEC),
                         retry_policy=retry_policy,
                     )
                 else:
-                    return await workflow.execute_activity(
+                    result = await workflow.execute_activity(
                         "browser_automation_activity",
                         payload,
                         start_to_close_timeout=timedelta(seconds=DEFAULT_ACTIVITY_TIMEOUT_SEC),
                         retry_policy=retry_policy,
                     )
+
+                # --- STEP 3: WEBHOOK DISPATCH ---
+                job_id = payload.get("job_id")
+                callback_url = payload.get("callback_url")
+                if job_id and callback_url:
+                    workflow.logger.info(f"[Workflow] Dispatching webhook to {callback_url}")
+                    await workflow.execute_activity(
+                        "DispatchWebhookActivity",
+                        args=[job_id, callback_url, "quanta-webhook-secret"],
+                        start_to_close_timeout=timedelta(seconds=60),
+                        retry_policy=RetryPolicy(maximum_attempts=5)
+                    )
+
+                return result
 
             except ActivityError as e:
                 # Unwrap the error - Temporal wraps activity exceptions in ActivityError

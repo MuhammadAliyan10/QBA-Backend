@@ -54,7 +54,6 @@ from core.selector.utils.math_utils import (
     normalize_text,
     compute_element_signature
 )
-from core.GlassBox import GlassBoxEngine
 
 logger = logging.getLogger("smartFinderV2")
 
@@ -595,7 +594,6 @@ class SmartFinder:
         self.page = page
         self.vector_db = vector_db or MockVectorDB()
         self.ai_agent = ai_agent or MockAIAgent()
-        self.glass = GlassBoxEngine()
 
         # Remediation: C - VectorDB Degradation (INF_001)
         self.semantic_layer_available = True
