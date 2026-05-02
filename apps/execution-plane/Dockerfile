@@ -38,6 +38,15 @@ RUN pip install --user --no-cache-dir -r requirements.txt
 RUN python -m playwright install chromium
 
 # ==================================================
+# Pre-cache HuggingFace Sentence Transformer Model
+# ==================================================
+# CRITICAL: This MUST be its own layer AFTER pip install and BEFORE COPY . .
+# This ensures the ~90MB model is cached in a Docker layer and never
+# redownloads on code changes or HuggingFace 429 rate limits at runtime.
+ENV HF_HOME=/root/.cache/huggingface
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')" || echo "[WARN] HuggingFace rate-limited. Model will be downloaded at first runtime."
+
+# ==================================================
 # Stage 2: Production Runtime
 # ==================================================
 FROM python:3.10-slim
@@ -87,6 +96,9 @@ COPY --from=builder /root/.local /root/.local
 
 # Copy Playwright browsers from builder
 COPY --from=builder /root/.cache/ms-playwright /root/.cache/ms-playwright
+
+# Copy pre-cached HuggingFace model from builder (eliminates runtime downloads)
+COPY --from=builder /root/.cache/huggingface /root/.cache/huggingface
 
 # ==================================================
 # CRITICAL: Copy Prisma Schema and Generate Client
@@ -138,6 +150,9 @@ ENV PYTHONFAULTHANDLER=1
 
 # Playwright configuration
 ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+
+# HuggingFace model cache (pre-baked at build time)
+ENV HF_HOME=/root/.cache/huggingface
 
 # Application defaults (override in deployment)
 ENV TEMPORAL_HOST=localhost:7233

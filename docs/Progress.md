@@ -59,6 +59,9 @@ This document serves as the master checklist and phase-by-phase tracker for the 
 - [x] Implemented Zombie Process Mitigation & Explicit Browser Closure
 - [x] Decoupled God Object (`activities.py`) into Modular Architecture (`core_workflow`, `navigation`, `extraction`, `telemetry`)
 - [x] Integrated Global PII Scrubber Shield into `SafeLLMClient`
+- [x] Created `quanta-cli` for Zero-Trace Local BYOS Generation
+- [x] Implemented BYOS Strict Schema Validator (Zero-Trust Go Decoder & XSS Shield)
+- [x] Docker Image Model Pre-caching (`all-MiniLM-L6-v2` baked into build layer)
 - [ ] Verify End-to-End Execution of "List My Courses" Objective
 
 ## Phase 7: DevOps & Production Rollout (Pending)
