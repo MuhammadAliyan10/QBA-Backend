@@ -430,8 +430,17 @@ async def browser_automation_activity(payload: dict) -> dict:
         elif target_domain:
              target_domain = SessionManager.extract_domain(target_domain)
 
-        session_data = None
-        if is_session_persistence_enabled() and target_domain:
+        # BYOS (Bring Your Own Session) Support: 
+        # Prioritize sessionState explicitly passed from the Control Plane (Vaulted sessions)
+        session_data = payload.get("sessionState")
+        
+        if session_data:
+             await NervousSystem.publish_update(
+                 job_id, "RUNNING",
+                 f"[Session] Using vaulted session (BYOS)",
+                 "init"
+             )
+        elif is_session_persistence_enabled() and target_domain:
             try:
                 session_manager = await get_session_manager()
                 if session_manager:

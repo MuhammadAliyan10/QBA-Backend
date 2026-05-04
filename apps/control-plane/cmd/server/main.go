@@ -91,19 +91,27 @@ func (c *Consumer) StartListening() {
 		switch event.Status {
 		case "RUNNING":
 			now := time.Now()
-			db.DB.Model(&models.Job{}).Where("id = ?", jobID).Updates(map[string]interface{}{
+			updates := map[string]interface{}{
 				"status":     "RUNNING",
 				"updated_at": &now,
-			})
+			}
+			if event.Data != "" {
+				updates["result"] = event.Data
+			}
+			db.DB.Model(&models.Job{}).Where("id = ?", jobID).Updates(updates)
 			metrics.DecrementJobQueueCount("queued")
 			metrics.IncrementJobQueueCount("running")
 		case "COMPLETED":
 			now := time.Now()
-			db.DB.Model(&models.Job{}).Where("id = ?", jobID).Updates(map[string]interface{}{
+			updates := map[string]interface{}{
 				"status":       "COMPLETED",
 				"completed_at": &now,
 				"updated_at":   &now,
-			})
+			}
+			if event.Data != "" {
+				updates["result"] = event.Data
+			}
+			db.DB.Model(&models.Job{}).Where("id = ?", jobID).Updates(updates)
 			metrics.DecrementJobQueueCount("running")
 			metrics.IncrementJobQueueCount("completed")
 

@@ -64,11 +64,24 @@ class NervousSystem:
             await nc.publish(f"job.update.{job_id}", proto_data)
 
             # 2. TELEMETRY: Mirror as JSON to SSE Stream
-            telemetry_payload = json.dumps({
-                "type": "log",
-                "message": f"[{status}] {message}"
+            log_payload = json.dumps({
+                "type": "LOG",
+                "level": "info" if status != "FAILED" else "error",
+                "message": message,
+                "nodeId": node_id,
+                "status": status.lower(),
+                "data": data
             })
-            await cls.publish(f"quanta.telemetry.{job_id}", telemetry_payload)
+            await cls.publish(f"quanta.telemetry.{job_id}", log_payload)
+
+            # Send terminal status
+            if status in ["COMPLETED", "FAILED"]:
+                workflow_payload = json.dumps({
+                    "type": "WORKFLOW_STATUS",
+                    "status": "success" if status == "COMPLETED" else "failed",
+                    "message": message
+                })
+                await cls.publish(f"quanta.telemetry.{job_id}", workflow_payload)
 
             logger.info(f"Published event to job.update.{job_id}: {status}")
 

@@ -33,26 +33,31 @@ Your primary directive is to emit HIGH-LEVEL INTENTS. You are completely decoupl
 DO NOT provide CSS selectors, XPath strings, raw DOM paths, or Playwright locator syntax. The execution engine's SmartFinder will ground your intent against the live DOM and Accessibility Tree.
 
 Allowed Intent Types (intent_type):
-- set_location, set_dates, set_guests, submit_search
-- open_filters, set_max_price, apply_filters, click_nth_map_listing
 - navigate (go to URL), scroll (page movement)
+- extract (harvest text/data from an element or section)
+- click_element (generic click on button, link, or icon)
+- type_text (input string into a field)
+- select_option (choose from dropdown)
+- wait_for (pause for specific state/element)
+- set_location, set_dates, submit_search (Legacy travel-specific intents)
 
 CRITICAL RULES:
-1. Every subtask must be intent-based. The execution layer resolves intents into actions.
-2. Provide deterministic `arguments` relevant to the intent type.
-3. Define strict `success_criteria` to verify if the step worked (e.g. "URL changes to include ?f=", or "Listings grid appears").
+1. Every subtask must be intent-based.
+2. For 'extract' intents, specify exactly what to harvest in the 'arguments' (e.g. {"target": "repository name", "format": "text"}).
+3. Use 'click_element' for navigation through menus or sidebar links.
+4. Define strict `success_criteria` to verify if the step worked (e.g. "Text 'MuhammadAliyan10' is visible", or "URL includes '/settings'").
 
 JSON SCHEMA TEMPLATE:
 {
   "subtasks": [
     {
-      "step_id": "string (Unique identifier for the step, e.g. 'step_1_set_location')",
-      "intent_type": "string (e.g., 'set_location', 'open_filters', 'click_nth_map_listing')",
+      "step_id": "string",
+      "intent_type": "string",
       "arguments": {
-          "key": "value (Parameters required for the intent)"
+          "key": "value"
       },
-      "success_criteria": "string (Expected state change)",
-      "fallback_intents": ["string (Alternative intents if this fails)"],
+      "success_criteria": "string",
+      "fallback_intents": ["string"],
       "timeout_ms": 5000,
       "max_retries": 2
     }

@@ -204,6 +204,7 @@ services:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-quanta-dev-key-00000000000000000}
       # Local dev DB (avoid leaking host DATABASE_URL into container)
       - DATABASE_URL=postgresql://postgres:postgres@app_postgres:5432/quanta
+      - ALLOW_LOCAL_TARGETS=${ALLOW_LOCAL_TARGETS:-false}
     depends_on:
       nats:
         condition: service_started

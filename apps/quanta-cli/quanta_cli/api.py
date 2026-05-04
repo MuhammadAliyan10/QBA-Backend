@@ -1,6 +1,8 @@
 import os
 import json
 import httpx
+import rich
+import typer
 from typing import Dict, Any
 
 def get_api_key() -> str:
@@ -20,13 +22,105 @@ def get_api_key() -> str:
             pass
     return ""
 
+def save_api_key(api_key: str) -> str:
+    """Securely saves the API key to ~/.quanta/config.json."""
+    config_dir = os.path.expanduser("~/.quanta")
+    os.makedirs(config_dir, exist_ok=True)
+    config_path = os.path.join(config_dir, "config.json")
+    
+    config = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r") as f:
+                config = json.load(f)
+        except Exception:
+            pass
+            
+    config["api_key"] = api_key
+    
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+        
+    return config_path
+
+async def execute_mission(target_url: str, credential_id: str, prompt: str) -> str:
+    """Triggers an execution mission on the Quanta Control Plane."""
+    api_url = os.getenv("QUANTA_API_URL", "http://localhost:8080").rstrip("/")
+    api_key = get_api_key()
+
+    if not api_key:
+        raise ValueError("QUANTA_API_KEY not found. Please run 'quanta config set-key' first.")
+
+    payload = {
+        "target_url": target_url,
+        "credential_id": credential_id,
+        "objective": prompt
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            f"{api_url}/v1/execute",
+            json=payload,
+            headers=headers
+        )
+        
+        if response.status_code == 401:
+            raise Exception("Unauthorized: Invalid API Key. Update it using 'quanta config set-key'.")
+        elif response.status_code >= 400:
+            try:
+                body = response.json()
+                err_code = body.get("error", "unknown_error")
+                err_msg = body.get("message", response.text)
+                err_details = body.get("details", "")
+                
+                rich.print(f"\n[bold red]Control Plane Error ({response.status_code}): {err_code}[/bold red]")
+                rich.print(f"[yellow]Message:[/yellow] {err_msg}")
+                if err_details:
+                    rich.print(f"[dim]Details: {err_details}[/dim]")
+            except:
+                rich.print(f"\n[bold red]Control Plane Error ({response.status_code}): {response.text}[/bold red]")
+            raise typer.Exit(code=1)
+            
+        data = response.json()
+        return data.get("job_id") or data.get("id", "UNKNOWN_JOB_ID")
+
+async def stream_mission_logs(job_id: str):
+    """Streams real-time logs for a specific job using SSE."""
+    api_url = os.getenv("QUANTA_API_URL", "http://localhost:8080").rstrip("/")
+    api_key = get_api_key()
+    
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "text/event-stream",
+    }
+    
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream("GET", f"{api_url}/v1/execute/{job_id}/stream", headers=headers) as response:
+            if response.status_code != 200:
+                raise Exception(f"Failed to connect to log stream: {response.status_code}")
+                
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    try:
+                        data = json.loads(line[6:])
+                        yield data
+                    except json.JSONDecodeError:
+                        continue
+                elif line.strip() == "":
+                    continue
+
 async def upload_session(target_url: str, session_data: Dict[str, Any]) -> str:
     """Uploads the extracted BYOS state to the Quanta Vault."""
     api_url = os.getenv("QUANTA_API_URL", "http://localhost:8080").rstrip("/")
     api_key = get_api_key()
 
     if not api_key:
-        raise ValueError("QUANTA_API_KEY not found in environment or ~/.quanta/config.json")
+        raise ValueError("QUANTA_API_KEY not found. Please run 'quanta config set-key' first.")
 
     # Extract domain for name
     from urllib.parse import urlparse
@@ -43,15 +137,17 @@ async def upload_session(target_url: str, session_data: Dict[str, Any]) -> str:
         "Content-Type": "application/json"
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"{api_url}/v1/credentials",
-                json=payload,
-                headers=headers
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data.get("credential_id") or data.get("id", "UNKNOWN_ID")
-    except httpx.HTTPError as e:
-        raise Exception(f"Failed to upload session to Quanta Control Plane: {e}")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{api_url}/v1/credentials",
+            json=payload,
+            headers=headers
+        )
+        
+        if response.status_code == 401:
+            raise Exception("Unauthorized: Invalid API Key. Update it using 'quanta config set-key'.")
+        elif response.status_code >= 400:
+            raise Exception(f"Control Plane Error ({response.status_code}): {response.text}")
+            
+        data = response.json()
+        return data.get("credential_id") or data.get("id", "UNKNOWN_ID")
