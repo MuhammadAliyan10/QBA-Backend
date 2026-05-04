@@ -151,3 +151,43 @@ async def upload_session(target_url: str, session_data: Dict[str, Any]) -> str:
             
         data = response.json()
         return data.get("credential_id") or data.get("id", "UNKNOWN_ID")
+async def upload_vault_session(target_url: str, session_state: Dict[str, Any]) -> str:
+    """
+    Uploads the extracted browser session state to the secure Vault.
+    Returns the generated vault_id.
+    """
+    api_url = os.getenv("QUANTA_API_URL", "http://localhost:8080").rstrip("/")
+    api_key = get_api_key()
+
+    if not api_key:
+        raise ValueError("QUANTA_API_KEY not found. Please run 'quanta config set-key' first.")
+
+    payload = {
+        "target_url": target_url,
+        "session_state": session_state
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(
+            f"{api_url}/v1/vault/sessions",
+            json=payload,
+            headers=headers
+        )
+        
+        if response.status_code == 401:
+            raise Exception("Unauthorized: Invalid API Key. Update it using 'quanta config set-key'.")
+        elif response.status_code >= 400:
+            try:
+                body = response.json()
+                msg = body.get("message", response.text)
+                raise Exception(f"Vault Error ({response.status_code}): {msg}")
+            except:
+                raise Exception(f"Vault Error ({response.status_code}): {response.text}")
+            
+        data = response.json()
+        return data.get("vault_id") or data.get("id", "UNKNOWN_ID")

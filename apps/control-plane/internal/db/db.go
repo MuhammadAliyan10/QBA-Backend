@@ -57,6 +57,13 @@ func Init() {
 
 	log.Println("[Database] ✓ Connected to PostgreSQL (GORM with PrepareStmt=false)")
 
+	// 1. New Go-Only tables (not managed by Prisma)
+	if err := DB.AutoMigrate(&models.VaultSession{}); err != nil {
+		log.Printf("[Database] ⚠ VaultSession AutoMigrate failed: %v", err)
+	} else {
+		log.Println("[Database] ✓ VaultSession schema synchronized")
+	}
+
 	// Verify tables exist (Prisma manages the schema via migrations,
 	// we only check connectivity — DO NOT AutoMigrate to avoid conflicts with Prisma)
 	if err := verifySchema(); err != nil {
@@ -89,6 +96,7 @@ func verifySchema() error {
 		{&models.Job{}, "jobs"},
 		{&models.UserProfile{}, "user_profiles"},
 		{&models.Workflow{}, "workflows"},
+		{&models.VaultSession{}, "vault_sessions"},
 	}
 
 	for _, t := range tables {

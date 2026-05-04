@@ -5,67 +5,70 @@ from playwright.async_api import async_playwright
 
 async def launch_auth_browser(url: str) -> Dict[str, Any]:
     """
-    Launches a headful browser, waits for the user to close it,
-    and extracts the storage state right before it dies.
+    Launches a headful browser, monitors for authenticated session state,
+    and auto-closes the browser once a session is detected.
     """
     rich.print(f"[bold cyan]Launching secure BYOS container for:[/bold cyan] {url}")
     rich.print("[bold yellow]INSTRUCTIONS:[/bold yellow]")
     rich.print("1. Authenticate into the target website.")
-    rich.print("2. [bold red]Close the browser window[/bold red] when you are finished.")
-    rich.print("Waiting for browser to be closed...\n")
+    rich.print("2. [bold green]The system will auto-detect your login[/bold green] and close the browser.")
+    rich.print("Monitoring for session capture...\n")
 
     session_state = {}
     
     async with async_playwright() as p:
-        # Launch headful native Chrome to bypass macOS Gatekeeper blocks
+        # Launch headful native Chrome
         browser = await p.chromium.launch(headless=False, channel="chrome")
         context = await browser.new_context()
         page = await context.new_page()
 
-        # Handle Tear-Down Race Condition
-        # We need to extract the state BEFORE the context is fully destroyed.
-        # Playwright's page.on("close") is synchronous and doesn't easily allow awaiting storage_state().
-        # Instead, we will poll page.is_closed() in a loop, but also hook into the close event 
-        # to trigger the extraction immediately if possible.
-        
-        extraction_done = asyncio.Event()
-
-        async def _extract_state():
-            nonlocal session_state
-            if not session_state: # Only extract once
-                try:
-                    # Explicitly extract to memory (zero-trace), no path argument
-                    session_state = await context.storage_state()
-                except Exception as e:
-                    rich.print(f"[dim]State extraction note: {e}[/dim]")
-            extraction_done.set()
-
-        # Hook the close event to attempt extraction before it's too late
-        page.on("close", lambda p: asyncio.create_task(_extract_state()))
-
         try:
             await page.goto(url)
             
-            # Wait for the user to close the page
-            while not page.is_closed():
-                await asyncio.sleep(0.5)
+            # Poll for session state
+            max_wait = 300 # 5 minutes max
+            waited = 0
+            
+            while waited < max_wait:
+                if page.is_closed():
+                    break
+                    
+                state = await context.storage_state()
+                cookies = state.get("cookies", [])
                 
-            # Ensure extraction completed via the event hook
-            await asyncio.wait_for(extraction_done.wait(), timeout=5.0)
-
+                # Heuristic: If we have auth-looking cookies, we assume login success.
+                auth_indicators = ["session", "auth", "login", "user", "token", "sid", "jwt", "logged_in"]
+                is_authenticated = False
+                
+                if len(cookies) > 0:
+                    for cookie in cookies:
+                        name = cookie["name"].lower()
+                        if any(ind in name for ind in auth_indicators):
+                            # Ensure it's a substantive token, not just a CSRF stub
+                            if len(cookie["value"]) > 16:
+                                is_authenticated = True
+                                break
+                
+                if is_authenticated:
+                    rich.print("[bold green]✔ Session detected! Auto-capturing and closing...[/bold green]")
+                    session_state = state
+                    break
+                
+                await asyncio.sleep(1)
+                waited += 1
+                
         except Exception as e:
-            # If the user closed the entire browser instead of just the page, 
-            # we might get an error here. We should still try to extract if we haven't.
+            # If the user closes the browser manually, capture whatever we have
             if not session_state:
-                 try:
-                     session_state = await context.storage_state()
-                 except:
-                     pass
+                try:
+                    session_state = await context.storage_state()
+                except:
+                    pass
         finally:
             if browser.is_connected():
                 await browser.close()
 
     if not session_state:
-        raise Exception("Failed to extract session state. The browser may have closed too abruptly.")
+        raise Exception("Session capture failed. Browser closed or timed out before authentication.")
 
     return session_state

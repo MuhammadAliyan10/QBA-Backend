@@ -437,6 +437,7 @@ func main() {
 
 	executeCtrl := controllers.NewExecuteController(db.GetDB(), tm, logicValidator)
 	credentialCtrl := controllers.NewCredentialController(db.GetDB())
+	vaultCtrl := controllers.NewVaultController(db.GetDB())
 
 	// 8. Setup Gin Router
 	r := gin.Default()
@@ -504,6 +505,10 @@ func main() {
 	protected.POST("/v1/credentials", credentialCtrl.HandleCreate)
 	protected.GET("/v1/credentials", credentialCtrl.HandleList)
 	protected.DELETE("/v1/credentials/:id", credentialCtrl.HandleDelete)
+
+	// Vault Sessions (Encrypted browser state for 'quanta auth')
+	protected.POST("/v1/vault/sessions", vaultCtrl.HandleUploadSession)
+	protected.GET("/v1/vault/sessions", vaultCtrl.HandleListSessions)
 
 	protected.GET("/v1/execute/:job_id/stream", streamMgr.HandleSSE)
 

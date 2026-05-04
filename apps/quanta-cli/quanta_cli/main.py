@@ -4,7 +4,7 @@ import rich
 import sys
 
 from .browser import launch_auth_browser
-from .api import upload_session, get_api_key, save_api_key, execute_mission, stream_mission_logs
+from .api import upload_vault_session, get_api_key, save_api_key, execute_mission, stream_mission_logs
 
 app = typer.Typer(
     name="quanta",
@@ -51,12 +51,12 @@ def auth(url: str):
 
         # 2. Vault Upload (API)
         rich.print("\n[bold cyan]Uploading session state to Quanta Vault...[/bold cyan]")
-        credential_id = asyncio.run(upload_session(url, session_state))
+        vault_id = asyncio.run(upload_vault_session(url, session_state))
 
         # 3. Output
-        rich.print(f"\n[bold green]Success! Session successfully vaulted.[/bold green]")
-        rich.print(f"Credential ID: [bold white]{credential_id}[/bold white]")
-        rich.print(f"You can now pass this ID to the Quanta Execution Plane API.")
+        rich.print(f"\n[bold green]✔ Session Vaulted Successfully![/bold green]")
+        rich.print(f"Vault ID: [bold cyan]{vault_id}[/bold cyan]")
+        rich.print(f"You can now use this ID for agentic execution missions.")
 
     except Exception as e:
         rich.print(f"\n[bold red]Operation Failed:[/bold red] {e}")
