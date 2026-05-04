@@ -834,42 +834,48 @@ async def browser_automation_activity(payload: dict) -> dict:
                     elif action == "EXTRACT":
                         intent = step_params["intent"]
                         attr = step_params.get("attribute") # None = text content
-    
+                        
                         raw_value = None
                         is_network_extraction = False
-    
-                        # PHASE 3 FIX: Network First Intent-Key Matching
+
+                        # PHASE 1: DOM Finding (Primary Source of Truth)
+                        dom_result = await finder.find(intent, timeout=5000, scan_mode="all")
+                        
+                        # PHASE 2: Network Sniffing (Secondary Fallback/Optimization)
+                        best_sniffer_payload = None
+                        best_sniffer_score = -1
+                        
                         if global_sniffer and hasattr(global_sniffer, 'captured_responses') and global_sniffer.captured_responses:
-    
-                            best_payload = None
-                            best_score = -1
-                            # Basic tokenization of user intent ("price of iphone" -> ["price", "iphone"])
                             intent_keywords = [k.lower() for k in intent.split() if len(k) > 2]
-    
+                            total_keys = len(intent_keywords)
+                            
                             for resp in global_sniffer.captured_responses:
                                 data_str = str(resp["data"]).lower()
-                                # Score based on how many intent keywords exist in the raw JSON payload
-                                score = sum(3 for k in intent_keywords if k in data_str)
-                                # Tie-breaker: larger payloads are typically more data rich
-                                score += (resp["size"] / 10000.0)
-    
-                                if score > best_score:
-                                    best_score = score
-                                    best_payload = resp["data"]
-    
-                            if best_payload is not None and best_score > 0:
-                                raw_value = best_payload
-                                is_network_extraction = True
-                                global_sniffer.captured_responses = [] # Prevent stale reads
-                                logger.info(f"[{job_id}] Extracted '{intent}' via JSON API Interception (bypassing DOM). Score: {best_score:.2f}")
-    
-                        if not is_network_extraction:
-                            # PHASE 3: Algorithmic DOM Parsing Fallback
-                            result = await finder.find(intent, timeout=10000, scan_mode="all")
-                            if not result.found:
-                                raise Exception(f"Element not found: {intent}")
-                            element = result.element
-    
+                                matches = sum(1 for k in intent_keywords if k in data_str)
+                                
+                                # Semantic Match Ratio (0.0 to 1.0)
+                                match_ratio = matches / total_keys if total_keys > 0 else 0
+                                
+                                # Noise Penalty: Subtract points if the payload is massive but matches are few
+                                noise_penalty = (len(data_str) / 50000.0) if match_ratio < 0.5 else 0
+                                
+                                final_score = (match_ratio * 10) - noise_penalty
+                                
+                                if final_score > best_sniffer_score:
+                                    best_sniffer_score = final_score
+                                    best_sniffer_payload = resp["data"]
+
+                        # PHASE 3: Arbitration Logic
+                        # Override DOM ONLY if Sniffer has extreme confidence (>90% match)
+                        sniffer_threshold = 9.0 
+                        
+                        if best_sniffer_payload is not None and (not dom_result.found or best_sniffer_score >= sniffer_threshold):
+                            raw_value = best_sniffer_payload
+                            is_network_extraction = True
+                            global_sniffer.captured_responses = [] # Prevent stale reads
+                            logger.info(f"[{job_id}] Sniffer Override: '{intent}' (Score: {best_sniffer_score:.2f})")
+                        elif dom_result.found:
+                            element = dom_result.element
                             if attr:
                                 raw_value = await element.get_attribute(attr)
                             else:
@@ -879,13 +885,13 @@ async def browser_automation_activity(payload: dict) -> dict:
                                     raw_value = await element.evaluate("""el => {
                                         const headers = Array.from(el.querySelectorAll('th')).map((th, i) => th.innerText.trim() || `col_${i+1}`);
                                         const rows = Array.from(el.querySelectorAll('tbody tr, tr')).filter(tr => !tr.querySelector('th'));
-    
+
                                         let keys = headers;
                                         if (keys.length === 0 && rows.length > 0) {
                                             const maxCols = Math.max(...rows.map(tr => (tr.cells ? tr.cells.length : 0)));
                                             keys = Array.from({length: maxCols}, (_, i) => `col_${i+1}`);
                                         }
-    
+
                                         const result = [];
                                         for (const row of rows) {
                                             if (!row.cells) continue;
@@ -901,7 +907,9 @@ async def browser_automation_activity(payload: dict) -> dict:
                                         return result;
                                     }""")
                                 else:
-                                    raw_value = await element.text_content()
+                                    raw_value = await element.inner_text()
+                        else:
+                            raise Exception(f"Extraction failed: '{intent}' not found in DOM or Network.")
     
                         # TYPE INFERENCE
                         typed_type = "string"

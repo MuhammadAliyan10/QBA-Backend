@@ -101,20 +101,42 @@ def build_dag_from_directions(plan: QuantaPlan, context: str) -> Recipe:
             "OPEN_RESULT": ActionType.OPEN_RESULT,
             "OPEN_SECTION": ActionType.CLICK,
             "CLICK_INTENT": ActionType.CLICK,
+            "CLICK": ActionType.CLICK,
+            "CLICK_ELEMENT": ActionType.CLICK,
             "TYPE_TEXT": ActionType.TYPE,
+            "TYPE": ActionType.TYPE,
+            "FILL": ActionType.TYPE,
             "SELECT_OPTION": ActionType.SELECT,
+            "SELECT": ActionType.SELECT,
             "EXTRACT": ActionType.EXTRACT,
+            "EXTRACT_DATA": ActionType.EXTRACT,
+            "EXTRACT_TEXT": ActionType.EXTRACT,
+            "HARVEST": ActionType.EXTRACT,
             "VERIFY": ActionType.WAIT,
+            "WAIT": ActionType.WAIT,
+            "WAIT_FOR": ActionType.WAIT,
         }
 
-        # Fallback to generic action if no strict mapping
-        mapped_type = action_map.get(action_intent) or ActionType(direction.intent_type) if direction.intent_type in [e.value for e in ActionType] else ActionType.CLICK
+        # Case-insensitive lookup
+        mapped_type = action_map.get(action_intent)
+        if not mapped_type:
+             # Try direct value matching
+             for val in ActionType:
+                 if val.value.upper() == action_intent:
+                     mapped_type = val
+                     break
+        
+        if not mapped_type:
+            mapped_type = ActionType.CLICK
 
+        # Resolve semantic intent from arguments or fallback to success criteria
+        semantic_intent = direction.arguments.get("target") or direction.arguments.get("description") or direction.success_criteria
+        
         action = Action(
             seq=1,
             type=mapped_type,
-            intent=direction.intent_type,
-            value=str(direction.arguments.get("value", "")),
+            intent=semantic_intent,
+            value=str(direction.arguments.get("value", direction.arguments.get("text", ""))),
             data=direction.arguments
         )
 

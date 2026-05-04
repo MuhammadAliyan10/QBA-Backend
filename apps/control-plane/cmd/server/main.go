@@ -87,16 +87,20 @@ func (c *Consumer) StartListening() {
 			jobID, event.Status, event.NodeId, event.Message)
 
 		// 4.5 UPDATE JOB STATUS IN DATABASE
-		// Map NATS event statuses to Prisma job_status enum values
 		switch event.Status {
 		case "RUNNING":
 			now := time.Now()
 			updates := map[string]interface{}{
-				"status":     "RUNNING",
-				"updated_at": &now,
+				"Status":    "RUNNING",
+				"UpdatedAt": &now,
 			}
 			if event.Data != "" {
-				updates["result"] = event.Data
+				var dataMap map[string]interface{}
+				if err := json.Unmarshal([]byte(event.Data), &dataMap); err == nil {
+					updates["Result"] = dataMap
+				} else {
+					updates["Result"] = event.Data
+				}
 			}
 			db.DB.Model(&models.Job{}).Where("id = ?", jobID).Updates(updates)
 			metrics.DecrementJobQueueCount("queued")
@@ -104,12 +108,17 @@ func (c *Consumer) StartListening() {
 		case "COMPLETED":
 			now := time.Now()
 			updates := map[string]interface{}{
-				"status":       "COMPLETED",
-				"completed_at": &now,
-				"updated_at":   &now,
+				"Status":      "COMPLETED",
+				"CompletedAt": &now,
+				"UpdatedAt":   &now,
 			}
 			if event.Data != "" {
-				updates["result"] = event.Data
+				var dataMap map[string]interface{}
+				if err := json.Unmarshal([]byte(event.Data), &dataMap); err == nil {
+					updates["Result"] = dataMap
+				} else {
+					updates["Result"] = event.Data
+				}
 			}
 			db.DB.Model(&models.Job{}).Where("id = ?", jobID).Updates(updates)
 			metrics.DecrementJobQueueCount("running")
