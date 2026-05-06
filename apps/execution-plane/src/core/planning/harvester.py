@@ -106,10 +106,10 @@ HARVEST_JS = """
 # PYTHON WRAPPER
 # =============================================================================
 
-async def harvest_context(page: Page) -> Dict[str, Any]:
+async def harvest_context(page: Page, network_payloads: Optional[List[Dict]] = None) -> Dict[str, Any]:
     """
     Executes the aggressive pruning HARVEST_JS script on the live page.
-    Returns a flattened, semantic JSON map of the DOM.
+    Returns a flattened, semantic JSON map of the DOM, bundled with network context.
     """
     start_time = time.time()
     logger.info(f"[Harvester] Starting semantic harvest on {page.url}")
@@ -126,6 +126,7 @@ async def harvest_context(page: Page) -> Dict[str, Any]:
             "title": await page.title(),
             "timestamp": time.time(),
             "dom_map": semantic_map,
+            "network_payloads": network_payloads or [],
             "metrics": {
                 "duration_ms": duration
             }

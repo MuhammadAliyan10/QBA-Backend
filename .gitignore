@@ -1,39 +1,23 @@
 # =======================================================
 # 🐍 PYTHON (Execution Plane)
 # =======================================================
-__pycache__/
-*.py[cod]
-*$py.class
 venv/
 .venv/
-.pytest_cache/
-htmlcov/
+*.py[cod]
+*$py.class
 .coverage
-*.egg-info/
-develop-eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
+*.egg-info
 
 # Playwright / Browsers (These are massive!)
-test-results/
-playwright-report/
-blob-report/
-.ms-playwright/
 /tmp/test_*.png
 /tmp/test_*.mp4
 
 # =======================================================
 # 🐹 GO (Control Plane)
 # =======================================================
-bin/
-dist/
 *.exe
 *.test
 *.out
-vendor/
 
 # Specific Binary Names (Linux/Mac don't use .exe)
 main
@@ -46,11 +30,6 @@ execution-plane
 # ⚛️ NODE / NEXT.JS (Frontend)
 # =======================================================
 node_modules/
-.next/
-dist/
-build/
-out/
-.vercel/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -80,12 +59,6 @@ crash.*.log
 # 🐳 DOCKER & LOCAL DEV
 # =======================================================
 docker-compose.override.yml
-.data/
-.minio-data/
-postgres_data/
-redis_data/
-nats_data/
-qdrant_data/
 
 # =======================================================
 # 🔐 SECRETS & ENV
@@ -100,8 +73,6 @@ qdrant_data/
 # =======================================================
 # 🖥️ IDE / EDITOR
 # =======================================================
-.vscode/
-.idea/
 *.swp
 *.swo
 .DS_Store

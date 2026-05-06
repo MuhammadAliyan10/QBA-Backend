@@ -148,15 +148,11 @@ YOUR MANDATE:
 5. Set "is_final_step": true ONLY when the global objective is fully satisfied.
 6. If the objective is impossible from this state, set "feasible": false with a reason.
 
-CRITICAL — PREREQUISITE SEQUENCING:
-- Analyze the DOM map carefully. If elements needed for later steps DO NOT EXIST YET, you MUST create them first.
-- Example: If the objective says "add 3 tasks then mark one complete", and the todo list is EMPTY, you MUST emit "type" actions to ADD the tasks BEFORE trying to click/check any todo item.
-- NEVER emit a click/check action targeting an element that does not exist in the current DOM map.
-
-CRITICAL — FAILURE ADAPTATION:
-- If the EXECUTION HISTORY contains "[DESYNC]" entries, a previous plan FAILED because an element was not found.
-- You MUST NOT repeat the same plan that caused the DESYNC. Analyze WHY it failed and emit a DIFFERENT strategy.
-- Common cause: trying to interact with elements that don't exist yet. Solution: emit actions to CREATE those elements first.
+CRITICAL — NETWORK-FIRST EXTRACTION:
+- You are provided with a "NETWORK CONTEXT" containing intercepted JSON payloads from the application's background APIs.
+- PRIORITIZE extracting data from these JSON payloads. They are more reliable than the obfuscated DOM.
+- Only fall back to the DOM if the network context does not contain the required data.
+- If you find the data in the network context, use "extract_text" and specify the semantic path or value you found.
 
 VALID ACTIONS: click, type, select_option, extract_text, extract_list, extract_table, navigate, scroll, wait, hover, check, switch_tab, new_tab, close_tab, press_key.
 
@@ -191,6 +187,9 @@ URL: {active_url}
 Title: {active_title}
 --- Semantic Map ---
 {active_dom}
+
+## NETWORK CONTEXT (JSON Payloads)
+{network_context}
 
 ## BACKGROUND TABS
 {background_tabs}
@@ -254,6 +253,10 @@ class SightedPlanner:
         if len(dom_text) > self.MAX_DOM_CHARS:
             dom_text = dom_text[: self.MAX_DOM_CHARS] + "\n... (truncated)"
 
+        network_text = json.dumps(active_tab.get("network_payloads", []), indent=2)
+        if len(network_text) > 4000:
+             network_text = network_text[:4000] + "\n... (truncated)"
+
         user_prompt = USER_PROMPT_TEMPLATE.format(
             objective=objective,
             history="\n".join(history[-5:]) if history else "Start of mission.",
@@ -261,6 +264,7 @@ class SightedPlanner:
             active_url=active_tab.get("url", ""),
             active_title=active_tab.get("title", ""),
             active_dom=dom_text,
+            network_context=network_text,
             background_tabs=bg_lines,
         )
 

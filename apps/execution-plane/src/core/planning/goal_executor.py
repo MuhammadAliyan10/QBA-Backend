@@ -30,6 +30,7 @@ from playwright.async_api import (
 )
 
 from core.planning.sighted_planner import GoalAction, ActionEnum, EpochPlan
+from core.extraction.validator import validate_extraction
 from core.nervous_system import NervousSystem
 
 logger = logging.getLogger("goalExecutor")
@@ -189,12 +190,19 @@ class GoalExecutor:
                 pre_tab_count = len(self.context.pages)
 
                 if result.extracted_data is not None and goal.store_as:
-                    report.extracted_data[goal.store_as] = result.extracted_data
-                    # Fire-and-forget to NATS
-                    asyncio.create_task(NervousSystem.publish(
-                        f"quanta.data.extracted.{self.job_id}", 
-                        json.dumps({goal.store_as: result.extracted_data})
-                    ))
+                    # PHASE 5: Strict Type Validation
+                    validated_data = validate_extraction({goal.store_as: result.extracted_data})
+                    clean_value = validated_data.get(goal.store_as)
+                    
+                    if clean_value is not None:
+                        report.extracted_data[goal.store_as] = clean_value
+                        # Fire-and-forget to NATS
+                        asyncio.create_task(NervousSystem.publish(
+                            f"quanta.data.extracted.{self.job_id}", 
+                            json.dumps({goal.store_as: clean_value})
+                        ))
+                    else:
+                        logger.warning(f"[GoalExecutor] [{goal.goal_id}] Extraction rejected by validator: {result.extracted_data}")
 
         # Verify expected transition
         if report.success and epoch.expected_outcome:

@@ -7,7 +7,6 @@
 .terraform.lock.hcl
 
 # Terraform directory
-.terraform/
 
 # Sensitive variable files
 *.tfvars

@@ -32,6 +32,7 @@ from core.planning.harvester import harvest_context
 from core.planning.sighted_planner import SightedPlanner, EpochPlan, GoalAction
 from core.planning.goal_executor import GoalExecutor, EpochReport, StateDesyncException
 from core.planning.token_telemetry import instrument_planner, finalize_telemetry
+from core.network_sniffer import NetworkSniffer
 from core.nervous_system import NervousSystem
 
 logger = logging.getLogger("sightedPipeline")
@@ -208,6 +209,7 @@ class SightedPipeline:
         headless: bool = True,
         proxy: Optional[Dict] = None,
         enable_cache: bool = True,
+        sniffer: Optional[NetworkSniffer] = None,
     ) -> SightedPipelineResult:
         """Execute the JIT Epoch loop until the objective is met or budget exhausted."""
         start_time = time.time()
@@ -271,6 +273,11 @@ class SightedPipeline:
                         logger.info(f"[Pipeline] Injected {len(cookies)} session cookies")
 
                 page = await context.new_page()
+
+                # PHASE 4: Hybrid Network Sniffer
+                target_domain = urlparse(url).hostname
+                active_sniffer = sniffer or NetworkSniffer(target_domain=target_domain)
+                await active_sniffer.start_sniffing(page)
 
                 # Instrument planner with token telemetry
                 if user_id or job_id:
@@ -378,14 +385,17 @@ class SightedPipeline:
                             # --- 1. SENSE: Harvest Active Tab ---
                             await NervousSystem.publish_update(
                                 job_id, "RUNNING",
-                                f"[{epoch_label}] Harvesting DOM...", "sense",
+                                f"[{epoch_label}] Harvesting DOM & Network context...", "sense",
                             )
 
                             all_pages = context.pages
                             if active_page not in all_pages:
                                 active_page = all_pages[-1] if all_pages else page
 
-                            harvest = await harvest_context(active_page)
+                            # Get sniffed payloads
+                            network_payloads = active_sniffer.get_captured_responses() if active_sniffer else []
+                            
+                            harvest = await harvest_context(active_page, network_payloads=network_payloads)
 
                             active_tab_data = {
                                 "index": all_pages.index(active_page),
@@ -394,6 +404,7 @@ class SightedPipeline:
                                 "dom_map_text": json.dumps(
                                     harvest.get("dom_map"), indent=2
                                 )[:6000],
+                                "network_payloads": harvest.get("network_payloads", []),
                             }
 
                             background_tabs = []

@@ -15,7 +15,7 @@ Key Features:
 
 import logging
 import json
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 from playwright.async_api import Page, Request, Response
 
 logger = logging.getLogger("networkSniffer")
@@ -83,35 +83,34 @@ class NetworkSniffer:
                 try:
                     content_type = response.headers.get("content-type", "")
                     if "application/json" in content_type.lower():
-                        data = await response.json()
-                        if isinstance(data, (list, dict)):
-                            data_str = str(data)
-                            payload_size = len(data_str)
+                        try:
+                            data = await response.json()
+                            if isinstance(data, (list, dict)):
+                                data_str = str(data)
+                                payload_size = len(data_str)
 
-                            # 1. Size Heuristic (Telemetry is small, product lists are large)
-                            if payload_size < 300:
-                                return
+                                # Endpoint Heuristic (Drop obvious tracking endpoints)
+                                lower_url = url.lower()
+                                if any(k in lower_url for k in ['track', 'analytics', 'telemetry', 'beacon', 'metrics', 'log']):
+                                    return
 
-                            # 2. Endpoint Heuristic (Drop obvious tracking endpoints)
-                            lower_url = url.lower()
-                            if any(k in lower_url for k in ['track', 'analytics', 'telemetry', 'beacon', 'metrics', 'log']):
-                                return
+                                self.captured_responses.append({
+                                    "url": url,
+                                    "method": request.method,
+                                    "data": data,
+                                    "size": payload_size
+                                })
 
-                            self.captured_responses.append({
-                                "url": url,
-                                "method": request.method,
-                                "data": data,
-                                "size": payload_size
-                            })
+                                # 3. Memory Cap (Keep top 20 largest payloads)
+                                self.captured_responses.sort(key=lambda x: x["size"], reverse=True)
+                                if len(self.captured_responses) > 20:
+                                    self.captured_responses.pop()
 
-                            # 3. Memory Cap (Keep only top 5 largest payloads)
-                            self.captured_responses.sort(key=lambda x: x["size"], reverse=True)
-                            if len(self.captured_responses) > 5:
-                                self.captured_responses.pop()
-
-                            logger.info(f"[Network] Intercepted highly-ranked JSON Payload ({payload_size} bytes) from {url}")
-                except Exception as e:
-                    logger.debug(f"[Network] Failed to parse JSON response: {e}")
+                                logger.debug(f"[Network] Intercepted JSON Payload ({payload_size} bytes) from {url}")
+                        except Exception:
+                            pass # Body might be inaccessible or already consumed
+                except Exception:
+                    pass # Network error or response closed
 
             # Check for Rate Limits
             elif status == 429:
@@ -176,19 +175,12 @@ class NetworkSniffer:
             logger.info(f"🔓 Sniffer captured verified credentials for {method} {url}")
 
     def get_session_context(self) -> Optional[Dict]:
-        """
-        Returns the verified session data.
-
-        Returns:
-            Dictionary containing:
-                - url: The API endpoint
-                - method: HTTP method
-                - headers: Authentication headers (case-preserved)
-                - payload: Request body (JSON dict, raw string, or None)
-
-            Returns None if no session was captured.
-        """
+        """Returns the verified auth session data."""
         return self.verified_session
+
+    def get_captured_responses(self) -> List[Dict]:
+        """Returns the list of intercepted JSON payloads."""
+        return self.captured_responses
 
 
 # Example usage (for testing)
