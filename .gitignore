@@ -18,13 +18,13 @@ venv/
 *.exe
 *.test
 *.out
+# Specific Binaries (Targeted to avoid ignoring source folders)
+apps/control-plane/control-plane
+apps/execution-plane/execution-plane
 
-# Specific Binary Names (Linux/Mac don't use .exe)
-main
-server
-control-plane
-app
-execution-plane
+# Ignore large artifacts and caches
+apps/execution-plane/artifacts/*.json
+apps/execution-plane/src/.quanta_cache/
 
 # =======================================================
 # ⚛️ NODE / NEXT.JS (Frontend)

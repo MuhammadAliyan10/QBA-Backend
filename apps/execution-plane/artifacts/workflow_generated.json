@@ -1,0 +1,871 @@
+{
+  "schema_url": null,
+  "version": "2.0.0",
+  "metadata": {
+    "id": "rec_0c6e8e08",
+    "name": "Auto-generated: Find a premium stay in Dubai for 2 adult",
+    "description": "",
+    "author": "unknown",
+    "created_at": "2026-04-25T06:00:10.874943Z",
+    "updated_at": null,
+    "tags": [],
+    "priority": "normal",
+    "estimated_duration_ms": 60000,
+    "max_cost_usd": 10.0
+  },
+  "config": {
+    "resource_tier": "standard",
+    "browser": "chromium",
+    "viewport": {
+      "width": 1920,
+      "height": 1080
+    },
+    "locale": "en-US",
+    "timezone": "America/New_York",
+    "geolocation": null,
+    "proxy": {
+      "enabled": false,
+      "type": "datacenter",
+      "region": "us",
+      "sticky_session": true
+    },
+    "stealth_mode": true,
+    "record_video": false,
+    "screenshot_on_error": true
+  },
+  "inputs": {
+    "required": [],
+    "optional": []
+  },
+  "context": {
+    "description": "Shared state across all nodes",
+    "initial": {}
+  },
+  "nodes": [
+    {
+      "id": "node_step_1_set_location",
+      "type": "action",
+      "name": "set_location",
+      "description": "",
+      "execution": {
+        "timeout_ms": 5000,
+        "retry": {
+          "max_attempts": 2,
+          "backoff_strategy": "exponential",
+          "initial_delay_ms": 1000,
+          "max_delay_ms": 10000,
+          "retry_on": [
+            "timeout",
+            "element_not_found",
+            "network_error"
+          ]
+        },
+        "resource_tier": "standard",
+        "isolation": "shared"
+      },
+      "pre_conditions": [],
+      "post_conditions": [
+        {
+          "id": "verify_step_1_set_location",
+          "check": "custom_verification",
+          "selector": null,
+          "pattern": null,
+          "value": "Location search field contains 'Dubai'",
+          "path": null,
+          "condition": null,
+          "conditions": null,
+          "on_failure": null,
+          "on_success": null
+        }
+      ],
+      "actions": [
+        {
+          "seq": 1,
+          "type": "find_and_click",
+          "intent": "set_location",
+          "url": null,
+          "value": "",
+          "selector": null,
+          "timeout_ms": null,
+          "store_in": null,
+          "clear_first": false,
+          "mask_in_logs": false,
+          "wait_strategy": null,
+          "response_guard": null,
+          "mutation_guard": null,
+          "path": null,
+          "message": null,
+          "event": null,
+          "data": {
+            "location": "Dubai"
+          },
+          "state": null,
+          "format": null,
+          "content": null,
+          "columns": null,
+          "max_rows": null
+        }
+      ],
+      "state_policy": null,
+      "telemetry": null,
+      "on_success": "node_step_2_set_dates",
+      "on_failure": "node_failure",
+      "on_timeout": "node_timeout",
+      "loop": null,
+      "evaluate": null,
+      "gate": null,
+      "checkpoint": null,
+      "parallel": null
+    },
+    {
+      "id": "node_step_2_set_dates",
+      "type": "action",
+      "name": "set_dates",
+      "description": "",
+      "execution": {
+        "timeout_ms": 5000,
+        "retry": {
+          "max_attempts": 2,
+          "backoff_strategy": "exponential",
+          "initial_delay_ms": 1000,
+          "max_delay_ms": 10000,
+          "retry_on": [
+            "timeout",
+            "element_not_found",
+            "network_error"
+          ]
+        },
+        "resource_tier": "standard",
+        "isolation": "shared"
+      },
+      "pre_conditions": [],
+      "post_conditions": [
+        {
+          "id": "verify_step_2_set_dates",
+          "check": "custom_verification",
+          "selector": null,
+          "pattern": null,
+          "value": "Dates are selected in the calendar picker",
+          "path": null,
+          "condition": null,
+          "conditions": null,
+          "on_failure": null,
+          "on_success": null
+        }
+      ],
+      "actions": [
+        {
+          "seq": 1,
+          "type": "find_and_click",
+          "intent": "set_dates",
+          "url": null,
+          "value": "",
+          "selector": null,
+          "timeout_ms": null,
+          "store_in": null,
+          "clear_first": false,
+          "mask_in_logs": false,
+          "wait_strategy": null,
+          "response_guard": null,
+          "mutation_guard": null,
+          "path": null,
+          "message": null,
+          "event": null,
+          "data": {
+            "start_date": "2026-06-10",
+            "end_date": "2026-06-15"
+          },
+          "state": null,
+          "format": null,
+          "content": null,
+          "columns": null,
+          "max_rows": null
+        }
+      ],
+      "state_policy": null,
+      "telemetry": null,
+      "on_success": "node_step_3_set_guests",
+      "on_failure": "node_failure",
+      "on_timeout": "node_timeout",
+      "loop": null,
+      "evaluate": null,
+      "gate": null,
+      "checkpoint": null,
+      "parallel": null
+    },
+    {
+      "id": "node_step_3_set_guests",
+      "type": "action",
+      "name": "set_guests",
+      "description": "",
+      "execution": {
+        "timeout_ms": 5000,
+        "retry": {
+          "max_attempts": 2,
+          "backoff_strategy": "exponential",
+          "initial_delay_ms": 1000,
+          "max_delay_ms": 10000,
+          "retry_on": [
+            "timeout",
+            "element_not_found",
+            "network_error"
+          ]
+        },
+        "resource_tier": "standard",
+        "isolation": "shared"
+      },
+      "pre_conditions": [],
+      "post_conditions": [
+        {
+          "id": "verify_step_3_set_guests",
+          "check": "custom_verification",
+          "selector": null,
+          "pattern": null,
+          "value": "Guests are selected correctly (2 adults, 1 pet)",
+          "path": null,
+          "condition": null,
+          "conditions": null,
+          "on_failure": null,
+          "on_success": null
+        }
+      ],
+      "actions": [
+        {
+          "seq": 1,
+          "type": "find_and_click",
+          "intent": "set_guests",
+          "url": null,
+          "value": "",
+          "selector": null,
+          "timeout_ms": null,
+          "store_in": null,
+          "clear_first": false,
+          "mask_in_logs": false,
+          "wait_strategy": null,
+          "response_guard": null,
+          "mutation_guard": null,
+          "path": null,
+          "message": null,
+          "event": null,
+          "data": {
+            "adults": 2,
+            "pets": 1
+          },
+          "state": null,
+          "format": null,
+          "content": null,
+          "columns": null,
+          "max_rows": null
+        }
+      ],
+      "state_policy": null,
+      "telemetry": null,
+      "on_success": "node_step_4_open_filters",
+      "on_failure": "node_failure",
+      "on_timeout": "node_timeout",
+      "loop": null,
+      "evaluate": null,
+      "gate": null,
+      "checkpoint": null,
+      "parallel": null
+    },
+    {
+      "id": "node_step_4_open_filters",
+      "type": "action",
+      "name": "open_filters",
+      "description": "",
+      "execution": {
+        "timeout_ms": 5000,
+        "retry": {
+          "max_attempts": 2,
+          "backoff_strategy": "exponential",
+          "initial_delay_ms": 1000,
+          "max_delay_ms": 10000,
+          "retry_on": [
+            "timeout",
+            "element_not_found",
+            "network_error"
+          ]
+        },
+        "resource_tier": "standard",
+        "isolation": "shared"
+      },
+      "pre_conditions": [],
+      "post_conditions": [
+        {
+          "id": "verify_step_4_open_filters",
+          "check": "custom_verification",
+          "selector": null,
+          "pattern": null,
+          "value": "Filters panel is open",
+          "path": null,
+          "condition": null,
+          "conditions": null,
+          "on_failure": null,
+          "on_success": null
+        }
+      ],
+      "actions": [
+        {
+          "seq": 1,
+          "type": "find_and_click",
+          "intent": "open_filters",
+          "url": null,
+          "value": "",
+          "selector": null,
+          "timeout_ms": null,
+          "store_in": null,
+          "clear_first": false,
+          "mask_in_logs": false,
+          "wait_strategy": null,
+          "response_guard": null,
+          "mutation_guard": null,
+          "path": null,
+          "message": null,
+          "event": null,
+          "data": {},
+          "state": null,
+          "format": null,
+          "content": null,
+          "columns": null,
+          "max_rows": null
+        }
+      ],
+      "state_policy": null,
+      "telemetry": null,
+      "on_success": "node_step_5_set_max_price",
+      "on_failure": "node_failure",
+      "on_timeout": "node_timeout",
+      "loop": null,
+      "evaluate": null,
+      "gate": null,
+      "checkpoint": null,
+      "parallel": null
+    },
+    {
+      "id": "node_step_5_set_max_price",
+      "type": "action",
+      "name": "set_max_price",
+      "description": "",
+      "execution": {
+        "timeout_ms": 5000,
+        "retry": {
+          "max_attempts": 2,
+          "backoff_strategy": "exponential",
+          "initial_delay_ms": 1000,
+          "max_delay_ms": 10000,
+          "retry_on": [
+            "timeout",
+            "element_not_found",
+            "network_error"
+          ]
+        },
+        "resource_tier": "standard",
+        "isolation": "shared"
+      },
+      "pre_conditions": [],
+      "post_conditions": [
+        {
+          "id": "verify_step_5_set_max_price",
+          "check": "custom_verification",
+          "selector": null,
+          "pattern": null,
+          "value": "Max price filter is set to $1,500",
+          "path": null,
+          "condition": null,
+          "conditions": null,
+          "on_failure": null,
+          "on_success": null
+        }
+      ],
+      "actions": [
+        {
+          "seq": 1,
+          "type": "find_and_click",
+          "intent": "set_max_price",
+          "url": null,
+          "value": "",
+          "selector": null,
+          "timeout_ms": null,
+          "store_in": null,
+          "clear_first": false,
+          "mask_in_logs": false,
+          "wait_strategy": null,
+          "response_guard": null,
+          "mutation_guard": null,
+          "path": null,
+          "message": null,
+          "event": null,
+          "data": {
+            "max_price": 1500
+          },
+          "state": null,
+          "format": null,
+          "content": null,
+          "columns": null,
+          "max_rows": null
+        }
+      ],
+      "state_policy": null,
+      "telemetry": null,
+      "on_success": "node_step_6_apply_filters",
+      "on_failure": "node_failure",
+      "on_timeout": "node_timeout",
+      "loop": null,
+      "evaluate": null,
+      "gate": null,
+      "checkpoint": null,
+      "parallel": null
+    },
+    {
+      "id": "node_step_6_apply_filters",
+      "type": "action",
+      "name": "apply_filters",
+      "description": "",
+      "execution": {
+        "timeout_ms": 5000,
+        "retry": {
+          "max_attempts": 2,
+          "backoff_strategy": "exponential",
+          "initial_delay_ms": 1000,
+          "max_delay_ms": 10000,
+          "retry_on": [
+            "timeout",
+            "element_not_found",
+            "network_error"
+          ]
+        },
+        "resource_tier": "standard",
+        "isolation": "shared"
+      },
+      "pre_conditions": [],
+      "post_conditions": [
+        {
+          "id": "verify_step_6_apply_filters",
+          "check": "custom_verification",
+          "selector": null,
+          "pattern": null,
+          "value": "Filters are applied correctly (rating 4.5+, entire place)",
+          "path": null,
+          "condition": null,
+          "conditions": null,
+          "on_failure": null,
+          "on_success": null
+        }
+      ],
+      "actions": [
+        {
+          "seq": 1,
+          "type": "find_and_click",
+          "intent": "apply_filters",
+          "url": null,
+          "value": "",
+          "selector": null,
+          "timeout_ms": null,
+          "store_in": null,
+          "clear_first": false,
+          "mask_in_logs": false,
+          "wait_strategy": null,
+          "response_guard": null,
+          "mutation_guard": null,
+          "path": null,
+          "message": null,
+          "event": null,
+          "data": {
+            "rating": "4.5+",
+            "listing_type": "entire_place"
+          },
+          "state": null,
+          "format": null,
+          "content": null,
+          "columns": null,
+          "max_rows": null
+        }
+      ],
+      "state_policy": null,
+      "telemetry": null,
+      "on_success": "node_step_7_navigate_to_map",
+      "on_failure": "node_failure",
+      "on_timeout": "node_timeout",
+      "loop": null,
+      "evaluate": null,
+      "gate": null,
+      "checkpoint": null,
+      "parallel": null
+    },
+    {
+      "id": "node_step_7_navigate_to_map",
+      "type": "action",
+      "name": "navigate",
+      "description": "",
+      "execution": {
+        "timeout_ms": 5000,
+        "retry": {
+          "max_attempts": 2,
+          "backoff_strategy": "exponential",
+          "initial_delay_ms": 1000,
+          "max_delay_ms": 10000,
+          "retry_on": [
+            "timeout",
+            "element_not_found",
+            "network_error"
+          ]
+        },
+        "resource_tier": "standard",
+        "isolation": "shared"
+      },
+      "pre_conditions": [],
+      "post_conditions": [
+        {
+          "id": "verify_step_7_navigate_to_map",
+          "check": "custom_verification",
+          "selector": null,
+          "pattern": null,
+          "value": "URL changes to include '/map'",
+          "path": null,
+          "condition": null,
+          "conditions": null,
+          "on_failure": null,
+          "on_success": null
+        }
+      ],
+      "actions": [
+        {
+          "seq": 1,
+          "type": "navigate",
+          "intent": "navigate",
+          "url": null,
+          "value": "",
+          "selector": null,
+          "timeout_ms": null,
+          "store_in": null,
+          "clear_first": false,
+          "mask_in_logs": false,
+          "wait_strategy": null,
+          "response_guard": null,
+          "mutation_guard": null,
+          "path": null,
+          "message": null,
+          "event": null,
+          "data": {
+            "url": "/map"
+          },
+          "state": null,
+          "format": null,
+          "content": null,
+          "columns": null,
+          "max_rows": null
+        }
+      ],
+      "state_policy": null,
+      "telemetry": null,
+      "on_success": "node_step_8_click_nth_map_listing",
+      "on_failure": "node_failure",
+      "on_timeout": "node_timeout",
+      "loop": null,
+      "evaluate": null,
+      "gate": null,
+      "checkpoint": null,
+      "parallel": null
+    },
+    {
+      "id": "node_step_8_click_nth_map_listing",
+      "type": "action",
+      "name": "click_nth_map_listing",
+      "description": "",
+      "execution": {
+        "timeout_ms": 5000,
+        "retry": {
+          "max_attempts": 2,
+          "backoff_strategy": "exponential",
+          "initial_delay_ms": 1000,
+          "max_delay_ms": 10000,
+          "retry_on": [
+            "timeout",
+            "element_not_found",
+            "network_error"
+          ]
+        },
+        "resource_tier": "standard",
+        "isolation": "shared"
+      },
+      "pre_conditions": [],
+      "post_conditions": [
+        {
+          "id": "verify_step_8_click_nth_map_listing",
+          "check": "custom_verification",
+          "selector": null,
+          "pattern": null,
+          "value": "2nd listing is clicked",
+          "path": null,
+          "condition": null,
+          "conditions": null,
+          "on_failure": null,
+          "on_success": null
+        }
+      ],
+      "actions": [
+        {
+          "seq": 1,
+          "type": "find_and_click",
+          "intent": "click_nth_map_listing",
+          "url": null,
+          "value": "",
+          "selector": null,
+          "timeout_ms": null,
+          "store_in": null,
+          "clear_first": false,
+          "mask_in_logs": false,
+          "wait_strategy": null,
+          "response_guard": null,
+          "mutation_guard": null,
+          "path": null,
+          "message": null,
+          "event": null,
+          "data": {
+            "listing_index": 2
+          },
+          "state": null,
+          "format": null,
+          "content": null,
+          "columns": null,
+          "max_rows": null
+        }
+      ],
+      "state_policy": null,
+      "telemetry": null,
+      "on_success": "node_step_9_extract_listing_info",
+      "on_failure": "node_failure",
+      "on_timeout": "node_timeout",
+      "loop": null,
+      "evaluate": null,
+      "gate": null,
+      "checkpoint": null,
+      "parallel": null
+    },
+    {
+      "id": "node_step_9_extract_listing_info",
+      "type": "action",
+      "name": "extract_listing_info",
+      "description": "",
+      "execution": {
+        "timeout_ms": 5000,
+        "retry": {
+          "max_attempts": 2,
+          "backoff_strategy": "exponential",
+          "initial_delay_ms": 1000,
+          "max_delay_ms": 10000,
+          "retry_on": [
+            "timeout",
+            "element_not_found",
+            "network_error"
+          ]
+        },
+        "resource_tier": "standard",
+        "isolation": "shared"
+      },
+      "pre_conditions": [],
+      "post_conditions": [
+        {
+          "id": "verify_step_9_extract_listing_info",
+          "check": "custom_verification",
+          "selector": null,
+          "pattern": null,
+          "value": "Listing info is extracted correctly",
+          "path": null,
+          "condition": null,
+          "conditions": null,
+          "on_failure": null,
+          "on_success": null
+        }
+      ],
+      "actions": [
+        {
+          "seq": 1,
+          "type": "find_and_click",
+          "intent": "extract_listing_info",
+          "url": null,
+          "value": "",
+          "selector": null,
+          "timeout_ms": null,
+          "store_in": null,
+          "clear_first": false,
+          "mask_in_logs": false,
+          "wait_strategy": null,
+          "response_guard": null,
+          "mutation_guard": null,
+          "path": null,
+          "message": null,
+          "event": null,
+          "data": {
+            "fields": [
+              "title",
+              "nightly_price",
+              "total_price",
+              "rating",
+              "number_of_reviews",
+              "cleaning_fee",
+              "cancellation_policy",
+              "booking_url"
+            ]
+          },
+          "state": null,
+          "format": null,
+          "content": null,
+          "columns": null,
+          "max_rows": null
+        }
+      ],
+      "state_policy": null,
+      "telemetry": null,
+      "on_success": "node_success",
+      "on_failure": "node_failure",
+      "on_timeout": "node_timeout",
+      "loop": null,
+      "evaluate": null,
+      "gate": null,
+      "checkpoint": null,
+      "parallel": null
+    },
+    {
+      "id": "node_success",
+      "type": "checkpoint",
+      "name": "Exit Success",
+      "description": "",
+      "execution": {
+        "timeout_ms": 5000,
+        "retry": null,
+        "resource_tier": "standard",
+        "isolation": "shared"
+      },
+      "pre_conditions": [],
+      "post_conditions": [],
+      "actions": [],
+      "state_policy": null,
+      "telemetry": null,
+      "on_success": null,
+      "on_failure": null,
+      "on_timeout": null,
+      "loop": null,
+      "evaluate": null,
+      "gate": null,
+      "checkpoint": null,
+      "parallel": null
+    },
+    {
+      "id": "node_failure",
+      "type": "checkpoint",
+      "name": "Exit Failure",
+      "description": "",
+      "execution": {
+        "timeout_ms": 5000,
+        "retry": null,
+        "resource_tier": "standard",
+        "isolation": "shared"
+      },
+      "pre_conditions": [],
+      "post_conditions": [],
+      "actions": [],
+      "state_policy": null,
+      "telemetry": null,
+      "on_success": null,
+      "on_failure": null,
+      "on_timeout": null,
+      "loop": null,
+      "evaluate": null,
+      "gate": null,
+      "checkpoint": null,
+      "parallel": null
+    },
+    {
+      "id": "node_timeout",
+      "type": "checkpoint",
+      "name": "Exit Timeout",
+      "description": "",
+      "execution": {
+        "timeout_ms": 5000,
+        "retry": null,
+        "resource_tier": "standard",
+        "isolation": "shared"
+      },
+      "pre_conditions": [],
+      "post_conditions": [],
+      "actions": [],
+      "state_policy": null,
+      "telemetry": null,
+      "on_success": null,
+      "on_failure": null,
+      "on_timeout": null,
+      "loop": null,
+      "evaluate": null,
+      "gate": null,
+      "checkpoint": null,
+      "parallel": null
+    }
+  ],
+  "edges": [
+    {
+      "id": null,
+      "source": "node_step_1_set_location",
+      "target": "node_step_2_set_dates",
+      "type": null,
+      "condition": null
+    },
+    {
+      "id": null,
+      "source": "node_step_2_set_dates",
+      "target": "node_step_3_set_guests",
+      "type": null,
+      "condition": null
+    },
+    {
+      "id": null,
+      "source": "node_step_3_set_guests",
+      "target": "node_step_4_open_filters",
+      "type": null,
+      "condition": null
+    },
+    {
+      "id": null,
+      "source": "node_step_4_open_filters",
+      "target": "node_step_5_set_max_price",
+      "type": null,
+      "condition": null
+    },
+    {
+      "id": null,
+      "source": "node_step_5_set_max_price",
+      "target": "node_step_6_apply_filters",
+      "type": null,
+      "condition": null
+    },
+    {
+      "id": null,
+      "source": "node_step_6_apply_filters",
+      "target": "node_step_7_navigate_to_map",
+      "type": null,
+      "condition": null
+    },
+    {
+      "id": null,
+      "source": "node_step_7_navigate_to_map",
+      "target": "node_step_8_click_nth_map_listing",
+      "type": null,
+      "condition": null
+    },
+    {
+      "id": null,
+      "source": "node_step_8_click_nth_map_listing",
+      "target": "node_step_9_extract_listing_info",
+      "type": null,
+      "condition": null
+    }
+  ],
+  "entry_point": "node_step_1_set_location",
+  "exit_points": {
+    "success": "node_success",
+    "failure": "node_failure",
+    "timeout": "node_timeout"
+  },
+  "global_guards": null
+}

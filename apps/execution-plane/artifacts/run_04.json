@@ -1,0 +1,11 @@
+{
+  "run_id": 4,
+  "start_time": "2026-04-25T06:20:33.017696+00:00",
+  "readiness_time_ms": 0,
+  "step_1_success": false,
+  "semantic_layer_available": true,
+  "steps": [],
+  "total_duration_ms": 20575,
+  "status": "completed",
+  "end_time": "2026-04-25T06:20:54.002116+00:00"
+}

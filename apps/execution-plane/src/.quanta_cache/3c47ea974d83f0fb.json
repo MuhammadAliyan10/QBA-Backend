@@ -1,0 +1,19 @@
+[
+  {
+    "feasible": true,
+    "rejection_reason": "",
+    "strategic_objective": "Extract the main header text",
+    "intents": [
+      {
+        "goal_id": "g1",
+        "action": "click",
+        "intent": "the main header text",
+        "value": "",
+        "target_tab_index": -1,
+        "store_as": null
+      }
+    ],
+    "expected_outcome": "The main header text is extracted",
+    "is_final_step": true
+  }
+]
