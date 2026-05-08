@@ -230,11 +230,15 @@ async def capture_failure_screenshot(page: Page, job_id: str, error: Exception) 
 # Initialize Recipe Manager (singleton pattern - loads once)
 _recipe_manager_instance = None
 
-def get_recipe_manager() -> RecipeManager:
-    """Get or create RecipeManager singleton."""
+def get_recipe_manager():
+    """Get or create RecipeManager singleton. Returns None if model download fails."""
     global _recipe_manager_instance
     if _recipe_manager_instance is None:
-        _recipe_manager_instance = RecipeManager()
+        try:
+            _recipe_manager_instance = RecipeManager()
+        except Exception as e:
+            logger.warning(f"[RecipeManager] Init failed (model download?): {e}. Skipping RAG recipe lookup.")
+            return None
     return _recipe_manager_instance
 
 def get_proxy_config(region="us"):
@@ -336,7 +340,7 @@ async def browser_automation_activity(payload: dict) -> dict:
     if not steps:
         # SOURCE B: RAG/Qdrant vector search
         recipe_mgr = get_recipe_manager()
-        recipe = recipe_mgr.find_recipe(workflow_id)
+        recipe = recipe_mgr.find_recipe(workflow_id) if recipe_mgr else None
 
         if recipe:
             steps = recipe['steps']
@@ -942,6 +946,17 @@ async def browser_automation_activity(payload: dict) -> dict:
                                         except ValueError:
                                             pass
     
+                        # PHASE 3.5: Pydantic Extraction Guardrails (Kill Switch)
+                        from .validator import ExtractionValidator
+                        from pydantic import ValidationError
+                        try:
+                            validator_instance = ExtractionValidator(intent=intent, value=typed_content)
+                            typed_content = validator_instance.value
+                        except (ValueError, ValidationError) as e:
+                            logger.warning(f"[{job_id}] Hallucination intercepted by Validator: {e}")
+                            typed_content = None
+                            typed_type = "null"
+
                         payload_dict = {
                             "type": typed_type,
                             "content": typed_content,

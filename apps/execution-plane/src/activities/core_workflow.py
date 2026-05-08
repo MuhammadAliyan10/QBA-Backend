@@ -54,6 +54,8 @@ from .navigation import (
     NAVIGATION_TIMEOUT, NETWORK_IDLE_TIMEOUT, CLICK_RETRY_ATTEMPTS, CLICK_RETRY_DELAY_MS
 )
 from .extraction import perform_extraction
+from .context import ExecutionContext
+from .actions import registry
 
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", tempfile.gettempdir())
 
@@ -372,6 +374,15 @@ async def browser_automation_activity(payload: dict) -> dict:
                 # Initialize the Co-Pilot (SmartFinder)
                 finder = SmartFinder(page)
     
+                # Initialize Execution Context
+                ctx = ExecutionContext(
+                    job_id=job_id,
+                    page=page,
+                    browser_context=context,
+                    finder=finder,
+                    user_logger=user_logger,
+                    global_sniffer=global_sniffer
+                )
 
                 # --- PRE-LOOP: Mandatory initial navigation ---
                 if target_url:
@@ -401,7 +412,15 @@ async def browser_automation_activity(payload: dict) -> dict:
                     )
     
                     # --- ACTION SWITCH ---
-                    if action == "GOTO":
+                    if action in ["CLICK", "EXTRACT", "LOGIN_AND_SNIFF"]:
+                        step_params["_global_params"] = params
+                        step_params["_node_id"] = node_id
+                        try:
+                            action_handler = registry.get(action)
+                            result = await action_handler.execute(ctx, step_params)
+                        except KeyError:
+                            raise NotImplementedError(f"Action {action} not supported")
+                    elif action == "GOTO":
                         url = step_params.get("url", "")
     
                         if not url:
@@ -468,78 +487,6 @@ async def browser_automation_activity(payload: dict) -> dict:
     
                         # Try to dismiss any popups that appeared on page load
                         await dismiss_overlays(page)
-    
-                    elif action == "CLICK":
-                        intent = step_params["intent"]
-    
-                        # Special test hook for human intervention simulation
-                        if intent == "simulate_human_check":
-                            from exceptions import HumanInterventionRequired
-                            raise HumanInterventionRequired(
-                                reason="GOD_MODE_CHECK",
-                                context={"msg": "System is healthy. Proceed?"}
-                            )
-    
-                        # INDUSTRIAL: Use robust click with retry and overlay dismissal
-                        # SELF-HEALING: Capture result to check for healing
-                        # Note: click_with_retry needs update to return result, or we use finder directly here
-                        # For now, we'll use finder directly to enable healing logic
-    
-                        # 1. Find Element (with healing)
-                        find_result = await finder.find(
-                            intent,
-                            metadata=step_params.get("metadata"),
-                            container_selector=step_params.get("container")
-                        )
-    
-                        if not find_result.found:
-                            raise Exception(f"Element not found: {intent}")
-    
-                        # 2. Heal if needed (Write-Back)
-                        if find_result.needs_healing and find_result.new_signature:
-                            logger.info(f"[{job_id}] 🩹 Healing recipe for '{intent}'")
-                            # Update RAG
-                            await finder.vector_db.store(
-                                intent,
-                                find_result.new_signature.get("selector", "unknown"),
-                                find_result.new_signature.get("attributes")
-                            )
-                            # Update In-Memory Recipe (if running from recipe)
-                            if 'recipe_mgr' in locals() and recipe:
-                                # TODO: Implement recipe_mgr.update_step(workflow_id, i, find_result.new_signature)
-                                pass
-    
-                            await user_logger.info("GENERIC_ERROR", error_details=f"Self-healed selector for {intent}")
-    
-                        # 3. Interact
-                        element = find_result.element
-                        await element.scroll_into_view_if_needed()
-    
-                        # Phase 2.5 FIX: Async Hydration Retry Loop
-                        # React/Next.js elements might be visible in DOM but lacking event listeners for ~500ms
-                        hydration_success = False
-                        for click_attempt in range(3):
-                            try:
-                                await element.click(timeout=5000)
-    
-                                # Give JS framework time to process synthetic event
-                                await asyncio.sleep(0.5)
-    
-                                # If we made it here without element throwing "Node Detached", we assume success
-                                hydration_success = True
-                                break
-                            except Exception as e:
-                                logger.warning(f"[{job_id}] Click hydration failure (Attempt {click_attempt+1}/3). Retrying...")
-                                await asyncio.sleep(1.0)
-    
-                        if not hydration_success:
-                            logger.error(f"[{job_id}] Element failed hydration after 3 attempts.")
-    
-                        # POST-CLICK STABILITY: Wait for potential navigation or dynamic load
-                        await safe_wait_for_network_idle(page)
-                        await asyncio.sleep(1.0) # Settle window for React/SPA frameworks
-    
-                        await user_logger.info("CLICKED_ELEMENT", element=intent)
     
                     elif action == "HOVER":
                         intent = step_params["intent"]
@@ -615,11 +562,6 @@ async def browser_automation_activity(payload: dict) -> dict:
                         await user_logger.info("WAITING_NETWORK")
     
 
-                    elif action == "EXTRACT":
-                        await perform_extraction(
-                            page, finder, step_params, params, job_id, node_id, global_sniffer, NervousSystem, user_logger
-                        )
-
                     elif action == "TYPE":
                         intent = step_params["intent"]
                         text = step_params["text"]
@@ -644,104 +586,6 @@ async def browser_automation_activity(payload: dict) -> dict:
                         await NervousSystem.publish_update(
                             job_id, "SUCCESS", f"Log: {content[:30]}...", node_id, data=data_json
                         )
-    
-                    elif action == "LOGIN_AND_SNIFF":
-                        # --- LEVEL 5: HYBRID PROTOCOL AUTOMATION ---
-                        # Phase 1: Use Browser to Authenticate
-                        # Phase 2: Capture API Session
-                        # Phase 3: Switch to HTTPX for Speed
-    
-                        target_domain = step_params.get("target_domain")
-                        url = step_params.get("url")
-                        iterations = step_params.get("iterations", 5)
-    
-                        # 1. Start the Spy
-                        sniffer = NetworkSniffer(target_domain=target_domain)
-                        await sniffer.start_sniffing(page)
-                        await NervousSystem.publish_update(job_id, "RUNNING", f"Sniffer monitoring {target_domain}...", node_id)
-    
-                        # 2. Execute Navigation (This triggers the network traffic)
-                        await page.goto(url)
-    
-                        # Wait for stability (Allow APIs to fire)
-                        try:
-                            await page.wait_for_load_state("networkidle", timeout=10000)
-                        except PlaywrightTimeout:
-                            logger.debug("Network idle timeout during sniff phase (expected for streaming sites)")
-                        except Exception as e:
-                            logger.warning(f"Network wait failed during sniff: {e}")
-    
-                        # 3. Check the Loot
-                        session = sniffer.get_session_context()
-    
-                        if session:
-                            await NervousSystem.publish_update(job_id, "SUCCESS", "🔓 Golden Ticket Captured! Switching to Protocol Mode.", node_id)
-    
-                            # --- PHASE 2: PROTOCOL MODE (The Speed Run) ---
-                            api_url = session["url"]
-                            headers = session["headers"]
-                            payload_template = session.get("payload")
-                            method = session["method"]
-    
-                            # Replay Logic (Simulating "Next Page" iteration)
-                            async with httpx.AsyncClient() as client:
-                                start_time = time.time()
-    
-                                # We loop N times to demonstrate speed
-                                for k in range(1, iterations + 1):
-                                    current_payload = payload_template
-    
-                                    # Dynamic Injection: If payload is JSON dict, try to increment 'page'
-                                    if isinstance(current_payload, dict):
-                                        # Create a copy to avoid mutating the template
-                                        current_payload = payload_template.copy()
-                                        # Heuristic: Look for common pagination keys
-                                        if "page" in current_payload:
-                                            current_payload["page"] = int(current_payload["page"]) + k
-                                        elif "cursor" in current_payload:
-                                            # Mock cursor update
-                                            current_payload["cursor"] = f"next_{k}"
-    
-                                    try:
-                                        # CRITICAL: Add timeout to prevent hanging
-                                        resp = await client.request(
-                                            method,
-                                            api_url,
-                                            headers=headers,
-                                            json=current_payload if isinstance(current_payload, dict) else None,
-                                            content=current_payload if isinstance(current_payload, str) else None,
-                                            timeout=10.0  # 10 second hard limit
-                                        )
-    
-                                        duration = (time.time() - start_time) * 1000
-                                        size_kb = len(resp.content) / 1024
-    
-    
-                                        await NervousSystem.publish_update(
-                                            job_id, "RUNNING",
-                                            f"[Network] Protocol Hit #{k}: Status {resp.status_code} ({size_kb:.2f} KB) in {duration:.0f}ms",
-                                            node_id
-                                        )
-    
-                                    except httpx.TimeoutException:
-                                        logger.warning(f"[Network] API timeout on replay #{k} - falling back to browser mode")
-                                        break  # Exit replay loop, continue with browser
-                                    except httpx.HTTPError as e:
-                                        logger.warning(f"[Network] API error on replay #{k}: {e}")
-                                        break  # Exit replay loop, continue with browser
-                                    except Exception as e:
-                                        logger.error(f"[Network] Unexpected error in protocol replay: {e}")
-                                        break
-                                    # REMOVED: Unreachable dead code - duplicate except Exception block
-    
-                                    start_time = time.time()  # Reset timer for next request
-    
-                            await NervousSystem.publish_update(job_id, "SUCCESS", f"Protocol Mode Complete: {iterations} requests replayed", node_id)
-    
-                        else:
-                            msg = "No verified API keys found (Auth failed or no XHR). Continuing in Browser Mode."
-                            await NervousSystem.publish_update(job_id, "WARNING", msg, node_id)
-    
     
                     elif action == "DATA_TRANSFORM":
                         import csv

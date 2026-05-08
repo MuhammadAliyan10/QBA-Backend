@@ -79,19 +79,28 @@ class NetworkSniffer:
             if 200 <= status < 300:
                 await self._capture_verified_request(request)
 
-                # PHASE 3 FIX: Telemetry Firehose Filtering
+                # PHASE 3 FIX: Telemetry Firehose Filtering & GraphQL Hardening
                 try:
                     content_type = response.headers.get("content-type", "")
-                    if "application/json" in content_type.lower():
+                    lower_url = url.lower()
+                    is_graphql = "/api/graphql" in lower_url or "graphql" in lower_url
+
+                    if "application/json" in content_type.lower() or is_graphql:
                         try:
-                            data = await response.json()
+                            # Handle GraphQL payloads that might not strictly have application/json
+                            try:
+                                data = await response.json()
+                            except Exception:
+                                text_data = await response.text()
+                                import json
+                                data = json.loads(text_data)
+
                             if isinstance(data, (list, dict)):
                                 data_str = str(data)
                                 payload_size = len(data_str)
 
                                 # Endpoint Heuristic (Drop obvious tracking endpoints)
-                                lower_url = url.lower()
-                                if any(k in lower_url for k in ['track', 'analytics', 'telemetry', 'beacon', 'metrics', 'log']):
+                                if not is_graphql and any(k in lower_url for k in ['track', 'analytics', 'telemetry', 'beacon', 'metrics', 'log']):
                                     return
 
                                 self.captured_responses.append({
