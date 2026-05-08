@@ -79,45 +79,57 @@ class NetworkSniffer:
             if 200 <= status < 300:
                 await self._capture_verified_request(request)
 
-                # PHASE 3 FIX: Telemetry Firehose Filtering & GraphQL Hardening
+                # PHASE 6: Meta JSON Hijacking Bypass & GraphQL Hardening
                 try:
-                    content_type = response.headers.get("content-type", "")
+                    content_type = response.headers.get("content-type", "").lower()
                     lower_url = url.lower()
-                    is_graphql = "/api/graphql" in lower_url or "graphql" in lower_url
+                    is_fb_graphql = "facebook.com/api/graphql" in lower_url
+                    is_generic_graphql = not is_fb_graphql and ("graphql" in lower_url)
 
-                    if "application/json" in content_type.lower() or is_graphql:
+                    if "application/json" in content_type or is_fb_graphql or is_generic_graphql or "text/javascript" in content_type:
+                        data = None
+                        bypass_triggered = False
                         try:
-                            # Handle GraphQL payloads that might not strictly have application/json
-                            try:
-                                data = await response.json()
-                            except Exception:
-                                text_data = await response.text()
-                                import json
-                                data = json.loads(text_data)
-
-                            if isinstance(data, (list, dict)):
-                                data_str = str(data)
-                                payload_size = len(data_str)
-
-                                # Endpoint Heuristic (Drop obvious tracking endpoints)
-                                if not is_graphql and any(k in lower_url for k in ['track', 'analytics', 'telemetry', 'beacon', 'metrics', 'log']):
-                                    return
-
-                                self.captured_responses.append({
-                                    "url": url,
-                                    "method": request.method,
-                                    "data": data,
-                                    "size": payload_size
-                                })
-
-                                # 3. Memory Cap (Keep top 20 largest payloads)
-                                self.captured_responses.sort(key=lambda x: x["size"], reverse=True)
-                                if len(self.captured_responses) > 20:
-                                    self.captured_responses.pop()
-
-                                logger.debug(f"[Network] Intercepted JSON Payload ({payload_size} bytes) from {url}")
+                            # 1. Try standard JSON parsing first
+                            data = await response.json()
                         except Exception:
-                            pass # Body might be inaccessible or already consumed
+                            # 2. Fallback: Raw text sanitization for Meta defense bypass
+                            try:
+                                raw_text = await response.text()
+                                if "for (;;);" in raw_text:
+                                    clean_text = raw_text.replace("for (;;);", "").strip()
+                                    data = json.loads(clean_text)
+                                    bypass_triggered = True
+                                else:
+                                    # Try parsing raw text as JSON anyway if it's not prefixed
+                                    data = json.loads(raw_text)
+                            except Exception:
+                                pass
+
+                        if data and isinstance(data, (list, dict)):
+                            data_str = str(data)
+                            payload_size = len(data_str)
+
+                            # Endpoint Heuristic (Drop obvious tracking endpoints)
+                            if not (is_fb_graphql or is_generic_graphql) and any(k in lower_url for k in ['track', 'analytics', 'telemetry', 'beacon', 'metrics', 'log']):
+                                return
+
+                            self.captured_responses.append({
+                                "url": url,
+                                "method": request.method,
+                                "data": data,
+                                "size": payload_size
+                            })
+
+                            if bypass_triggered:
+                                logger.info(f"🔓 [Network] Bypassed Meta JSON hijacking for {url[:60]}...")
+
+                            # 3. Memory Cap (Keep top 20 largest payloads)
+                            self.captured_responses.sort(key=lambda x: x["size"], reverse=True)
+                            if len(self.captured_responses) > 20:
+                                self.captured_responses.pop()
+
+                            logger.info(f"[Network] Intercepted JSON Payload ({payload_size} bytes) from {url[:60]}...")
                 except Exception:
                     pass # Network error or response closed
 

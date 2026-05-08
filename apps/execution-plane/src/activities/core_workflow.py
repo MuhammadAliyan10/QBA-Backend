@@ -217,7 +217,16 @@ async def browser_automation_activity(payload: dict) -> dict:
 
         # --- 5. SESSION & ACCOUNT PREPARATION ---
         user_id = payload.get("user_id", job_id)
-        target_domain = config.get("domain") or (steps[0]["params"].get("url") if steps and steps[0]["action"] == "GOTO" else None)
+        # 1st Priority: Explicit config domain
+        # 2nd Priority: First GOTO step
+        # 3rd Priority: Target URL from activity payload (BYOS / CLI mode)
+        target_domain = config.get("domain")
+        if not target_domain:
+            if steps and steps[0]["action"] == "GOTO":
+                target_domain = steps[0]["params"].get("url")
+            else:
+                target_domain = target_url
+
         if target_domain and not target_domain.startswith("http"):
              # Handle cases where domain is just a string
              pass

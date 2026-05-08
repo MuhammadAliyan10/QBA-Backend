@@ -4,7 +4,11 @@ from pydantic import BaseModel, validator
 
 UI_BLACKLIST = [
     "meta pay", "threads", "messenger", "log out", "log in", 
-    "sign up", "forgot password", "home", "search", "notifications"
+    "sign up", "forgot password", "home", "search", "notifications",
+    "meta quest", "meta horizon", "meta store", "bulletin", "ray-ban meta",
+    "email or mobile number", "password", "create a page", "developers",
+    "careers", "privacy", "cookies", "ad choices", "terms", "help",
+    "ای میل یا موبائل نمبر"
 ]
 
 class ExtractionValidator(BaseModel):
