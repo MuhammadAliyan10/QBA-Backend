@@ -2,6 +2,7 @@ import typer
 import asyncio
 import rich
 import sys
+from typing import Optional
 
 from .browser import launch_auth_browser
 from .api import upload_vault_session, get_api_key, save_api_key, execute_mission, stream_mission_logs
@@ -35,7 +36,10 @@ def set_key(api_key: str):
         raise typer.Exit(code=1)
 
 @app.command()
-def auth(url: str):
+def auth(
+    url: str,
+    alias: Optional[str] = typer.Option(None, "--alias", help="An optional name for this session (e.g., 'Work Account').")
+):
     """
     Launch a secure local browser to log into a target portal and upload the 
     authenticated session state directly to the Quanta Vault.
@@ -47,15 +51,21 @@ def auth(url: str):
              raise typer.Exit(code=1)
 
         # 1. Local Generation (Browser)
-        session_state = asyncio.run(launch_auth_browser(url))
+        session_state = asyncio.run(launch_auth_browser(url, alias=alias))
+
+        if session_state is None:
+            # launch_auth_browser handles the error message
+            raise typer.Exit(code=0)
 
         # 2. Vault Upload (API)
         rich.print("\n[bold cyan]Uploading session state to Quanta Vault...[/bold cyan]")
-        vault_id = asyncio.run(upload_vault_session(url, session_state))
+        vault_id = asyncio.run(upload_vault_session(url, session_state, alias=alias))
 
         # 3. Output
         rich.print(f"\n[bold green]✔ Session Vaulted Successfully![/bold green]")
         rich.print(f"Vault ID: [bold cyan]{vault_id}[/bold cyan]")
+        if alias:
+            rich.print(f"Alias: [white]{alias}[/white]")
         rich.print(f"You can now use this ID for agentic execution missions.")
 
     except Exception as e:

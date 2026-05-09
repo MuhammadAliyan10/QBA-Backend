@@ -9,6 +9,7 @@ import (
 type VaultSession struct {
 	ID             string    `gorm:"primaryKey;column:id;type:uuid;default:gen_random_uuid()"`
 	UserID         string    `gorm:"column:user_id;type:uuid;not null;index"`
+	Name           string    `gorm:"column:name;type:text"`
 	TargetURL      string    `gorm:"column:target_url;type:text;not null"`
 	EncryptedState []byte    `gorm:"column:encrypted_state;type:bytea;not null"`
 	CreatedAt      time.Time `gorm:"column:created_at;index"`

@@ -3,7 +3,7 @@ import json
 import httpx
 import rich
 import typer
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 def get_api_key() -> str:
     """Read API key from environment or config file."""
@@ -151,7 +151,7 @@ async def upload_session(target_url: str, session_data: Dict[str, Any]) -> str:
             
         data = response.json()
         return data.get("credential_id") or data.get("id", "UNKNOWN_ID")
-async def upload_vault_session(target_url: str, session_state: Dict[str, Any]) -> str:
+async def upload_vault_session(target_url: str, session_state: Dict[str, Any], alias: Optional[str] = None) -> str:
     """
     Uploads the extracted browser session state to the secure Vault.
     Returns the generated vault_id.
@@ -164,7 +164,8 @@ async def upload_vault_session(target_url: str, session_state: Dict[str, Any]) -
 
     payload = {
         "target_url": target_url,
-        "session_state": session_state
+        "session_state": session_state,
+        "alias": alias
     }
 
     headers = {

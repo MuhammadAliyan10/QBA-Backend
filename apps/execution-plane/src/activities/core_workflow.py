@@ -233,8 +233,26 @@ async def browser_automation_activity(payload: dict) -> dict:
         elif target_domain:
              target_domain = SessionManager.extract_domain(target_domain)
 
-        session_data = None
-        if is_session_persistence_enabled() and target_domain:
+        session_data = payload.get("sessionState")
+        
+        if session_data:
+            await NervousSystem.publish_update(
+                job_id, "RUNNING",
+                f"[Session] Using vaulted session state for {target_domain}",
+                "init"
+            )
+            logger.info(f"[{job_id}] Injecting vaulted session state from payload.")
+            
+            # Optional: Clear persistent cache for this domain to prevent contamination
+            if is_session_persistence_enabled() and target_domain:
+                try:
+                    session_manager = await get_session_manager()
+                    if session_manager:
+                        await session_manager.delete_session(user_id, target_domain)
+                        logger.info(f"[{job_id}] Cleared stale persistent session for {target_domain} in favor of vault ID.")
+                except Exception:
+                    pass
+        elif is_session_persistence_enabled() and target_domain:
             try:
                 session_manager = await get_session_manager()
                 if session_manager:
@@ -242,11 +260,12 @@ async def browser_automation_activity(payload: dict) -> dict:
                     if session_data:
                         await NervousSystem.publish_update(
                             job_id, "RUNNING",
-                            f"[Session] Restored encrypted session for {target_domain}",
+                            f"[Session] Restored persistent session for {target_domain}",
                             "init"
                         )
             except Exception as e:
                 logger.warning(f"[Session] Failed to restore session: {e}")
+
 
         # --- 6. EXECUTION ENGINE ---
         async with safe_browser_context(p, launch_args, storage_state=session_data) as (browser, context, page):

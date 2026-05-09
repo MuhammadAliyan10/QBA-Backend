@@ -17,6 +17,7 @@ import (
 type VaultUploadRequest struct {
 	TargetURL    string                 `json:"target_url" binding:"required"`
 	SessionState map[string]interface{} `json:"session_state" binding:"required"`
+	Alias        string                 `json:"alias"`
 	ExpiresIn    *int                   `json:"expires_in_days,omitempty"`
 }
 
@@ -72,6 +73,7 @@ func (vc *VaultController) HandleUploadSession(c *gin.Context) {
 	vaultSession := models.VaultSession{
 		ID:             uuid.New().String(),
 		UserID:         userID,
+		Name:           req.Alias,
 		TargetURL:      req.TargetURL,
 		EncryptedState: encrypted,
 		ExpiresAt:      expiresAt,
@@ -84,6 +86,7 @@ func (vc *VaultController) HandleUploadSession(c *gin.Context) {
 
 	c.JSON(http.StatusCreated, gin.H{
 		"vault_id":   vaultSession.ID,
+		"name":       vaultSession.Name,
 		"target_url": vaultSession.TargetURL,
 		"expires_at": vaultSession.ExpiresAt,
 		"status":     "securely_vaulted",
