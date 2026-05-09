@@ -592,15 +592,21 @@ async def browser_automation_activity(payload: dict) -> dict:
 
                     elif action == "TYPE":
                         intent = step_params["intent"]
-                        text = step_params["text"]
+                        # Resilient extraction chain for LLM schema drift
+                        text_to_type = step_params.get("text") or step_params.get("value") or step_params.get("content")
+                        
+                        if not text_to_type:
+                            raise ValueError(f"TYPE action payload for node {node_id} missing text/value field.")
     
                         result = await finder.find(intent, timeout=10000)
                         if not result.found:
                             raise Exception(f"Element not found: {intent}")
                         element = result.element
     
-                        # USE GAUSSIAN TYPING (The Humanizer)
-                        await finder.glass.human_type(page, element, text)
+                        # GHOST TYPIST FALLBACK (Resilient to non-input wrappers)
+                        await element.click()
+                        await asyncio.sleep(0.1) # Micro-delay for React state
+                        await page.keyboard.type(text_to_type, delay=50)
     
                         await NervousSystem.publish_update(job_id, "RUNNING", f"Typed input safely", node_id)
     
