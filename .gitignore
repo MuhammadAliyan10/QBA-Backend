@@ -1,8 +1,9 @@
 # =======================================================
 # 🐍 PYTHON (Execution Plane)
 # =======================================================
-venv/
-.venv/
+**/venv/
+**/.venv/
+**/__pycache__/
 *.py[cod]
 *$py.class
 .coverage
@@ -21,6 +22,8 @@ venv/
 # Specific Binaries (Targeted to avoid ignoring source folders)
 apps/control-plane/control-plane
 apps/execution-plane/execution-plane
+**/bin/
+**/tmp/
 
 # Ignore large artifacts and caches
 apps/execution-plane/artifacts/*.json
@@ -29,7 +32,7 @@ apps/execution-plane/src/.quanta_cache/
 # =======================================================
 # ⚛️ NODE / NEXT.JS (Frontend)
 # =======================================================
-node_modules/
+**/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -63,9 +66,9 @@ docker-compose.override.yml
 # =======================================================
 # 🔐 SECRETS & ENV
 # =======================================================
-.env
-.env.*
-!.env.example
+**/.env
+**/.env.*
+!**/.env.example
 *.pem
 *.key
 *.cert

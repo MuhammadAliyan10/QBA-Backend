@@ -212,7 +212,7 @@ func (cc *CredentialController) HandleList(c *gin.Context) {
 		})
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"data": summaries})
+	c.JSON(http.StatusOK, gin.H{"data": summaries})
 }
 
 // HandleDelete handles DELETE /v1/credentials/:id.
