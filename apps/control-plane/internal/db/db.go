@@ -38,7 +38,8 @@ func Init() {
 		DSN:                  dsn,
 		PreferSimpleProtocol: true, // CRITICAL: Fix for Supabase PgBouncer
 	}), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
+		PrepareStmt: false, // <-- THIS IS CRITICAL FOR SUPABASE PGBOUNCER
+		Logger:      logger.Default.LogMode(logger.Info),
 	})
 
 	if err != nil {

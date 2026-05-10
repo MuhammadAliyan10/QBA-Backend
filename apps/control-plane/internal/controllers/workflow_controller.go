@@ -509,7 +509,7 @@ func (c *WorkflowController) HandleGetJobLogs(ctx *gin.Context) {
 		response = make([]map[string]interface{}, 0)
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"logs": response, "count": len(response)})
+	ctx.JSON(http.StatusOK, gin.H{"data": response})
 }
 
 func (c *WorkflowController) HandleCancelJob(ctx *gin.Context) {

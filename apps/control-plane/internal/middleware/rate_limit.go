@@ -82,7 +82,7 @@ end
 func NewRateLimitMiddleware(redisClient *redis.Client) *RateLimitMiddleware {
 	maxRequests, _ := strconv.Atoi(os.Getenv("RATE_LIMIT_REQUESTS"))
 	if maxRequests == 0 {
-		maxRequests = 5 // Default: 5 requests
+		maxRequests = 100 // Default: 100 requests (increased from 5 to support frontend boot sequences)
 	}
 
 	windowSeconds, _ := strconv.Atoi(os.Getenv("RATE_LIMIT_WINDOW"))

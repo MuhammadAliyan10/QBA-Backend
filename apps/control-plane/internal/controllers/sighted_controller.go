@@ -10,6 +10,7 @@ import (
 
 	"e2e-platform/apps/control-plane/internal/middleware"
 	"e2e-platform/apps/control-plane/internal/models"
+	"e2e-platform/apps/control-plane/internal/services"
 	"e2e-platform/apps/control-plane/internal/temporal"
 
 	"github.com/gin-gonic/gin"
@@ -54,25 +55,32 @@ type SightedSyncResponse struct {
 
 // SightedController handles the sighted pipeline API.
 type SightedController struct {
-	tm *temporal.TemporalManager
-	db *gorm.DB
+	tm       *temporal.TemporalManager
+	db       *gorm.DB
+	identity *services.IdentityService
 }
 
 // NewSightedController creates a controller backed by the shared TemporalManager.
-func NewSightedController(db *gorm.DB, tm *temporal.TemporalManager) *SightedController {
-	return &SightedController{db: db, tm: tm}
+func NewSightedController(db *gorm.DB, tm *temporal.TemporalManager, identity *services.IdentityService) *SightedController {
+	return &SightedController{db: db, tm: tm, identity: identity}
 }
 
 // HandleSightedAsync handles POST /v1/sighted.
 // Returns HTTP 202 with a job_id. The client polls /v1/jobs/:id or subscribes
 // to the SSE stream at /v1/execute/:job_id/stream for real-time updates.
 func (sc *SightedController) HandleSightedAsync(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok || userID == "" {
+	clerkID, exists := middleware.GetUserID(c)
+	if !exists || clerkID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":   "unauthenticated",
 			"message": "Authentication required",
 		})
+		return
+	}
+
+	tenantID, err := sc.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
 		return
 	}
 
@@ -102,7 +110,7 @@ func (sc *SightedController) HandleSightedAsync(c *gin.Context) {
 	// Idempotent retry: job already exists
 	var existingJob models.Job
 	if err := sc.db.Where("id = ?", jobID).First(&existingJob).Error; err == nil {
-		if existingJob.UserID != userID {
+		if existingJob.UserID != tenantID {
 			c.JSON(http.StatusForbidden, gin.H{
 				"error":   "forbidden",
 				"message": "Idempotency key belongs to another user",
@@ -130,7 +138,7 @@ func (sc *SightedController) HandleSightedAsync(c *gin.Context) {
 	workflowID := uuid.New().String()
 	workflow := &models.Workflow{
 		ID:          workflowID,
-		UserID:      userID,
+		UserID:      tenantID,
 		Name:        "Sighted: " + req.TargetURL,
 		TriggerType: "ON_DEMAND",
 		RecipeJSON:  []byte("{}"),
@@ -148,7 +156,7 @@ func (sc *SightedController) HandleSightedAsync(c *gin.Context) {
 	// Create job record
 	job := &models.Job{
 		ID:         jobID,
-		UserID:     userID,
+		UserID:     tenantID,
 		WorkflowID: workflowID,
 		Status:     "QUEUED",
 	}
@@ -218,12 +226,18 @@ func (sc *SightedController) HandleSightedAsync(c *gin.Context) {
 // Executes the sighted pipeline synchronously and returns the result directly.
 // Useful for testing, small tasks, and real-time API consumers.
 func (sc *SightedController) HandleSightedSync(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok || userID == "" {
+	clerkID, exists := middleware.GetUserID(c)
+	if !exists || clerkID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":   "unauthenticated",
 			"message": "Authentication required",
 		})
+		return
+	}
+
+	tenantID, err := sc.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
 		return
 	}
 
@@ -252,7 +266,7 @@ func (sc *SightedController) HandleSightedSync(c *gin.Context) {
 	now := time.Now()
 	job := &models.Job{
 		ID:         jobID,
-		UserID:     userID,
+		UserID:     tenantID,
 		WorkflowID: workflowID,
 		Status:     "RUNNING",
 		StartedAt:  &now,

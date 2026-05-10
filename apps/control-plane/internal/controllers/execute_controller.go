@@ -54,27 +54,34 @@ type ExecuteController struct {
 	db          *gorm.DB
 	crypto      *services.CryptoService
 	vaultCrypto *services.VaultCryptoService
+	identity    *services.IdentityService
 }
 
-// NewExecuteController creates a controller backed by the shared TemporalManager.
-func NewExecuteController(db *gorm.DB, tm *temporal.TemporalManager, lv *services.LogicValidator) *ExecuteController {
+func NewExecuteController(db *gorm.DB, tm *temporal.TemporalManager, lv *services.LogicValidator, identity *services.IdentityService) *ExecuteController {
 	return &ExecuteController{
 		db:          db,
 		tm:          tm,
 		lv:          lv,
 		crypto:      services.GetCryptoService(),
 		vaultCrypto: services.GetVaultCryptoService(),
+		identity:    identity,
 	}
 }
 
 // HandleExecuteAsync handles POST /v1/execute.
 func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok || userID == "" {
+	clerkID, exists := middleware.GetUserID(c)
+	if !exists || clerkID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{
 			"error":   "unauthenticated",
 			"message": "Authentication required",
 		})
+		return
+	}
+
+	tenantID, err := ec.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
 		return
 	}
 
@@ -104,7 +111,7 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 	// Idempotent retry: job row already exists
 	var existingJob models.Job
 	if err := ec.db.Where("id = ?", jobID).First(&existingJob).Error; err == nil {
-		if existingJob.UserID != userID {
+		if existingJob.UserID != tenantID {
 			c.JSON(http.StatusForbidden, gin.H{
 				"error":   "forbidden",
 				"message": "Idempotency key belongs to another user",
@@ -200,7 +207,7 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 
 	job := &models.Job{
 		ID:         jobID,
-		UserID:     userID,
+		UserID:     tenantID,
 		WorkflowID: workflowID,
 		Status:     "PENDING",
 	}
@@ -222,7 +229,7 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 	if strings.TrimSpace(req.CredentialID) != "" {
 		var vaultSession models.VaultSession
 		// 1. Try to find in the new VaultSessions table (quanta auth flow)
-		if err := ec.db.Where("id = ? AND user_id = ?", req.CredentialID, userID).First(&vaultSession).Error; err == nil {
+		if err := ec.db.Where("id = ? AND user_id = ?", req.CredentialID, tenantID).First(&vaultSession).Error; err == nil {
 			log.Printf("[ExecuteController] Found session in Vault | JobID=%s | VaultID=%s", jobID, req.CredentialID)
 			
 			plaintext, err := ec.vaultCrypto.Decrypt(vaultSession.EncryptedState)
@@ -242,7 +249,7 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 		} else {
 			// 2. Fallback to legacy Credentials table
 			var cred models.Credential
-			if err := ec.db.Where("id = ? AND client_id = ?", req.CredentialID, userID).First(&cred).Error; err != nil {
+			if err := ec.db.Where("id = ? AND client_id = ?", req.CredentialID, tenantID).First(&cred).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					c.JSON(http.StatusNotFound, gin.H{
 						"error":   "credential_not_found",

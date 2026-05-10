@@ -450,9 +450,9 @@ func main() {
 
 	identityService := services.NewIdentityService(db.GetDB())
 
-	executeCtrl := controllers.NewExecuteController(db.GetDB(), tm, logicValidator)
-	credentialCtrl := controllers.NewCredentialController(db.GetDB())
-	vaultCtrl := controllers.NewVaultController(db.GetDB())
+	executeCtrl := controllers.NewExecuteController(db.GetDB(), tm, logicValidator, identityService)
+	credentialCtrl := controllers.NewCredentialController(db.GetDB(), identityService)
+	vaultCtrl := controllers.NewVaultController(db.GetDB(), identityService)
 	vaultSecretCtrl := controllers.NewVaultSecretController(db.GetDB(), identityService)
 	clerkWebhookCtrl := controllers.NewClerkWebhookController(db.GetDB(), identityService)
 	
@@ -500,7 +500,7 @@ func main() {
 		protected.Use(middleware.NewRateLimitMiddleware(redisClient).Middleware())
 	}
 
-	generatorCtrl := controllers.NewGeneratorController(temporalClient, logicValidator)
+	generatorCtrl := controllers.NewGeneratorController(temporalClient, logicValidator, identityService)
 	protected.POST("/api/v1/workflow/generate", generatorCtrl.HandleGenerate)
 	protected.POST("/api/v1/workflow/generate/sync", generatorCtrl.HandleGenerateSync)
 
@@ -517,7 +517,7 @@ func main() {
 	compute.POST("/api/v1/workflow/execute", workflowCtrl.HandleExecute)
 
 	// Sighted Pipeline (Harvest → Plan → Execute)
-	sightedCtrl := controllers.NewSightedController(db.GetDB(), tm)
+	sightedCtrl := controllers.NewSightedController(db.GetDB(), tm, identityService)
 	compute.POST("/v1/sighted", sightedCtrl.HandleSightedAsync)
 	compute.POST("/v1/sighted/sync", sightedCtrl.HandleSightedSync)
 

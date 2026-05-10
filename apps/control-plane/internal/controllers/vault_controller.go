@@ -23,22 +23,30 @@ type VaultUploadRequest struct {
 
 type VaultController struct {
 	db     *gorm.DB
-	crypto *services.VaultCryptoService
+	crypto   *services.VaultCryptoService
+	identity *services.IdentityService
 }
 
-func NewVaultController(db *gorm.DB) *VaultController {
+func NewVaultController(db *gorm.DB, identity *services.IdentityService) *VaultController {
 	return &VaultController{
-		db:     db,
-		crypto: services.GetVaultCryptoService(),
+		db:       db,
+		crypto:   services.GetVaultCryptoService(),
+		identity: identity,
 	}
 }
 
 // HandleUploadSession handles POST /v1/vault/sessions.
 // It encrypts the browser session state and stores it in the multi-tenant vault.
 func (vc *VaultController) HandleUploadSession(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok || userID == "" {
+	clerkID, exists := middleware.GetUserID(c)
+	if !exists || clerkID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
+
+	tenantID, err := vc.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
 		return
 	}
 
@@ -72,7 +80,7 @@ func (vc *VaultController) HandleUploadSession(c *gin.Context) {
 	// 4. Persist to database
 	vaultSession := models.VaultSession{
 		ID:             uuid.New().String(),
-		UserID:         userID,
+		UserID:         tenantID,
 		Name:           req.Alias,
 		TargetURL:      req.TargetURL,
 		EncryptedState: encrypted,
@@ -96,14 +104,20 @@ func (vc *VaultController) HandleUploadSession(c *gin.Context) {
 // HandleListSessions handles GET /v1/vault/sessions.
 // It returns all encrypted session metadata for the current user.
 func (vc *VaultController) HandleListSessions(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok || userID == "" {
+	clerkID, exists := middleware.GetUserID(c)
+	if !exists || clerkID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
 		return
 	}
 
+	tenantID, err := vc.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+		return
+	}
+
 	var sessions []models.VaultSession
-	if err := vc.db.Where("user_id = ?", userID).Order("created_at desc").Find(&sessions).Error; err != nil {
+	if err := vc.db.Where("user_id = ?", tenantID).Order("created_at desc").Find(&sessions).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database_fetch_failed"})
 		return
 	}
@@ -135,9 +149,15 @@ func (vc *VaultController) HandleListSessions(c *gin.Context) {
 // HandleDeleteSession handles DELETE /v1/vault/sessions/:id.
 // It removes the encrypted session from the vault after verifying ownership.
 func (vc *VaultController) HandleDeleteSession(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok || userID == "" {
+	clerkID, exists := middleware.GetUserID(c)
+	if !exists || clerkID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
+
+	tenantID, err := vc.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
 		return
 	}
 
@@ -147,7 +167,7 @@ func (vc *VaultController) HandleDeleteSession(c *gin.Context) {
 		return
 	}
 
-	result := vc.db.Where("id = ? AND user_id = ?", sessionID, userID).Delete(&models.VaultSession{})
+	result := vc.db.Where("id = ? AND user_id = ?", sessionID, tenantID).Delete(&models.VaultSession{})
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "database_delete_failed"})
 		return

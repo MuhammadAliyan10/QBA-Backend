@@ -19,14 +19,14 @@ import (
 type GeneratorController struct {
 	temporalClient client.Client
 	lv             *services.LogicValidator
+	identity       *services.IdentityService
 }
 
-// NewGeneratorController creates a controller using a shared Temporal client and LogicValidator.
-func NewGeneratorController(tc client.Client, lv *services.LogicValidator) *GeneratorController {
+func NewGeneratorController(tc client.Client, lv *services.LogicValidator, identity *services.IdentityService) *GeneratorController {
 	if tc == nil {
 		log.Println("[Generator] Warning: Temporal client is nil — generation will be unavailable")
 	}
-	return &GeneratorController{temporalClient: tc, lv: lv}
+	return &GeneratorController{temporalClient: tc, lv: lv, identity: identity}
 }
 
 type GenerateRequest struct {
@@ -57,9 +57,15 @@ type GenerateSyncData struct {
 }
 
 func (ctrl *GeneratorController) HandleGenerate(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok || userID == "" {
+	clerkID, exists := middleware.GetUserID(c)
+	if !exists || clerkID == "" {
 		c.JSON(http.StatusUnauthorized, GenerateAsyncResponse{Status: "error", Error: "Authentication required"})
+		return
+	}
+
+	tenantID, err := ctrl.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, GenerateAsyncResponse{Status: "error", Error: "Invalid tenant context"})
 		return
 	}
 
@@ -156,7 +162,7 @@ func (ctrl *GeneratorController) HandleGenerate(c *gin.Context) {
 	// Workflow payload
 	payload := map[string]interface{}{
 		"job_id":   jobID,
-		"user_id":  userID,
+		"user_id":  tenantID,
 		"prompt":   req.Prompt,
 		"url":      req.URL,
 		"cookies":  req.Cookies,
@@ -194,9 +200,15 @@ func (ctrl *GeneratorController) HandleGenerate(c *gin.Context) {
 // HandleGenerateSync - Blocking version that waits for workflow completion
 // Use this for simpler integration or testing
 func (ctrl *GeneratorController) HandleGenerateSync(c *gin.Context) {
-	userID, ok := middleware.GetUserID(c)
-	if !ok || userID == "" {
+	clerkID, exists := middleware.GetUserID(c)
+	if !exists || clerkID == "" {
 		c.JSON(http.StatusUnauthorized, GenerateSyncResponse{Status: "error", Error: "Authentication required"})
+		return
+	}
+
+	tenantID, err := ctrl.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, GenerateSyncResponse{Status: "error", Error: "Invalid tenant context"})
 		return
 	}
 
@@ -281,7 +293,7 @@ func (ctrl *GeneratorController) HandleGenerateSync(c *gin.Context) {
 
 	payload := map[string]interface{}{
 		"job_id":   jobID,
-		"user_id":  userID,
+		"user_id":  tenantID,
 		"prompt":   req.Prompt,
 		"url":      req.URL,
 		"cookies":  req.Cookies,

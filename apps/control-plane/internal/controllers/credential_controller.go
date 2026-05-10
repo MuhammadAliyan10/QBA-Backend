@@ -86,24 +86,32 @@ type credentialSummary struct {
 
 // CredentialController manages encrypted Playwright session storage.
 type CredentialController struct {
-	db     *gorm.DB
-	crypto *services.CryptoService
+	db       *gorm.DB
+	crypto   *services.CryptoService
+	identity *services.IdentityService
 }
 
 // NewCredentialController wires up the controller with the shared DB and singleton CryptoService.
-func NewCredentialController(db *gorm.DB) *CredentialController {
+func NewCredentialController(db *gorm.DB, identity *services.IdentityService) *CredentialController {
 	return &CredentialController{
-		db:     db,
-		crypto: services.GetCryptoService(),
+		db:       db,
+		crypto:   services.GetCryptoService(),
+		identity: identity,
 	}
 }
 
 // HandleCreate handles POST /v1/credentials.
 // Accepts { "name": "...", "session_data": { ... } }, encrypts, and persists.
 func (cc *CredentialController) HandleCreate(c *gin.Context) {
-	clientID, ok := middleware.GetUserID(c)
-	if !ok || clientID == "" {
+	clerkID, exists := middleware.GetUserID(c)
+	if !exists || clerkID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated", "message": "Authentication required"})
+		return
+	}
+
+	tenantID, err := cc.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
 		return
 	}
 
@@ -155,7 +163,7 @@ func (cc *CredentialController) HandleCreate(c *gin.Context) {
 	}
 
 	cred := &models.Credential{
-		ClientID:      clientID,
+		ClientID:      tenantID,
 		Name:          strings.TrimSpace(req.Name),
 		EncryptedData: encryptedData,
 	}
@@ -172,16 +180,22 @@ func (cc *CredentialController) HandleCreate(c *gin.Context) {
 // HandleList handles GET /v1/credentials.
 // Returns id, name, created_at for all credentials belonging to the authenticated client.
 func (cc *CredentialController) HandleList(c *gin.Context) {
-	clientID, ok := middleware.GetUserID(c)
-	if !ok || clientID == "" {
+	clerkID, exists := middleware.GetUserID(c)
+	if !exists || clerkID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated", "message": "Authentication required"})
 		return
 	}
 
+	tenantID, err := cc.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+		return
+	}
+
 	var creds []models.Credential
-	if err := cc.db.
+	if err := cc.db.Debug().
 		Select("id, name, created_at").
-		Where("client_id = ?", clientID).
+		Where("client_id = ?", tenantID).
 		Order("created_at DESC").
 		Find(&creds).Error; err != nil {
 		log.Printf("[CredentialController] DB list error: %v", err)
@@ -198,15 +212,21 @@ func (cc *CredentialController) HandleList(c *gin.Context) {
 		})
 	}
 
-	c.JSON(http.StatusOK, gin.H{"credentials": summaries})
+	ctx.JSON(http.StatusOK, gin.H{"data": summaries})
 }
 
 // HandleDelete handles DELETE /v1/credentials/:id.
 // Hard-deletes the credential after verifying ownership.
 func (cc *CredentialController) HandleDelete(c *gin.Context) {
-	clientID, ok := middleware.GetUserID(c)
-	if !ok || clientID == "" {
+	clerkID, exists := middleware.GetUserID(c)
+	if !exists || clerkID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated", "message": "Authentication required"})
+		return
+	}
+
+	tenantID, err := cc.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
 		return
 	}
 
@@ -217,7 +237,7 @@ func (cc *CredentialController) HandleDelete(c *gin.Context) {
 	}
 
 	result := cc.db.
-		Where("id = ? AND client_id = ?", credID, clientID).
+		Where("id = ? AND client_id = ?", credID, tenantID).
 		Delete(&models.Credential{})
 
 	if result.Error != nil {
