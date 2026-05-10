@@ -132,3 +132,32 @@ func (vc *VaultController) HandleListSessions(c *gin.Context) {
 	})
 }
 
+// HandleDeleteSession handles DELETE /v1/vault/sessions/:id.
+// It removes the encrypted session from the vault after verifying ownership.
+func (vc *VaultController) HandleDeleteSession(c *gin.Context) {
+	userID, ok := middleware.GetUserID(c)
+	if !ok || userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
+		return
+	}
+
+	sessionID := c.Param("id")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing_id"})
+		return
+	}
+
+	result := vc.db.Where("id = ? AND user_id = ?", sessionID, userID).Delete(&models.VaultSession{})
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "database_delete_failed"})
+		return
+	}
+
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not_found_or_access_denied"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"deleted": sessionID})
+}
+

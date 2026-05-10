@@ -365,9 +365,10 @@ func main() {
 		}),
 	)
 	if err != nil {
-		log.Fatalf("[Error] Failed to connect to NATS: %v", err)
+		log.Printf("[Warning] Failed to connect to NATS: %v. Continuing without NATS.", err)
+	} else {
+		defer nc.Close()
 	}
-	defer nc.Close()
 
 	sqlConn, err := db.DB.DB()
 	if err != nil {
@@ -396,9 +397,11 @@ func main() {
 		HostPort: temporalHost,
 	})
 	if err != nil {
-		log.Fatalf("[Error] Failed to connect to Temporal: %v", err)
+		log.Printf("[Warning] Failed to connect to Temporal: %v. Continuing without Temporal.", err)
+		temporalClient = nil
+	} else {
+		defer temporalClient.Close()
 	}
-	defer temporalClient.Close()
 
 	// 7. Setup Components
 	wsManager := ws.NewManager(db.GetDB())
@@ -416,28 +419,49 @@ func main() {
 		log.Println("[WARN] WEBHOOK_SECRET is empty in release mode — signed completion webhooks will be skipped")
 	}
 
-	consumer := NewConsumer(nc, wsManager, exporterSvc, emailSvc, webhookDisp, webhookSignSecret)
-	consumer.StartListening()
+	var streamMgr *streaming.StreamManager
+	if nc != nil {
+		consumer := NewConsumer(nc, wsManager, exporterSvc, emailSvc, webhookDisp, webhookSignSecret)
+		consumer.StartListening()
 
-	// Initialize and start Scheduler
-	scheduler := services.NewSchedulerService(temporalClient)
-	scheduler.Start()
-	defer scheduler.Stop()
-
-	// 7b. Initialize Async Execution subsystem
-	//     TemporalManager wraps the existing client for the new /v1/execute flow.
-	//     StreamManager initializes JetStream for real-time telemetry SSE.
-	tm := temporal.Wrap(temporalClient)
-	streamMgr := streaming.NewStreamManager(nc, db.GetDB())
-	
-	// Start the data accumulator for webhooks
-	if err := streaming.StartDataSubscriber(natsURL); err != nil {
-		log.Printf("[Error] Failed to start data subscriber: %v", err)
+		// 7b. Initialize Async Execution subsystem
+		//     StreamManager initializes JetStream for real-time telemetry SSE.
+		streamMgr = streaming.NewStreamManager(nc, db.GetDB())
+		
+		// Start the data accumulator for webhooks
+		if err := streaming.StartDataSubscriber(natsURL); err != nil {
+			log.Printf("[Error] Failed to start data subscriber: %v", err)
+		}
+	} else {
+		log.Println("[Warning] Skipping NATS consumer and streaming setup because NATS is unavailable.")
 	}
+
+	var tm *temporal.TemporalManager
+	if temporalClient != nil {
+		// Initialize and start Scheduler
+		scheduler := services.NewSchedulerService(temporalClient)
+		scheduler.Start()
+		defer scheduler.Stop()
+
+		tm = temporal.Wrap(temporalClient)
+	} else {
+		log.Println("[Warning] Skipping Scheduler and TemporalManager setup because Temporal is unavailable.")
+	}
+
+	identityService := services.NewIdentityService(db.GetDB())
 
 	executeCtrl := controllers.NewExecuteController(db.GetDB(), tm, logicValidator)
 	credentialCtrl := controllers.NewCredentialController(db.GetDB())
 	vaultCtrl := controllers.NewVaultController(db.GetDB())
+	vaultSecretCtrl := controllers.NewVaultSecretController(db.GetDB(), identityService)
+	clerkWebhookCtrl := controllers.NewClerkWebhookController(db.GetDB(), identityService)
+	
+	apiKeyCtrl := controllers.NewApiKeyController(db.GetDB(), identityService)
+	userCtrl := controllers.NewUserController(db.GetDB(), identityService)
+	storageCtrl := controllers.NewStorageController(db.GetDB(), identityService)
+	billingCtrl := controllers.NewBillingController(db.GetDB(), identityService)
+	dashboardCtrl := controllers.NewDashboardController(db.GetDB(), identityService)
+	workflowCtrl := controllers.NewWorkflowController(db.GetDB(), temporalClient, identityService)
 
 	// 8. Setup Gin Router
 	r := gin.Default()
@@ -466,6 +490,9 @@ func main() {
 	polarH := billing.NewPolarWebhookHandler(redisClient, nc)
 	r.POST("/webhooks/polar", polarH.HandleWebhook)
 
+	// Clerk Webhook (public — uses its own HMAC signature verification)
+	r.POST("/v1/webhooks/clerk", clerkWebhookCtrl.HandleWebhook)
+
 	protected := r.Group("/")
 	protected.Use(middleware.AuthMiddleware())
 
@@ -477,7 +504,6 @@ func main() {
 	protected.POST("/api/v1/workflow/generate", generatorCtrl.HandleGenerate)
 	protected.POST("/api/v1/workflow/generate/sync", generatorCtrl.HandleGenerateSync)
 
-	workflowCtrl := controllers.NewWorkflowController(temporalClient)
 
 	compute := protected.Group("/")
 	if appconfig.IsBillingEnabled() && redisClient != nil {
@@ -506,11 +532,55 @@ func main() {
 	protected.GET("/v1/credentials", credentialCtrl.HandleList)
 	protected.DELETE("/v1/credentials/:id", credentialCtrl.HandleDelete)
 
+	// Vault Secrets (User-defined key-value secrets with AES-256-GCM)
+	protected.GET("/v1/vault/secrets", vaultSecretCtrl.HandleList)
+	protected.POST("/v1/vault/secrets", vaultSecretCtrl.HandleCreate)
+	protected.DELETE("/v1/vault/secrets/:id", vaultSecretCtrl.HandleDelete)
+
 	// Vault Sessions (Encrypted browser state for 'quanta auth')
 	protected.POST("/v1/vault/sessions", vaultCtrl.HandleUploadSession)
 	protected.GET("/v1/vault/sessions", vaultCtrl.HandleListSessions)
+	protected.DELETE("/v1/vault/sessions/:id", vaultCtrl.HandleDeleteSession)
 
-	protected.GET("/v1/execute/:job_id/stream", streamMgr.HandleSSE)
+	// API Keys
+	protected.GET("/v1/api-keys", apiKeyCtrl.HandleList)
+	protected.POST("/v1/api-keys", apiKeyCtrl.HandleCreate)
+	protected.DELETE("/v1/api-keys/:id", apiKeyCtrl.HandleRevoke)
+
+	// User Stats & Webhooks
+	protected.GET("/v1/user/stats", userCtrl.HandleGetStats)
+	protected.GET("/v1/user/logs", userCtrl.HandleGetLogs)
+	protected.GET("/v1/user/webhook", userCtrl.HandleGetWebhook)
+	protected.POST("/v1/user/webhook/url", userCtrl.HandleUpdateWebhookUrl)
+	protected.POST("/v1/user/webhook/regenerate", userCtrl.HandleRegenerateWebhookSecret)
+	protected.POST("/v1/user/webhook/test", userCtrl.HandleTestWebhook)
+
+	// Storage Assets
+	protected.GET("/v1/storage", storageCtrl.HandleList)
+	protected.POST("/v1/storage", storageCtrl.HandleRecord)
+	protected.DELETE("/v1/storage/:id", storageCtrl.HandleDelete)
+
+	// Billing
+	protected.GET("/v1/billing", billingCtrl.HandleGetBilling)
+	protected.GET("/v1/billing/transactions", billingCtrl.HandleGetTransactions)
+
+	// Dashboard
+	protected.GET("/v1/dashboard/stats", dashboardCtrl.HandleGetStats)
+	protected.GET("/v1/dashboard/jobs", dashboardCtrl.HandleGetRecentJobs)
+
+	// Workflows
+	protected.GET("/v1/workflows", workflowCtrl.HandleListWorkflows)
+	protected.POST("/v1/workflows", workflowCtrl.HandleCreateWorkflow)
+	protected.GET("/v1/workflows/:id", workflowCtrl.HandleGetWorkflow)
+	protected.PATCH("/v1/workflows/:id", workflowCtrl.HandleUpdateWorkflow)
+	protected.DELETE("/v1/workflows/:id", workflowCtrl.HandleDeleteWorkflow)
+	protected.POST("/v1/workflows/:id/run", workflowCtrl.HandleExecute) // Replaces old execute endpoint
+	protected.POST("/v1/workflow/execute", workflowCtrl.HandleExecute)  // Legacy compat
+
+
+	if streamMgr != nil {
+		protected.GET("/v1/execute/:job_id/stream", streamMgr.HandleSSE)
+	}
 
 	protected.GET("/ws", wsManager.HandleRequest)
 

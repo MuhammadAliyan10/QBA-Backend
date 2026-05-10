@@ -1,149 +1,367 @@
+// internal/controllers/workflow_controller.go
 package controllers
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
-	"log"
 	"net/http"
 	"time"
 
-	"e2e-platform/apps/control-plane/internal/authz"
-	"e2e-platform/apps/control-plane/internal/db"
 	"e2e-platform/apps/control-plane/internal/middleware"
 	"e2e-platform/apps/control-plane/internal/models"
+	"e2e-platform/apps/control-plane/internal/services"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
+	"gorm.io/gorm"
 )
 
 type WorkflowController struct {
+	db             *gorm.DB
 	temporalClient client.Client
+	identity       *services.IdentityService
 }
 
-// NewWorkflowController creates a controller using a shared Temporal client.
-// The Temporal client is created once in main.go and passed here.
-func NewWorkflowController(tc client.Client) *WorkflowController {
-	return &WorkflowController{temporalClient: tc}
+func NewWorkflowController(db *gorm.DB, tc client.Client, identity *services.IdentityService) *WorkflowController {
+	return &WorkflowController{
+		db:             db,
+		temporalClient: tc,
+		identity:       identity,
+	}
 }
 
-// --- Request/Response Types ---
+// ─── DTOS ───────────────────────────────────────────────────────────────────
+
+type CreateWorkflowRequest struct {
+	Name        string                 `json:"name" binding:"required"`
+	Description *string                `json:"description"`
+	RecipeJSON  map[string]interface{} `json:"recipe_json" binding:"required"`
+}
+
+type UpdateWorkflowRequest struct {
+	Name        *string                 `json:"name"`
+	Description *string                 `json:"description"`
+	RecipeJSON  *map[string]interface{} `json:"recipe_json"`
+	IsActive    *bool                   `json:"is_active"`
+}
+
+type WorkflowResponse struct {
+	ID          string                 `json:"id"`
+	Name        string                 `json:"name"`
+	Description *string                `json:"description"`
+	TriggerType string                 `json:"trigger_type"`
+	RecipeJSON  map[string]interface{} `json:"recipe_json"`
+	IsActive    bool                   `json:"is_active"`
+	LastRunAt   *string                `json:"last_run_at"`
+	RunCount    int                    `json:"run_count"`
+	CreatedAt   string                 `json:"created_at"`
+	UpdatedAt   string                 `json:"updated_at"`
+}
+
+// ─── WORKFLOW CRUD ──────────────────────────────────────────────────────────
+
+func (c *WorkflowController) HandleListWorkflows(ctx *gin.Context) {
+	clerkID, exists := middleware.GetUserID(ctx)
+	if !exists {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+		return
+	}
+
+	var workflows []models.Workflow
+	if err := c.db.Where("user_id = ?", tenantID).Order("created_at DESC").Find(&workflows).Error; err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch workflows"})
+		return
+	}
+
+	var response []WorkflowResponse
+	for _, w := range workflows {
+		var lastRun string
+		if w.LastRunAt != nil {
+			lastRun = w.LastRunAt.Format("2006-01-02T15:04:05Z07:00")
+		}
+
+		var recipe map[string]interface{}
+		if len(w.RecipeJSON) > 0 {
+			json.Unmarshal(w.RecipeJSON, &recipe)
+		}
+
+		response = append(response, WorkflowResponse{
+			ID:          w.ID,
+			Name:        w.Name,
+			Description: w.Description,
+			TriggerType: w.TriggerType,
+			RecipeJSON:  recipe,
+			IsActive:    w.IsActive,
+			LastRunAt:   &lastRun,
+			RunCount:    w.RunCount,
+			CreatedAt:   w.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			UpdatedAt:   w.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		})
+	}
+
+	if response == nil {
+		response = make([]WorkflowResponse, 0)
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"data": response})
+}
+
+func (c *WorkflowController) HandleGetWorkflow(ctx *gin.Context) {
+	clerkID, exists := middleware.GetUserID(ctx)
+	if !exists {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+		return
+	}
+
+	id := ctx.Param("id")
+
+	var w models.Workflow
+	if err := c.db.Where("id = ? AND user_id = ?", id, tenantID).First(&w).Error; err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "Workflow not found"})
+		return
+	}
+
+	var recipe map[string]interface{}
+	if len(w.RecipeJSON) > 0 {
+		json.Unmarshal(w.RecipeJSON, &recipe)
+	}
+
+	var lastRun string
+	if w.LastRunAt != nil {
+		lastRun = w.LastRunAt.Format("2006-01-02T15:04:05Z07:00")
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"data": WorkflowResponse{
+		ID:          w.ID,
+		Name:        w.Name,
+		Description: w.Description,
+		TriggerType: w.TriggerType,
+		RecipeJSON:  recipe,
+		IsActive:    w.IsActive,
+		LastRunAt:   &lastRun,
+		RunCount:    w.RunCount,
+		CreatedAt:   w.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		UpdatedAt:   w.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+	}})
+}
+
+func (c *WorkflowController) HandleCreateWorkflow(ctx *gin.Context) {
+	clerkID, exists := middleware.GetUserID(ctx)
+	if !exists {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+		return
+	}
+
+	var req CreateWorkflowRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+		return
+	}
+
+	recipeBytes, _ := json.Marshal(req.RecipeJSON)
+
+	w := models.Workflow{
+		UserID:      tenantID,
+		Name:        req.Name,
+		Description: req.Description,
+		TriggerType: "ON_DEMAND",
+		RecipeJSON:  recipeBytes,
+		IsActive:    true,
+	}
+
+	if err := c.db.Create(&w).Error; err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create workflow"})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"data": map[string]string{"id": w.ID}})
+}
+
+func (c *WorkflowController) HandleUpdateWorkflow(ctx *gin.Context) {
+	clerkID, exists := middleware.GetUserID(ctx)
+	if !exists {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+		return
+	}
+
+	id := ctx.Param("id")
+	var req UpdateWorkflowRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+		return
+	}
+
+	updates := make(map[string]interface{})
+	if req.Name != nil {
+		updates["name"] = *req.Name
+	}
+	if req.Description != nil {
+		updates["description"] = *req.Description
+	}
+	if req.IsActive != nil {
+		updates["is_active"] = *req.IsActive
+	}
+	if req.RecipeJSON != nil {
+		recipeBytes, _ := json.Marshal(*req.RecipeJSON)
+		updates["recipe_json"] = recipeBytes
+	}
+
+	if len(updates) == 0 {
+		ctx.JSON(http.StatusOK, gin.H{"status": "no changes"})
+		return
+	}
+
+	res := c.db.Model(&models.Workflow{}).Where("id = ? AND user_id = ?", id, tenantID).Updates(updates)
+	if res.Error != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update workflow"})
+		return
+	}
+	if res.RowsAffected == 0 {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "Workflow not found"})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"status": "updated"})
+}
+
+func (c *WorkflowController) HandleDeleteWorkflow(ctx *gin.Context) {
+	clerkID, exists := middleware.GetUserID(ctx)
+	if !exists {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+		return
+	}
+
+	id := ctx.Param("id")
+
+	res := c.db.Where("id = ? AND user_id = ?", id, tenantID).Delete(&models.Workflow{})
+	if res.Error != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete workflow"})
+		return
+	}
+	if res.RowsAffected == 0 {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "Workflow not found"})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+
+// ─── EXECUTION HANDLERS ─────────────────────────────────────────────────────
 
 type ExecuteWorkflowRequest struct {
-	WorkflowID string `json:"workflowId" binding:"required"`
+	WorkflowID string `json:"workflowId"`
 }
 
-// HandleExecute — Starts a workflow execution via Temporal.
-// Route: POST /api/v1/workflows/:id/run (matches frontend's runWorkflow URL)
-// Also supports POST /api/v1/workflow/execute (legacy compatibility)
-func (ctrl *WorkflowController) HandleExecute(c *gin.Context) {
-	// Support both URL patterns:
-	// POST /api/v1/workflows/:id/run → workflowId from URL param
-	// POST /api/v1/workflow/execute  → workflowId from JSON body
-	workflowID := c.Param("id")
+func (c *WorkflowController) HandleExecute(ctx *gin.Context) {
+	clerkID, exists := middleware.GetUserID(ctx)
+	if !exists {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+		return
+	}
 
+	workflowID := ctx.Param("id")
 	if workflowID == "" {
 		var req ExecuteWorkflowRequest
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "workflowId is required"})
+		if err := ctx.ShouldBindJSON(&req); err != nil {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "workflowId is required"})
 			return
 		}
 		workflowID = req.WorkflowID
 	}
 
-	if ctrl.temporalClient == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Temporal client not available"})
-		return
-	}
-
-	callerID, ok := middleware.GetUserID(c)
-	if !ok || callerID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+	if c.temporalClient == nil {
+		ctx.JSON(http.StatusServiceUnavailable, gin.H{"error": "Temporal client not available"})
 		return
 	}
 
 	var workflow models.Workflow
-	if err := db.DB.Where("id = ?", workflowID).First(&workflow).Error; err != nil {
-		log.Printf("[Workflow] Workflow %s not found: %v", workflowID, err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Workflow not found"})
+	if err := c.db.Where("id = ? AND user_id = ?", workflowID, tenantID).First(&workflow).Error; err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "Workflow not found"})
 		return
 	}
 
-	if workflow.UserID != callerID {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Workflow not found"})
-		return
-	}
-
-	// Unmarshal recipe_json to pass through Temporal
 	var recipeData map[string]interface{}
 	if len(workflow.RecipeJSON) > 0 {
-		if err := json.Unmarshal(workflow.RecipeJSON, &recipeData); err != nil {
-			log.Printf("[Workflow] Failed to parse recipe_json for workflow %s: %v", workflowID, err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid workflow recipe data"})
-			return
-		}
+		json.Unmarshal(workflow.RecipeJSON, &recipeData)
 	}
 
-	// Generate proper UUID for the job
 	jobUUID := uuid.New().String()
-
-	// Create Job record using GORM model (matches Prisma schema)
 	job := models.Job{
 		ID:         jobUUID,
-		UserID:     workflow.UserID,
+		UserID:     tenantID,
 		WorkflowID: workflowID,
 		Status:     "QUEUED",
 	}
 
-	if err := db.DB.Create(&job).Error; err != nil {
-		log.Printf("[Workflow] Failed to create job record: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create job record"})
+	if err := c.db.Create(&job).Error; err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create job record"})
 		return
 	}
 
-	// Start the BrowserWorkflow via Temporal
 	workflowOptions := client.StartWorkflowOptions{
 		ID:        "workflow-" + jobUUID,
 		TaskQueue: "e2e-browser-tasks",
 	}
 
-	// Pass the full recipe graph so the Python worker can execute it
 	payload := map[string]interface{}{
 		"workflow_id": workflowID,
 		"job_id":      jobUUID,
-		"user_id":     workflow.UserID,
-		"recipe":      recipeData, // Full {nodes, edges, viewport} from the editor
+		"user_id":     tenantID,
+		"recipe":      recipeData,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	tCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	run, err := ctrl.temporalClient.ExecuteWorkflow(
-		ctx,
-		workflowOptions,
-		"BrowserWorkflow",
-		payload,
-	)
+	run, err := c.temporalClient.ExecuteWorkflow(tCtx, workflowOptions, "BrowserWorkflow", payload)
 	if err != nil {
-		log.Printf("[Workflow] Failed to start execution: %v", err)
-		// Mark job as FAILED in DB
-		db.DB.Model(&job).Update("status", "FAILED")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to start workflow: %v", err)})
+		c.db.Model(&job).Update("status", "FAILED")
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start Temporal workflow"})
 		return
 	}
 
-	// Update job status to RUNNING
 	now := time.Now()
-	db.DB.Model(&job).Updates(map[string]interface{}{
+	c.db.Model(&job).Updates(map[string]interface{}{
 		"status":     "RUNNING",
 		"started_at": &now,
 	})
+	c.db.Model(&workflow).Updates(map[string]interface{}{
+		"run_count":   gorm.Expr("run_count + 1"),
+		"last_run_at": &now,
+	})
 
-	log.Printf("[Workflow] Started execution %s for workflow %s", jobUUID, workflowID)
-
-	c.JSON(http.StatusOK, gin.H{
+	ctx.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"jobId":   jobUUID,
 		"status":  "RUNNING",
@@ -151,339 +369,223 @@ func (ctrl *WorkflowController) HandleExecute(c *gin.Context) {
 	})
 }
 
-// HandleListJobs lists jobs for the authenticated user only.
-// Route: GET /v1/jobs?workflow_id=optional
-func (ctrl *WorkflowController) HandleListJobs(c *gin.Context) {
-	callerID, ok := middleware.GetUserID(c)
-	if !ok || callerID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+// ─── JOB HANDLERS ───────────────────────────────────────────────────────────
+
+func (c *WorkflowController) HandleListJobs(ctx *gin.Context) {
+	clerkID, exists := middleware.GetUserID(ctx)
+	if !exists {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
 		return
 	}
 
-	query := db.DB.Model(&models.Job{}).Where("user_id = ?", callerID).Order("created_at DESC").Limit(50)
-
-	if workflowID := c.Query("workflow_id"); workflowID != "" {
-		query = query.Where("workflow_id = ?", workflowID)
+	query := c.db.Where("user_id = ?", tenantID).Order("created_at DESC").Limit(50)
+	if wID := ctx.Query("workflow_id"); wID != "" {
+		query = query.Where("workflow_id = ?", wID)
 	}
 
 	var jobs []models.Job
 	if err := query.Find(&jobs).Error; err != nil {
-		log.Printf("[Workflow] Failed to list jobs: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list jobs"})
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list jobs"})
 		return
 	}
 
-	// Transform to frontend-compatible format
 	var response []map[string]interface{}
-	for _, job := range jobs {
+	for _, j := range jobs {
 		var duration float64
-		if job.CompletedAt != nil && job.StartedAt != nil {
-			duration = job.CompletedAt.Sub(*job.StartedAt).Seconds()
+		if j.CompletedAt != nil && j.StartedAt != nil {
+			duration = j.CompletedAt.Sub(*j.StartedAt).Seconds()
 		}
-
 		item := map[string]interface{}{
-			"id":           job.ID,
-			"name":         job.WorkflowID,
-			"workflowName": job.WorkflowID,
-			"status":       job.Status,
-			"startTime":    nil,
-			"endTime":      nil,
+			"id":           j.ID,
+			"name":         j.WorkflowID,
+			"workflowName": j.WorkflowID,
+			"status":       j.Status,
 			"duration":     duration,
-			"totalCost":    job.CreditsUsed,
-			"trigger":      "user",
-			"error":        job.ErrorMessage,
+			"totalCost":    j.CreditsUsed,
+			"error":        j.ErrorMessage,
 		}
-
-		if job.StartedAt != nil {
-			item["startTime"] = job.StartedAt.UnixMilli()
+		if j.StartedAt != nil {
+			item["startTime"] = j.StartedAt.UnixMilli()
 		} else {
-			item["startTime"] = job.CreatedAt.UnixMilli()
+			item["startTime"] = j.CreatedAt.UnixMilli()
 		}
-		if job.CompletedAt != nil {
-			item["endTime"] = job.CompletedAt.UnixMilli()
+		if j.CompletedAt != nil {
+			item["endTime"] = j.CompletedAt.UnixMilli()
 		}
-
 		response = append(response, item)
 	}
-
-	c.JSON(http.StatusOK, gin.H{"data": response})
+	if response == nil {
+		response = make([]map[string]interface{}, 0)
+	}
+	ctx.JSON(http.StatusOK, gin.H{"data": response})
 }
 
-// HandleGetJob — Get details of a single job.
-// Route: GET /v1/jobs/:id
-func (ctrl *WorkflowController) HandleGetJob(c *gin.Context) {
-	jobID := c.Param("id")
-	if jobID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "job ID is required"})
+func (c *WorkflowController) HandleGetJob(ctx *gin.Context) {
+	clerkID, exists := middleware.GetUserID(ctx)
+	if !exists {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
-
-	callerID, ok := middleware.GetUserID(c)
-	if !ok || callerID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
-		return
-	}
-
-	job, err := authz.LoadJobForUser(db.DB, jobID, callerID)
+	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
 	if err != nil {
-		if errors.Is(err, authz.ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
-			return
-		}
-		log.Printf("[Jobs] Job lookup failed: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load job"})
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
 		return
 	}
 
-	// Build response
+	jobID := ctx.Param("id")
+	var job models.Job
+	if err := c.db.Where("id = ? AND user_id = ?", jobID, tenantID).First(&job).Error; err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+		return
+	}
+
 	var duration float64
 	if job.CompletedAt != nil && job.StartedAt != nil {
 		duration = job.CompletedAt.Sub(*job.StartedAt).Seconds()
 	}
 
-	response := gin.H{
+	resp := gin.H{
 		"id":           job.ID,
 		"workflowId":   job.WorkflowID,
-		"userId":       job.UserID,
 		"status":       job.Status,
-		"startTime":    nil,
-		"endTime":      nil,
 		"duration":     duration,
 		"creditsUsed":  job.CreditsUsed,
-		"currentStep":  job.CurrentStep,
 		"errorMessage": job.ErrorMessage,
-		"retryCount":   job.RetryCount,
 		"resultUrl":    job.ResultURL,
 		"createdAt":    job.CreatedAt.UnixMilli(),
 	}
-
 	if job.StartedAt != nil {
-		response["startTime"] = job.StartedAt.UnixMilli()
+		resp["startTime"] = job.StartedAt.UnixMilli()
 	}
 	if job.CompletedAt != nil {
-		response["endTime"] = job.CompletedAt.UnixMilli()
+		resp["endTime"] = job.CompletedAt.UnixMilli()
 	}
 
-	c.JSON(http.StatusOK, response)
+	ctx.JSON(http.StatusOK, resp)
 }
 
-// HandleCancelJob — Cancel a running workflow via Temporal.
-// Route: POST /v1/jobs/:id/cancel
-func (ctrl *WorkflowController) HandleCancelJob(c *gin.Context) {
-	jobID := c.Param("id")
-	if jobID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "job ID is required"})
+func (c *WorkflowController) HandleGetJobLogs(ctx *gin.Context) {
+	clerkID, exists := middleware.GetUserID(ctx)
+	if !exists {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
-
-	if ctrl.temporalClient == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Temporal client not available"})
-		return
-	}
-
-	callerID, ok := middleware.GetUserID(c)
-	if !ok || callerID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
-		return
-	}
-
-	job, err := authz.LoadJobForUser(db.DB, jobID, callerID)
+	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
 	if err != nil {
-		if errors.Is(err, authz.ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
-			return
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+		return
+	}
+
+	jobID := ctx.Param("id")
+	// Verify job ownership
+	var count int64
+	c.db.Model(&models.Job{}).Where("id = ? AND user_id = ?", jobID, tenantID).Count(&count)
+	if count == 0 {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+		return
+	}
+
+	var logs []models.JobLog
+	c.db.Where("job_id = ?", jobID).Order("timestamp ASC").Limit(100).Find(&logs)
+
+	var response []map[string]interface{}
+	for _, l := range logs {
+		item := map[string]interface{}{
+			"id":        l.ID,
+			"level":     l.Level,
+			"message":   l.Message,
+			"nodeId":    l.NodeID,
+			"stepIndex": l.StepIndex,
+			"timestamp": l.Timestamp.UnixMilli(),
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load job"})
+		response = append(response, item)
+	}
+	if response == nil {
+		response = make([]map[string]interface{}, 0)
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"logs": response, "count": len(response)})
+}
+
+func (c *WorkflowController) HandleCancelJob(ctx *gin.Context) {
+	clerkID, exists := middleware.GetUserID(ctx)
+	if !exists {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+		return
+	}
+
+	jobID := ctx.Param("id")
+	var job models.Job
+	if err := c.db.Where("id = ? AND user_id = ?", jobID, tenantID).First(&job).Error; err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
 		return
 	}
 
 	if job.Status != "RUNNING" && job.Status != "QUEUED" {
-		c.JSON(http.StatusConflict, gin.H{
-			"error":  "Job is not in a cancellable state",
-			"status": job.Status,
-		})
+		ctx.JSON(http.StatusConflict, gin.H{"error": "Job is not in a cancellable state"})
 		return
 	}
 
-	// Cancel the Temporal workflow
-	temporalWorkflowID := "workflow-" + jobID
-	err = ctrl.temporalClient.CancelWorkflow(
-		context.Background(),
-		temporalWorkflowID,
-		"", // empty run ID = latest run
-	)
-	if err != nil {
-		log.Printf("[Jobs] Failed to cancel Temporal workflow %s: %v", temporalWorkflowID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to cancel workflow: %v", err)})
-		return
+	if c.temporalClient != nil {
+		c.temporalClient.CancelWorkflow(context.Background(), "workflow-"+jobID, "")
 	}
 
-	// Update job status in DB
 	now := time.Now()
-	db.DB.Model(&job).Updates(map[string]interface{}{
+	c.db.Model(&job).Updates(map[string]interface{}{
 		"status":       "CANCELLED",
 		"completed_at": &now,
 	})
 
-	log.Printf("[Jobs] Cancelled job %s (Temporal workflow: %s)", jobID, temporalWorkflowID)
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"jobId":   jobID,
-		"status":  "CANCELLED",
-	})
+	ctx.JSON(http.StatusOK, gin.H{"status": "CANCELLED"})
 }
 
-// HandleGetJobLogs — Get execution logs for a job.
-// Route: GET /v1/jobs/:id/logs?limit=100&since=timestamp
-func (ctrl *WorkflowController) HandleGetJobLogs(c *gin.Context) {
-	jobID := c.Param("id")
-	if jobID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "job ID is required"})
+func (c *WorkflowController) HandleResumeJob(ctx *gin.Context) {
+	clerkID, exists := middleware.GetUserID(ctx)
+	if !exists {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 		return
 	}
-
-	callerID, ok := middleware.GetUserID(c)
-	if !ok || callerID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
-		return
-	}
-
-	if _, err := authz.LoadJobForUser(db.DB, jobID, callerID); err != nil {
-		if errors.Is(err, authz.ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load job"})
-		return
-	}
-
-	// Build log query
-	query := db.DB.Model(&models.JobLog{}).
-		Where("job_id = ?", jobID).
-		Order("timestamp ASC")
-
-	// Optional: limit
-	limit := 100
-	if l := c.Query("limit"); l != "" {
-		if _, err := fmt.Sscanf(l, "%d", &limit); err == nil && limit > 0 {
-			if limit > 1000 {
-				limit = 1000
-			}
-		}
-	}
-	query = query.Limit(limit)
-
-	// Optional: since timestamp (milliseconds)
-	if since := c.Query("since"); since != "" {
-		var sinceMs int64
-		if _, err := fmt.Sscanf(since, "%d", &sinceMs); err == nil {
-			sinceTime := time.UnixMilli(sinceMs)
-			query = query.Where("timestamp > ?", sinceTime)
-		}
-	}
-
-	var logs []models.JobLog
-	if err := query.Find(&logs).Error; err != nil {
-		log.Printf("[Jobs] Failed to query logs for job %s: %v", jobID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query logs"})
-		return
-	}
-
-	// Transform to frontend-compatible format
-	var response []map[string]interface{}
-	for _, entry := range logs {
-		item := map[string]interface{}{
-			"id":        entry.ID,
-			"level":     entry.Level,
-			"message":   entry.Message,
-			"nodeId":    entry.NodeID,
-			"stepIndex": entry.StepIndex,
-			"timestamp": entry.Timestamp.UnixMilli(),
-		}
-		if entry.DurationMs != nil {
-			item["durationMs"] = *entry.DurationMs
-		}
-		response = append(response, item)
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"logs":  response,
-		"count": len(response),
-	})
-}
-
-// HandleResumeJob — Resume a paused workflow via Temporal signal.
-// Route: POST /v1/jobs/:id/resume
-// Used for human-in-the-loop flows (CAPTCHA, 2FA, manual approval).
-func (ctrl *WorkflowController) HandleResumeJob(c *gin.Context) {
-	jobID := c.Param("id")
-	if jobID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "job ID is required"})
-		return
-	}
-
-	if ctrl.temporalClient == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Temporal client not available"})
-		return
-	}
-
-	// Parse the user input data
-	var body struct {
-		Data map[string]interface{} `json:"data" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Request body must contain 'data' field"})
-		return
-	}
-
-	callerID, ok := middleware.GetUserID(c)
-	if !ok || callerID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
-		return
-	}
-
-	job, err := authz.LoadJobForUser(db.DB, jobID, callerID)
+	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
 	if err != nil {
-		if errors.Is(err, authz.ErrNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load job"})
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+		return
+	}
+
+	jobID := ctx.Param("id")
+	var job models.Job
+	if err := c.db.Where("id = ? AND user_id = ?", jobID, tenantID).First(&job).Error; err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
 		return
 	}
 
 	if job.Status != "PAUSED" && job.Status != "RUNNING" {
-		c.JSON(http.StatusConflict, gin.H{
-			"error":  "Job is not in a resumable state",
-			"status": job.Status,
-		})
+		ctx.JSON(http.StatusConflict, gin.H{"error": "Job is not in a resumable state"})
 		return
 	}
 
-	// Send signal to Temporal workflow (matches BrowserWorkflow's signal handler)
-	temporalWorkflowID := "workflow-" + jobID
-	err = ctrl.temporalClient.SignalWorkflow(
-		context.Background(),
-		temporalWorkflowID,
-		"",                  // empty run ID = latest run
-		"USER_INTERACTION",  // must match @workflow.signal(name="USER_INTERACTION")
-		body.Data,
-	)
-	if err != nil {
-		log.Printf("[Jobs] Failed to signal Temporal workflow %s: %v", temporalWorkflowID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to resume workflow: %v", err)})
+	var body struct {
+		Data map[string]interface{} `json:"data" binding:"required"`
+	}
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Request body must contain 'data'"})
 		return
 	}
 
-	// Update job status
-	db.DB.Model(&job).Update("status", "RUNNING")
+	if c.temporalClient != nil {
+		c.temporalClient.SignalWorkflow(context.Background(), "workflow-"+jobID, "", "USER_INTERACTION", body.Data)
+	}
 
-	log.Printf("[Jobs] Resumed job %s with user input", jobID)
+	c.db.Model(&job).Update("status", "RUNNING")
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"jobId":   jobID,
-		"status":  "RUNNING",
-	})
+	ctx.JSON(http.StatusOK, gin.H{"success": true, "jobId": jobID, "status": "RUNNING"})
 }

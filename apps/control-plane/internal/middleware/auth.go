@@ -265,9 +265,6 @@ func deriveClerkIssuer(publishableKey string) string {
 	}
 	encoded := parts[2]
 
-	// Clerk base64-encodes the domain with a trailing $ — strip it.
-	encoded = strings.TrimRight(encoded, "$")
-
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		// Try with padding
@@ -283,7 +280,11 @@ func deriveClerkIssuer(publishableKey string) string {
 		}
 	}
 
-	domain := strings.TrimSpace(string(decoded))
+	// Clerk base64-encodes the domain with a trailing $ — it appears in the DECODED string.
+	decodedStr := string(decoded)
+	decodedStr = strings.TrimRight(decodedStr, "$")
+
+	domain := strings.TrimSpace(decodedStr)
 	if domain == "" {
 		return ""
 	}

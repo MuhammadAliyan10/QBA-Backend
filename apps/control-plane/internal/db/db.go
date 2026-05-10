@@ -1,3 +1,4 @@
+// internal/db/db.go
 package db
 
 import (
@@ -7,26 +8,27 @@ import (
 	"strings"
 	"time"
 
-	"e2e-platform/apps/control-plane/internal/models"
+	"github.com/golang-migrate/migrate/v4"
+	_ "github.com/golang-migrate/migrate/v4/database/postgres"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
+// DB is the global GORM database instance.
 var DB *gorm.DB
 
-// Init connects to PostgreSQL (Supabase) using GORM
-// CRITICAL: PrepareStmt is disabled for Supabase PgBouncer compatibility
+// Init connects to PostgreSQL (Supabase) using GORM and runs versioned SQL migrations.
+// CRITICAL: PrepareStmt is disabled for Supabase PgBouncer compatibility.
 func Init() {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		// Fallback for local development (matches docker-compose PostgreSQL)
 		dsn = "postgresql://postgres:postgres@localhost:5433/quanta?sslmode=disable"
 		log.Println("[Database] Using default local PostgreSQL DSN")
 	}
 
-	// Validate DSN format (must be PostgreSQL)
 	if !strings.HasPrefix(dsn, "postgresql://") && !strings.HasPrefix(dsn, "postgres://") {
 		log.Fatalf("[ERROR] Invalid DATABASE_URL: must start with postgresql:// or postgres://")
 	}
@@ -34,7 +36,7 @@ func Init() {
 	var err error
 	DB, err = gorm.Open(postgres.New(postgres.Config{
 		DSN:                  dsn,
-		PreferSimpleProtocol: true, // CRITICAL: Fix for Supabase PgBouncer (prepared statement already exists)
+		PreferSimpleProtocol: true, // CRITICAL: Fix for Supabase PgBouncer
 	}), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Info),
 	})
@@ -43,37 +45,65 @@ func Init() {
 		log.Fatalf("[ERROR] Failed to connect to PostgreSQL: %v", err)
 	}
 
-	// Configure connection pool
 	sqlDB, err := DB.DB()
 	if err != nil {
 		log.Fatalf("[ERROR] Failed to get underlying SQL.DB: %v", err)
 	}
 
 	// CRITICAL: Configure connection pool to prevent exhaustion
-	// Supabase free tier has ~60 connections, pro has ~500
-	sqlDB.SetMaxOpenConns(20)                 // Prevent exhaustion
-	sqlDB.SetMaxIdleConns(5)                  // Keep some warm connections
-	sqlDB.SetConnMaxLifetime(5 * time.Minute) // Recycle connections
+	sqlDB.SetMaxOpenConns(20)
+	sqlDB.SetMaxIdleConns(5)
+	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
 	log.Println("[Database] ✓ Connected to PostgreSQL (GORM with PrepareStmt=false)")
 
-	// 1. New Go-Only tables (not managed by Prisma)
-	if err := DB.AutoMigrate(&models.VaultSession{}); err != nil {
-		log.Printf("[Database] ⚠ VaultSession AutoMigrate failed: %v", err)
-	} else {
-		log.Println("[Database] ✓ VaultSession schema synchronized")
+	// Run versioned SQL migrations
+	runMigrations(dsn)
+}
+
+// runMigrations executes pending SQL migrations using golang-migrate.
+// Migrations are tracked in the schema_migrations table.
+// Fails fast if migration state is dirty.
+func runMigrations(dsn string) {
+	migrationsPath := os.Getenv("MIGRATIONS_PATH")
+	if migrationsPath == "" {
+		migrationsPath = "file://migrations"
 	}
 
-	// Verify tables exist (Prisma manages the schema via migrations,
-	// we only check connectivity — DO NOT AutoMigrate to avoid conflicts with Prisma)
-	if err := verifySchema(); err != nil {
-		log.Printf("[Database] ⚠ Schema verification warning: %v", err)
-		log.Println("[Database] Make sure Prisma migrations have been run on this database")
+	// golang-migrate requires postgres:// prefix, not postgresql://
+	migrateDSN := dsn
+	if strings.HasPrefix(migrateDSN, "postgresql://") {
+		migrateDSN = "postgres://" + strings.TrimPrefix(migrateDSN, "postgresql://")
+	}
+
+	m, err := migrate.New(migrationsPath, migrateDSN)
+	if err != nil {
+		log.Printf("[Database] ⚠ Migration setup failed: %v", err)
+		log.Println("[Database] Continuing without migrations — ensure schema is up to date manually")
+		return
+	}
+	defer m.Close()
+
+	// Check for dirty state
+	version, dirty, _ := m.Version()
+	if dirty {
+		log.Fatalf("[Database] FATAL: Migration state is dirty at version %d. Manual intervention required.", version)
+	}
+
+	err = m.Up()
+	switch {
+	case err == nil:
+		newVersion, _, _ := m.Version()
+		log.Printf("[Database] ✓ Migrations applied successfully (now at version %d)", newVersion)
+	case err == migrate.ErrNoChange:
+		log.Printf("[Database] ✓ Migrations up to date (version %d)", version)
+	default:
+		log.Printf("[Database] ⚠ Migration error: %v", err)
+		log.Println("[Database] The server will continue, but schema may be incomplete")
 	}
 }
 
 // Ping checks if the database connection is healthy.
-// Used by health check endpoints.
 func Ping() error {
 	if DB == nil {
 		return fmt.Errorf("database connection not initialized")
@@ -85,31 +115,7 @@ func Ping() error {
 	return sqlDB.Ping()
 }
 
-// verifySchema checks that the expected Prisma-managed tables exist.
-// We do NOT create or modify tables — Prisma owns the schema.
-func verifySchema() error {
-	// Check critical tables exist by doing a lightweight query
-	tables := []struct {
-		model     interface{}
-		tableName string
-	}{
-		{&models.Job{}, "jobs"},
-		{&models.UserProfile{}, "user_profiles"},
-		{&models.Workflow{}, "workflows"},
-		{&models.VaultSession{}, "vault_sessions"},
-	}
-
-	for _, t := range tables {
-		if !DB.Migrator().HasTable(t.model) {
-			return fmt.Errorf("required table '%s' not found — run Prisma migrations first", t.tableName)
-		}
-	}
-
-	log.Println("[Database] ✓ Schema verified (jobs, user_profiles, workflows)")
-	return nil
-}
-
-// GetDB returns the global GORM database instance
+// GetDB returns the global GORM database instance.
 func GetDB() *gorm.DB {
 	return DB
 }

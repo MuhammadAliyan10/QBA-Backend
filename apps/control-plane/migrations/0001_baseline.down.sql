@@ -1,0 +1,3 @@
+-- 0001_baseline.down.sql
+-- Baseline is irreversible. This file intentionally left empty.
+-- Dropping the entire schema would be catastrophic and is never appropriate.
