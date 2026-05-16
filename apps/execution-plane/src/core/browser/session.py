@@ -262,7 +262,17 @@ class SessionManager:
                 logger.warning(f"[Session] Session missing cookies/origins for {user_id}@{domain}")
                 return None
 
-            logger.info(f"[Session] Restored session for {user_id}@{domain} ({len(session_data.get('cookies', []))} cookies)")
+            # TASK 7 FIX: Force explicit domain scoping for all cookies.
+            # Playwright requires strict domain matches. Prepending '.' ensures
+            # the session applies to both base domains and all subdomains.
+            if "cookies" in session_data:
+                for cookie in session_data["cookies"]:
+                    domain = cookie.get("domain", "")
+                    if domain and not domain.startswith("."):
+                        # Strip 'www.' if present and prepend '.' for wildcard coverage
+                        cookie["domain"] = "." + domain.lstrip("www.")
+
+            logger.info(f"[Session] Restored and sanitized session for {user_id}@{domain} ({len(session_data.get('cookies', []))} cookies)")
             return session_data
 
         except aioredis.RedisError as e:

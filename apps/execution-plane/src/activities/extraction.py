@@ -15,8 +15,13 @@ async def perform_extraction(
     is_network_extraction = False
 
     # PHASE 3 FIX: Network First Intent-Key Matching
+    if global_sniffer and hasattr(global_sniffer, 'captured_responses'):
+        # TASK 7 FIX: Purge guest-state network payloads captured during navigation.
+        # This prevents scoring public trending repos from the login landing page.
+        global_sniffer.captured_responses.clear()
+        
+    # Re-check for new responses captured after hydration
     if global_sniffer and hasattr(global_sniffer, 'captured_responses') and global_sniffer.captured_responses:
-
         best_payload = None
         best_score = -1
         # Basic tokenization of user intent ("price of iphone" -> ["price", "iphone"])

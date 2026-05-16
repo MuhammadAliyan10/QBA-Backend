@@ -62,6 +62,11 @@ async def execute_mission(target_url: str, credential_id: str, prompt: str) -> s
         "Content-Type": "application/json"
     }
 
+    # Development Bypass Header
+    dev_user_id = os.getenv("QUANTA_DEV_USER_ID")
+    if dev_user_id:
+        headers["X-Dev-User-ID"] = dev_user_id
+
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             f"{api_url}/v1/execute",
@@ -137,6 +142,11 @@ async def upload_session(target_url: str, session_data: Dict[str, Any]) -> str:
         "Content-Type": "application/json"
     }
 
+    # Development Bypass Header
+    dev_user_id = os.getenv("QUANTA_DEV_USER_ID")
+    if dev_user_id:
+        headers["X-Dev-User-ID"] = dev_user_id
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             f"{api_url}/v1/credentials",
@@ -172,6 +182,11 @@ async def upload_vault_session(target_url: str, session_state: Dict[str, Any], a
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
+
+    # Development Bypass Header
+    dev_user_id = os.getenv("QUANTA_DEV_USER_ID")
+    if dev_user_id:
+        headers["X-Dev-User-ID"] = dev_user_id
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(

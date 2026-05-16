@@ -75,7 +75,17 @@ func AuthMiddleware() gin.HandlerFunc {
 	}
 
 	return func(c *gin.Context) {
-		// Explicit dev-only bypass — must never be set in production.
+		// 1. Dev Bypass: Check for local development bypass header
+		if os.Getenv("APP_ENV") == "development" {
+			devUserID := c.GetHeader("X-Dev-User-ID")
+			if devUserID != "" {
+				setAuthUser(c, devUserID)
+				c.Next()
+				return
+			}
+		}
+
+		// 2. Explicit legacy skip auth — to be removed in future versions.
 		if strings.EqualFold(os.Getenv("SKIP_AUTH"), "true") {
 			uid := strings.TrimSpace(os.Getenv("DEV_USER_ID"))
 			if uid == "" {

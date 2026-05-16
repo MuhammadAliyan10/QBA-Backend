@@ -3,8 +3,11 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -370,6 +373,9 @@ func (sc *SightedController) updateJobCompleted(jobID string, completedAt *time.
 		"result_json":  resultJSON,
 		"updated_at":   time.Now(),
 	})
+
+	// Persist result to disk for academic defense evidence
+	writeResultToDisk(jobID, resultJSON)
 }
 
 var (
@@ -381,3 +387,33 @@ var (
 type validationError struct{ msg string }
 
 func (e *validationError) Error() string { return e.msg }
+
+// writeResultToDisk persists the raw workflow result JSON to the local filesystem.
+// Output directory: ./workflow_results/
+// Filename format:  workflow_result_<jobID>.json
+func writeResultToDisk(jobID string, rawJSON json.RawMessage) {
+	outputDir := "workflow_results"
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		log.Printf("[ResultWriter] Failed to create output directory: %v", err)
+		return
+	}
+
+	// Pretty-print the JSON for human readability
+	var formatted json.RawMessage
+	jsonData, err := json.MarshalIndent(json.RawMessage(rawJSON), "", "  ")
+	if err != nil {
+		// Fallback: write raw bytes if formatting fails
+		jsonData = rawJSON
+		_ = formatted // suppress unused warning
+	}
+
+	fileName := fmt.Sprintf("workflow_result_%s.json", jobID)
+	filePath := filepath.Join(outputDir, fileName)
+
+	if err := os.WriteFile(filePath, jsonData, 0644); err != nil {
+		log.Printf("[ResultWriter] Failed to write result file: %v", err)
+		return
+	}
+
+	log.Printf("[ResultWriter] Result persisted | JobID=%s | Path=%s | Size=%d bytes", jobID, filePath, len(jsonData))
+}

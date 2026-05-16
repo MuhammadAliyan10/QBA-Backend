@@ -201,15 +201,25 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 
 	log.Printf("[PreFlight] Checks Passed | JobID=%s", jobID)
 
-	// In local/dev stacks the `workflows` table may not exist.
-	// The execution plane only needs a workflow_id value for tracing; no DB row is required.
+	// Ensure a workflow record exists to satisfy foreign key constraints.
 	workflowID := uuid.New().String()
+	workflow := &models.Workflow{
+		ID:          workflowID,
+		UserID:      tenantID,
+		Name:        "Ad-hoc CLI Mission",
+		TriggerType: "ON_DEMAND",
+		RecipeJSON:  []byte("{}"),
+		IsActive:    true,
+	}
+	if err := ec.db.Create(workflow).Error; err != nil {
+		log.Printf("[ExecuteController] DB Error: failed to create placeholder workflow: %v", err)
+	}
 
 	job := &models.Job{
 		ID:         jobID,
 		UserID:     tenantID,
 		WorkflowID: workflowID,
-		Status:     "PENDING",
+		Status:     "QUEUED",
 	}
 	if strings.TrimSpace(req.CallbackURL) != "" {
 		u := strings.TrimSpace(req.CallbackURL)
@@ -278,6 +288,15 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 			resolvedSessionState = sessionMap
 			log.Printf("[ExecuteController] Injecting decrypted legacy credential | JobID=%s | CredID=%s", jobID, req.CredentialID)
 		}
+	}
+
+	if ec.tm == nil {
+		log.Printf("[ExecuteController] Error: Temporal Manager is nil. Check if Temporal server is running at localhost:7233")
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":   "orchestrator_unavailable",
+			"message": "Automation orchestrator is currently offline. Please ensure Temporal is running.",
+		})
+		return
 	}
 
 	runID, err := ec.tm.StartExecution(

@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -123,6 +125,11 @@ func (c *Consumer) StartListening() {
 			db.DB.Model(&models.Job{}).Where("id = ?", jobID).Updates(updates)
 			metrics.DecrementJobQueueCount("running")
 			metrics.IncrementJobQueueCount("completed")
+
+			// Academic Defense Persistence: Write result JSON to local disk
+			if event.Data != "" {
+				writeResultToDisk(jobID, []byte(event.Data))
+			}
 
 			// --- INDUSTRIAL: AUTOMATED DATA EXPORT & EMAIL ---
 			go func() {
@@ -610,4 +617,31 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatal("Forced shutdown: ", err)
 	}
+}
+
+func writeResultToDisk(jobID string, rawJSON []byte) {
+	outputDir := "workflow_results"
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		log.Printf("[ResultWriter] Failed to create output directory: %v", err)
+		return
+	}
+
+	// Pretty-print the JSON for human readability
+	var indented []byte
+	var obj interface{}
+	if err := json.Unmarshal(rawJSON, &obj); err == nil {
+		indented, _ = json.MarshalIndent(obj, "", "  ")
+	} else {
+		indented = rawJSON
+	}
+
+	fileName := fmt.Sprintf("workflow_result_%s.json", jobID)
+	filePath := filepath.Join(outputDir, fileName)
+
+	if err := os.WriteFile(filePath, indented, 0644); err != nil {
+		log.Printf("[ResultWriter] Failed to write result file: %v", err)
+		return
+	}
+
+	log.Printf("[ResultWriter] Result persisted | JobID=%s | Path=%s | Size=%d bytes", jobID, filePath, len(indented))
 }

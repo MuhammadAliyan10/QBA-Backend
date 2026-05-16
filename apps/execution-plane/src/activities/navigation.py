@@ -19,7 +19,14 @@ async def safe_browser_context(playwright_instance, launch_args, storage_state=N
     Guarantees browser and context closure even on catastrophic crashes.
     Prevents zombie Chromium processes and memory leaks.
     """
-    browser = await playwright_instance.chromium.launch(**launch_args)
+    # TASK 8: Visual Demo Mode for FYP2 Video
+    # We disable headless mode and add slow_mo to allow the AI manipulation 
+    # to be visually recorded on the host machine.
+    browser = await playwright_instance.chromium.launch(
+        headless=False,
+        slow_mo=800,
+        args=["--start-maximized"]
+    )
     context = await browser.new_context(storage_state=storage_state)
     page = await context.new_page()
     try:
@@ -144,9 +151,14 @@ async def safe_wait_for_network_idle(page: Page, timeout_ms: int = NETWORK_IDLE_
     Only catches timeout - re-raises critical errors like page closed.
     """
     try:
-        await page.wait_for_load_state("networkidle", timeout=timeout_ms)
+        # TASK 7 FIX: networkidle is unreliable for hydration on heavy SPAs.
+        # We wait for the initial load and then allow for GraphQL/XHR hydration.
+        await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+        
+        # Semantic Latch: Allow the page to physically hydrate with actual feed data.
+        await asyncio.sleep(2.0)
     except PlaywrightTimeout:
-        logger.debug("Network idle timeout (expected for some sites with streaming)")
+        logger.debug("Navigation load timeout (expected for some slow-loading sites)")
     except Exception as e:
         error_str = str(e).lower()
         if "closed" in error_str or "crashed" in error_str:

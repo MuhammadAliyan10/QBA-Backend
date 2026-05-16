@@ -7,18 +7,16 @@ import (
 )
 
 // Job represents a single execution of a workflow
-// Mapped from Prisma: model Job
 type Job struct {
-	// NOTE: Local dev schema (backend/docker-compose.yml -> app_postgres) uses a minimal `jobs` table.
-	// Keep this struct aligned to that schema to avoid insert/update failures.
 	ID         string `gorm:"primaryKey;column:id;type:text"`
 	WorkflowID string `gorm:"column:workflow_id;type:text"`
-	UserID     string `gorm:"column:user_id;type:uuid;index"`
+	UserID     string `gorm:"column:user_id;type:text;index"`
 	Status     string `gorm:"column:status;type:text;index"`
 
 	WebhookURL *string        `gorm:"column:webhook_url;type:text"`
 	Params     datatypes.JSON `gorm:"column:params;type:jsonb"`
 	Result     datatypes.JSON `gorm:"column:result;type:jsonb"`
+	ResultJSON datatypes.JSON `gorm:"column:result_json;type:jsonb"`
 
 	ErrorMessage *string `gorm:"column:error_message;type:text"`
 
@@ -27,7 +25,7 @@ type Job struct {
 	UpdatedAt   time.Time  `gorm:"column:updated_at"`
 	CompletedAt *time.Time `gorm:"column:completed_at"`
 
-	// Compatibility fields for other controllers (not present in local dev `jobs` table).
+	// Compatibility fields
 	ScheduledAt *time.Time      `gorm:"-"`
 	StartedAt   *time.Time      `gorm:"-"`
 	DurationMs  *int            `gorm:"-"`
@@ -42,7 +40,6 @@ type Job struct {
 	LLMCalls          int    `gorm:"-"`
 	ErrorStack        *string `gorm:"-"`
 	RetryCount        int     `gorm:"-"`
-	ResultJSON        *datatypes.JSON `gorm:"-"`
 	ResultURL         *string         `gorm:"-"`
 }
 

@@ -71,6 +71,12 @@ func NewBillingMiddleware(redisClient *redis.Client, natsConn *nats.Conn) *Billi
 // FAIL-CLOSED: No billing verification = no execution.
 func (bm *BillingMiddleware) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// 1. Dev Bypass: Ignore billing in local development mode
+		if os.Getenv("APP_ENV") == "development" {
+			c.Next()
+			return
+		}
+
 		// FAIL-CLOSED: If Redis is not available, deny ALL execution.
 		if bm.redis == nil {
 			log.Printf("[BILLING] REJECT: Redis not configured — billing unavailable | IP=%s", c.ClientIP())
