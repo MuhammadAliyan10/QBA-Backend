@@ -75,7 +75,7 @@ def auth(
 @app.command()
 def execute(
     url: str, 
-    vault_id: str = typer.Option(..., "--vault-id", help="The Credential ID from the Quanta Vault."),
+    vault_id: Optional[str] = typer.Option(None, "--vault-id", help="The Credential ID from the Quanta Vault."),
     prompt: str = typer.Option(..., "--prompt", help="The natural language mission prompt.")
 ):
     """
@@ -89,7 +89,7 @@ def execute(
     async def run_and_stream():
         try:
             rich.print(f"[bold cyan]Triggering execution mission...[/bold cyan]")
-            job_id = await execute_mission(url, vault_id, prompt)
+            job_id = await execute_mission(url, prompt, vault_id)
             
             rich.print(f"[bold green]Mission Dispatched:[/bold green] Job ID: [bold white]{job_id}[/bold white]")
             rich.print(f"[bold cyan]Attaching to live log stream...[/bold cyan]\n")

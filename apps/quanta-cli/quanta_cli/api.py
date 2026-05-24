@@ -43,7 +43,7 @@ def save_api_key(api_key: str) -> str:
         
     return config_path
 
-async def execute_mission(target_url: str, credential_id: str, prompt: str) -> str:
+async def execute_mission(target_url: str, prompt: str, credential_id: Optional[str] = None) -> str:
     """Triggers an execution mission on the Quanta Control Plane."""
     api_url = os.getenv("QUANTA_API_URL", "http://localhost:8080").rstrip("/")
     api_key = get_api_key()

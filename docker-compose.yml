@@ -237,10 +237,16 @@ services:
       dockerfile: apps/execution-plane/Dockerfile
     container_name: quanta_execution_plane
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"print('OK')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     environment:
       - TEMPORAL_HOST=temporal:7233
       - NATS_URL=nats://nats:4222
       - QDRANT_URL=http://qdrant:6333
+      - QUANTA_HEADLESS=true
       # AI Keys (Passed from host .env)
       - NVIDIA_API_KEY=${NVIDIA_API_KEY}
       # Local dev DB (avoid leaking host DATABASE_URL into container)
