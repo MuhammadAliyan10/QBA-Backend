@@ -105,6 +105,12 @@ NODE_TYPE_TO_ACTION: dict[str, str] = {
     "WAIT_FOR_HIDDEN": "WAIT_FOR",
     "SELECT_OPTION": "SELECT",
     "CHECK_CHECKBOX": "CHECK",
+
+    # Two-Phase Cognitive Orchestration
+    "UNIVERSAL_AGENT": "UNIVERSAL_AGENT",
+
+    # Security
+    "STEALTH_VAULT": "LOAD_VAULT",
 }
 
 # Node types that are structural (not executable actions)
@@ -341,5 +347,20 @@ def _build_step_params(
 
     elif action == "SCREENSHOT":
         params["full_page"] = config.get("fullPage", False)
+
+    elif action == "UNIVERSAL_AGENT":
+        params["navigation_objective"] = config.get("navigation_objective", "")
+        raw_schema = config.get("extraction_schema", "")
+        if isinstance(raw_schema, str) and raw_schema.strip():
+            import json
+            try:
+                params["extraction_schema"] = json.loads(raw_schema)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Malformed extraction_schema JSON in UNIVERSAL_AGENT node: {e}")
+        elif isinstance(raw_schema, dict):
+            params["extraction_schema"] = raw_schema
+
+    elif action == "LOAD_VAULT":
+        params["vault_name"] = config.get("vault_name", "")
 
     return params

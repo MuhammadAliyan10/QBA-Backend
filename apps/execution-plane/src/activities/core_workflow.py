@@ -28,6 +28,7 @@ from core.storage import get_storage, is_storage_available, StorageUploadError
 # 1. The Nervous System (Snake Case - Infrastructure)
 from core.nervous_system import NervousSystem
 from core.utils.params import substitute_variables, validate_and_substitute
+from activities.execute_universal_agent import execute_universal_agent
 
 # 2. The Glass Box Engine (Camel Case - Logic)
 from core.selector.smart_finder import SmartFinder
@@ -88,7 +89,7 @@ async def browser_automation_activity(payload: dict) -> dict:
     job_id = payload.get("job_id")
     workflow_id = payload.get("workflow_id")
     target_url = payload.get("target_url")
-    objective = payload.get("objective")
+    navigation_objective = payload.get("navigation_objective")
     params = payload.get("params", {})
 
     # DIAGNOSTIC TELEMETRY
@@ -145,37 +146,18 @@ async def browser_automation_activity(payload: dict) -> dict:
         # SOURCE C: Raw steps (developer mode)
         steps = payload.get("steps", [])
 
+    use_universal_agent = False
     if not steps:
-        # SOURCE D: AI Autonomous Planning (Ad-Hoc)
-        logger.info(f"[{job_id}] No recipe found. Invoking Preflight Planner...")
-        await NervousSystem.publish_update(job_id, "RUNNING", "Generating autonomous plan...", "init")
-
-        from core.rag.preflight import PreflightPipeline
-        pipeline = PreflightPipeline()
-        preflight_result = await pipeline.run(target_url, objective, skip_justification=True, job_id=job_id)
-
-        if preflight_result.success and preflight_result.recipe:
-            recipe_data = preflight_result.recipe
-            from core.recipe.recipe_converter import convert_graph_to_steps
-            nodes = recipe_data.get("nodes", [])
-            edges = recipe_data.get("edges", [])
-            steps = convert_graph_to_steps(nodes, edges)
-            logger.info(f"[{job_id}] Autonomously generated {len(steps)} steps")
-            await NervousSystem.publish_update(job_id, "RUNNING", f"Plan generated ({len(steps)} steps)", "init")
-        else:
-            err = f"[Error] Autonomous planning failed: {preflight_result.errors if hasattr(preflight_result, 'errors') else 'Unknown error'}"
-            await NervousSystem.publish_update(job_id, "FAILED", err, "init")
-            return {"status": "FAILED", "error": err}
-
-    if not steps:
-        err = f"[Error] No recipe found or generated for workflow: '{workflow_id}'"
-        await NervousSystem.publish_update(job_id, "FAILED", err, "init")
-        return {"status": "FAILED", "error": err}
+        # SOURCE D: AI Autonomous Planning (Ad-Hoc) - FALLBACK TO UNIVERSAL AGENT
+        logger.info(f"[{job_id}] No recipe found. Falling back to Universal Agent...")
+        await NervousSystem.publish_update(job_id, "RUNNING", "Initializing Universal Agent...", "init")
+        use_universal_agent = True
 
     async with async_playwright() as p:
         # --- 4. BROWSER LAUNCH STRATEGY ---
         launch_args = {
-            "headless": True,
+            "headless": False,
+            "slow_mo": 800,
             "args": ["--no-sandbox", "--disable-setuid-sandbox"]
         }
 
@@ -413,15 +395,55 @@ async def browser_automation_activity(payload: dict) -> dict:
                 )
 
                 # --- PRE-LOOP: Mandatory initial navigation ---
-                if target_url:
+                if target_url and not use_universal_agent:
                     logger.info(f"[{job_id}] Pre-loop navigation to {target_url}")
                     try:
                         await page.goto(target_url, timeout=NAVIGATION_TIMEOUT, wait_until="networkidle")
-                        # Settle JS redirects
-                        await asyncio.sleep(2)
+                        # Settle JS redirects using native Playwright deterministic wait
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=10000)
+                        except PlaywrightTimeout:
+                            pass
                     except Exception as nav_err:
                         logger.warning(f"[{job_id}] Pre-loop navigation error (non-fatal): {nav_err}")
+
+                # --- 5.5: UNIVERSAL AGENT FALLBACK / SEMANTIC SCHEMA EXTRACTION ---
+                if use_universal_agent:
+                    extraction_schema = payload.get("extraction_schema") or config.get("extraction_schema")
+                    logger.info(f"[{job_id}] Executing Universal Agent fallback logic")
+                    ua_result = await execute_universal_agent(
+                        page=page,
+                        job_id=job_id,
+                        user_logger=user_logger,
+                        nervous_system=NervousSystem,
+                        target_url=target_url,
+                        navigation_objective=navigation_objective,
+                        extraction_schema=extraction_schema
+                    )
+                    
+                    if extraction_schema and ua_result.get("status") == "success":
+                        extracted_data = ua_result.get("data")
+                        data_json = json.dumps(extracted_data)
+                        # Payload Aggregation: Publish to NervousSystem
+                        await NervousSystem.publish(
+                            f"quanta.telemetry.{job_id}",
+                            json.dumps({"type": "log", "message": f"[Extractor] Payload: {data_json}"})
+                        )
+                        await NervousSystem.publish_update(
+                            job_id, "RUNNING", "Extracted semantic schema", "ua_node", data=data_json
+                        )
+                        # Return the unified JSON blob as the final workflow result
+                        return {
+                            "status": "SUCCESS",
+                            "steps_completed": 1,
+                            "job_id": job_id,
+                            "data": extracted_data
+                        }
+
+                    steps = []  # Skip the regular execution loop
+                
                 # --- 6. EXECUTION LOOP ---
+                active_vault = None
                 for i, step in enumerate(steps):
                     # Use real node ID from graph converter for frontend event correlation
                     node_id = step.get("node_id", f"step-{i+1}")
@@ -510,8 +532,10 @@ async def browser_automation_activity(payload: dict) -> dict:
     
                         # ⚡ SPA FIX: After networkidle, JavaScript frameworks (React/Vue/Svelte)
                         # still need time to execute and paint the final DOM.
-                        # A brief settle window prevents the next step from reading an empty shell.
-                        await asyncio.sleep(1.5)
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=10000)
+                        except PlaywrightTimeout:
+                            pass
     
                         # Try to dismiss any popups that appeared on page load
                         await dismiss_overlays(page)
@@ -579,7 +603,10 @@ async def browser_automation_activity(payload: dict) -> dict:
                         if "selector" in step_params:
                             state = step_params.get("state", "visible")
                             timeout = int(step_params.get("timeout_ms", 10000))
-                            await page.wait_for_selector(step_params["selector"], state=state, timeout=timeout)
+                            try:
+                                await page.wait_for_selector(step_params["selector"], state=state, timeout=timeout)
+                            except PlaywrightTimeout:
+                                raise ValueError(f"WAIT_FOR Timeout: Selector '{step_params['selector']}' not {state} after {timeout}ms")
                         elif "event" in step_params:
                             event = step_params["event"]
                             if event == "network_idle":
@@ -605,11 +632,52 @@ async def browser_automation_activity(payload: dict) -> dict:
     
                         # GHOST TYPIST FALLBACK (Resilient to non-input wrappers)
                         await element.click()
-                        await asyncio.sleep(0.1) # Micro-delay for React state
+                        try:
+                            await page.wait_for_load_state("domcontentloaded", timeout=1000)
+                        except PlaywrightTimeout:
+                            pass
                         await page.keyboard.type(text_to_type, delay=50)
     
                         await NervousSystem.publish_update(job_id, "RUNNING", f"Typed input safely", node_id)
     
+                    elif action == "LOAD_VAULT":
+                        active_vault = step_params.get("vault_name")
+                        logger.info(f"[{job_id}] Active vault set to {active_vault}")
+                        await NervousSystem.publish_update(job_id, "SUCCESS", f"Loaded BYOS vault: {active_vault}", node_id)
+
+                    elif action == "UNIVERSAL_AGENT":
+                        nav_obj = step_params.get("navigation_objective")
+                        ext_schema = step_params.get("extraction_schema")
+
+                        logger.info(f"[{job_id}] Executing UNIVERSAL_AGENT node logic")
+                        
+                        # Logical patch for context initialization
+                        ua_page = page
+                        if active_vault:
+                            storage_state = f"vaults/{active_vault}.json"
+                            ua_context = await browser.new_context(storage_state=storage_state)
+                            ua_page = await ua_context.new_page()
+
+                        # Use the current page URL if we have navigated, otherwise target_url
+                        current_url = page.url if page.url != "about:blank" else target_url
+
+                        ua_result = await execute_universal_agent(
+                            page=ua_page,
+                            job_id=job_id,
+                            user_logger=user_logger,
+                            nervous_system=NervousSystem,
+                            target_url=current_url,
+                            navigation_objective=nav_obj,
+                            extraction_schema=ext_schema
+                        )
+
+                        if ext_schema and ua_result.get("status") == "success":
+                            extracted_data = ua_result.get("data")
+                            data_json = json.dumps(extracted_data)
+                            await NervousSystem.publish_update(
+                                job_id, "SUCCESS", "Universal Agent Extracted Schema", node_id, data=data_json
+                            )
+
                     elif action == "LOG":
                         # Support both 'content' (from old nodes) and 'message' (from new nodes)
                         content = step_params.get("message") or step_params.get("content", "")

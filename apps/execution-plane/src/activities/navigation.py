@@ -19,14 +19,26 @@ async def safe_browser_context(playwright_instance, launch_args, storage_state=N
     Guarantees browser and context closure even on catastrophic crashes.
     Prevents zombie Chromium processes and memory leaks.
     """
-    # TASK 8: Visual Demo Mode for FYP2 Video
-    # We disable headless mode and add slow_mo to allow the AI manipulation 
-    # to be visually recorded on the host machine.
-    browser = await playwright_instance.chromium.launch(
-        headless=False,
-        slow_mo=800,
-        args=["--start-maximized"]
-    )
+    # Respect the caller's launch_args while providing sensible defaults.
+    # Environment override: QUANTA_HEADLESS=true forces headless in production.
+    env_headless = os.getenv("QUANTA_HEADLESS", "").lower() == "true"
+    
+    headless = env_headless if env_headless else launch_args.get("headless", False)
+    slow_mo = launch_args.get("slow_mo", 800)
+    args = launch_args.get("args", ["--no-sandbox", "--disable-setuid-sandbox"])
+    
+    # Merge in --start-maximized for visual mode
+    if not headless and "--start-maximized" not in args:
+        args.append("--start-maximized")
+    
+    # Build final launch config
+    final_args = {"headless": headless, "slow_mo": slow_mo, "args": args}
+    
+    # Pass through proxy if provided
+    if "proxy" in launch_args:
+        final_args["proxy"] = launch_args["proxy"]
+    
+    browser = await playwright_instance.chromium.launch(**final_args)
     context = await browser.new_context(storage_state=storage_state)
     page = await context.new_page()
     try:

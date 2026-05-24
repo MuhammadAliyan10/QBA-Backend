@@ -32,11 +32,16 @@ async def run_visual_demo():
     print("🚀 LAUNCHING QUANTA VISUAL DEMO MODE...")
     print("--- MISSION: SOLVE W3SCHOOLS HTML EXERCISE ---")
     
+    vault_path = os.path.join(current_dir, "w3_vault.json")
+    if not os.path.exists(vault_path):
+        raise Exception("Vault not found. Run w3_auth.py first.")
+    
     async with async_playwright() as p:
         # Browser is launched with headless=False and slow_mo=800 (from navigation.py)
         # But we force it here for the standalone demo to be absolute.
         browser = await p.chromium.launch(headless=False, slow_mo=1000)
-        context = await browser.new_context()
+        # Inject the Stealth Vault
+        context = await browser.new_context(storage_state=vault_path)
         page = await context.new_page()
         
         # Initialize mocks
@@ -51,8 +56,7 @@ async def run_visual_demo():
                 nervous_system
             )
             print("\n--- MISSION ACCOMPLISHED ---")
-            print(f"Answer: {result['answer']}")
-            print("The evaluators should now see 'Correct!' on the screen.")
+            print(f"Status: {result['status']} | Loops: {result['loops']}")
             
             # Keep browser open for 5 seconds for the video
             await asyncio.sleep(5)

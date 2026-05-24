@@ -83,7 +83,7 @@ class BrowserWorkflow:
         # Non-retryable error prevents Temporal from auto-retrying before workflow catches
         # Without this, activity would retry 3 times before bubbling up to workflow
         retry_policy = RetryPolicy(
-            maximum_attempts=DEFAULT_MAX_RETRY_ATTEMPTS,
+            maximum_attempts=1,  # 1 attempt = NO retries. Prevents duplicate Chrome instances.
             initial_interval=timedelta(seconds=DEFAULT_INITIAL_RETRY_INTERVAL_SEC),
             backoff_coefficient=DEFAULT_RETRY_BACKOFF_COEFFICIENT,
             non_retryable_error_types=["HumanInterventionRequired"]

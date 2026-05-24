@@ -36,7 +36,7 @@ from activities.hybrid_activities import (
 from activities.recipe_activity import execute_recipe_activity
 from activities.publish_activities import publish_event_activity
 from activities.sighted_activity import sighted_execution_activity
-from activities.w3_solver import solve_w3_exercise
+from activities.execute_universal_agent import execute_universal_agent
 from telemetry import init_telemetry, shutdown_telemetry
 
 # --- 2. LOGGING ---
@@ -99,8 +99,8 @@ async def main():
                 # Sighted Pipeline (Harvest → Plan → Execute)
                 sighted_execution_activity,
 
-                # W3Schools Solver for FYP2 Video
-                solve_w3_exercise,
+                # Two-Phase Cognitive Orchestration
+                execute_universal_agent,
             ],
             # CRITICAL: Allow enough time for Browser to close gracefully
             graceful_shutdown_timeout=timedelta(seconds=15)
