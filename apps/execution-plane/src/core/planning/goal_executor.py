@@ -104,7 +104,7 @@ class GoalExecutor:
 
     ACTION_SETTLE_MS = 800
     NAVIGATION_WAIT_MS = 8000
-    SMART_FINDER_TIMEOUT_MS = 5000
+    SMART_FINDER_TIMEOUT_MS = 30000
 
     def __init__(self, context: BrowserContext, job_id: str = ""):
         self.context = context
@@ -143,8 +143,8 @@ class GoalExecutor:
             is_final=epoch.is_final_step,
         )
         
-        # Check if this epoch is a fan-out intent (simple heuristic for parallel)
-        is_fan_out = any(g.action in (ActionEnum.NEW_TAB, ActionEnum.SWITCH_TAB) for g in epoch.intents) and len(epoch.intents) > 3
+        # Disable fan-out concurrency to prevent sequential intents from running simultaneously
+        is_fan_out = False
 
         if is_fan_out:
             logger.info(f"[GoalExecutor] Fan-out intent detected. Executing {len(epoch.intents)} goals concurrently.")
@@ -189,20 +189,15 @@ class GoalExecutor:
                 pre_url = current_page.url
                 pre_tab_count = len(self.context.pages)
 
-                if result.extracted_data is not None and goal.store_as:
-                    # PHASE 5: Strict Type Validation
-                    validated_data = validate_extraction({goal.store_as: result.extracted_data})
-                    clean_value = validated_data.get(goal.store_as)
+                if result.extracted_data is not None:
+                    store_key = goal.store_as or "extracted_data"
+                    report.extracted_data[store_key] = result.extracted_data
                     
-                    if clean_value is not None:
-                        report.extracted_data[goal.store_as] = clean_value
-                        # Fire-and-forget to NATS
-                        asyncio.create_task(NervousSystem.publish(
-                            f"quanta.data.extracted.{self.job_id}", 
-                            json.dumps({goal.store_as: clean_value})
-                        ))
-                    else:
-                        logger.warning(f"[GoalExecutor] [{goal.goal_id}] Extraction rejected by validator: {result.extracted_data}")
+                    # Fire-and-forget to NATS
+                    asyncio.create_task(NervousSystem.publish(
+                        f"quanta.data.extracted.{self.job_id}", 
+                        json.dumps({store_key: result.extracted_data})
+                    ))
 
         # Verify expected transition
         if report.success and epoch.expected_outcome:
@@ -338,7 +333,9 @@ class GoalExecutor:
     async def _action_extract_text(self, goal: GoalAction, page: Page) -> GoalResult:
         element = await self._resolve_intent(goal, page)
         text = await element.inner_text()
-        return GoalResult(goal_id=goal.goal_id, success=True, extracted_data=text.strip())
+        extracted = text.strip()
+        logger.info(f"[EXTRACTED] {extracted}")
+        return GoalResult(goal_id=goal.goal_id, success=True, extracted_data=extracted)
 
     async def _action_extract_list(self, goal: GoalAction, page: Page) -> GoalResult:
         element = await self._resolve_intent(goal, page)
@@ -402,6 +399,8 @@ class GoalExecutor:
     async def _action_switch_tab(self, goal: GoalAction, page: Page) -> GoalResult:
         pages = self.context.pages
         idx = goal.target_tab_index
+        if idx == -1:
+            return GoalResult(goal_id=goal.goal_id, success=True)
         if idx < 0 or idx >= len(pages):
             return GoalResult(
                 goal_id=goal.goal_id, success=False,
@@ -424,12 +423,15 @@ class GoalExecutor:
     async def _action_close_tab(self, goal: GoalAction, page: Page) -> GoalResult:
         pages = self.context.pages
         idx = goal.target_tab_index
-        if idx < 0 or idx >= len(pages):
-            return GoalResult(
-                goal_id=goal.goal_id, success=False,
-                error=f"Tab index {idx} out of range.",
-            )
-        target = pages[idx]
+        if idx == -1:
+            target = page
+        else:
+            if idx < 0 or idx >= len(pages):
+                return GoalResult(
+                    goal_id=goal.goal_id, success=False,
+                    error=f"Tab index {idx} out of range.",
+                )
+            target = pages[idx]
         await target.close()
         return GoalResult(goal_id=goal.goal_id, success=True)
 

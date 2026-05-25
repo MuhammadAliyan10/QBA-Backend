@@ -27,6 +27,8 @@ async def execute_universal_agent(
     """
     try:
         if target_url:
+            from core.url_utils import resolve_final_url
+            target_url = await resolve_final_url(target_url)
             await user_logger.info("NAVIGATE", message=f"Opening Universal Agent Target: {target_url}")
             await page.goto(target_url, wait_until="domcontentloaded")
             try:
@@ -35,6 +37,7 @@ async def execute_universal_agent(
                 pass
         
         loop_count = 0
+        stall_count = 0
         max_loops = 50
         llm = SafeLLMClient()
         ui_ready = False
@@ -47,6 +50,10 @@ async def execute_universal_agent(
                 loop_count += 1
                 await user_logger.info("THINK", message=f"Phase 1 Navigation - Analyzing DOM (Iteration {loop_count})...")
                 
+                # Rate Limit Protection for Free-Tier LLMs (Nvidia NIM)
+                if loop_count > 1:
+                    await asyncio.sleep(10)
+                    
                 dom_state = await page.evaluate("""
                     () => {
                         let idCounter = 1;
@@ -65,44 +72,46 @@ async def execute_universal_agent(
                                     el.setAttribute("data-quanta-id", id.toString());
                                     
                                     let text = el.innerText || el.value || el.getAttribute("aria-label") || el.placeholder || "";
-                                    text = text.trim().replace(/\\s+/g, ' ').substring(0, 150);
+                                    text = text.trim().replace(/\\s+/g, ' ').substring(0, 80); // reduced from 150 to save tokens
                                     if (!text && el.tagName === 'INPUT') text = el.type;
                                     
                                     if (el.tagName === 'INPUT' && (el.type === 'radio' || el.type === 'checkbox') && el.checked) {
-                                        text += " [ALREADY SELECTED]";
+                                        text += " [ON]";
                                     }
                                     
-                                    marksText += `[ID: ${id}] Text: ${text}\\n`;
+                                    marksText += `[${id}] ${text}\\n`; // token optimized format
                                 }
                             }
                         });
                         
-                        const pageText = document.body.innerText.replace(/\\s+/g, ' ').substring(0, 2000);
+                        const pageText = document.body.innerText.replace(/\\s+/g, ' ').substring(0, 1000); // reduced from 2000
                         return { marksText, pageText };
                     }
                 """)
                 
                 prompt = (
-                    f"Objective: {navigation_objective}\n\n"
-                    f"Visible Page Text (Context):\n{dom_state['pageText']}\n\n"
-                    f"Interactive Elements:\n{dom_state['marksText']}\n\n"
-                    "CRITICAL RULES:\n"
-                    "1. Batch your actions efficiently to reach the target UI state.\n"
-                    "2. When the UI matches the target state (e.g. search complete, data visible), you MUST return status 'ui_ready' and empty actions.\n"
-                    "Return ONLY a strict, valid JSON object.\n"
+                    f"Objective: {navigation_objective}\n"
+                    f"URL: {page.url}\n\n"
+                    f"Context:\n{dom_state['pageText']}\n\n"
+                    f"Elements:\n{dom_state['marksText']}\n\n"
+                    "RULES:\n"
+                    "1. Only act on visible Elements IDs. No hallucinations.\n"
+                    "2. If objective complete/success state reached, return status: 'ui_ready', actions: [].\n"
+                    "3. If already on target URL, do NOT click nav links again. Act on the page.\n"
+                    "4. Typing: {'type': 'type', 'target_id': 'X', 'value': 'text'}. Clicking: {'type': 'click', 'target_id': 'X'}.\n"
+                    "Output ONLY raw JSON:\n"
                     "{\n"
-                    '  "thought_process": "Brief reasoning",\n'
-                    '  "actions": [\n'
-                    '    {"type": "click", "target_id": "105"}\n'
-                    '  ],\n'
+                    '  "thought_process": "brief",\n'
+                    '  "actions": [{"type": "click", "target_id": "105"}],\n'
                     '  "status": "in_progress" | "ui_ready"\n'
                     "}"
                 )
                 
-                llm_response = await llm.call(system_prompt="You are a JSON-only autonomous web navigator.", user_prompt=prompt)
+                llm_response = await llm.call(system_prompt="You are a strict JSON web agent.", user_prompt=prompt)
                 
                 try:
-                    clean_json = llm_response.replace('```json', '').replace('```', '').strip()
+                    clean_json = llm._clean_json(llm_response)
+                    logger.info(f"[{job_id}] LLM OUTPUT: {clean_json}")
                     action_data = json.loads(clean_json)
                 except Exception as e:
                     logger.error(f"[{job_id}] Phase 1 JSON Parse Error: {str(e)} | Raw: {llm_response}")
@@ -118,6 +127,20 @@ async def execute_universal_agent(
                     break
                     
                 actions = action_data.get("actions", [])
+                
+                if not actions and status != "ui_ready":
+                    stall_count += 1
+                    logger.warning(f"[{job_id}] LLM returned no actions (Stall count: {stall_count}/3)")
+                    if stall_count >= 3:
+                        from temporalio.exceptions import ApplicationError
+                        raise ApplicationError(
+                            "Universal Agent stalled: LLM returned no actions 3 times in a row. The page might be blocked by a WAF or the objective is unachievable.",
+                            type="UniversalAgentStallError",
+                            non_retryable=True
+                        )
+                else:
+                    stall_count = 0
+                    
                 for act in actions:
                     act_type = act.get("type")
                     t_id = act.get("target_id")
@@ -126,7 +149,7 @@ async def execute_universal_agent(
                         await user_logger.info("EXECUTE", message=f"Clicking element ID {t_id}")
                         try:
                             locator = page.locator(f"[data-quanta-id='{t_id}']").first
-                            await locator.scroll_into_view_if_needed()
+                            await locator.scroll_into_view_if_needed(timeout=2000)
                             await locator.click(timeout=5000)
                         except Exception as e:
                             logger.warning(f"Failed to click ID {t_id}: {e}")
@@ -136,11 +159,14 @@ async def execute_universal_agent(
                         await user_logger.info("EXECUTE", message=f"Typing '{value}' into ID {t_id}")
                         try:
                             locator = page.locator(f"[data-quanta-id='{t_id}']").first
-                            await locator.scroll_into_view_if_needed()
+                            await locator.scroll_into_view_if_needed(timeout=2000)
                             await locator.fill(value, timeout=5000)
                         except Exception as e:
                             logger.warning(f"Failed to type ID {t_id}: {e}")
 
+                import asyncio
+                await asyncio.sleep(1)
+                
                 await page.wait_for_load_state("domcontentloaded")
                 try:
                     await page.wait_for_load_state("networkidle", timeout=5000)

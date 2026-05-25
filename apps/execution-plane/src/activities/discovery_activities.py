@@ -543,7 +543,7 @@ async def execute_action_activity(payload: dict) -> dict:
                     dismissed = await _reflexDismissOverlay(page)
                     if dismissed:
                         await asyncio.sleep(0.5)
-                        await element.click(timeout=5_000)
+                        await element.click(timeout=15_000)
                     else:
                         return {"success": False, "error": f"Click blocked by overlay: {clickErr}"}
                 else:

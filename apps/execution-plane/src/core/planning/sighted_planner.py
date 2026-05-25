@@ -17,7 +17,7 @@ import time
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 logger = logging.getLogger("sightedPlanner")
 
@@ -73,8 +73,8 @@ class GoalAction(BaseModel):
     action: ActionEnum = Field(description="The action to perform.")
     intent: str = Field(
         default="",
-        description="Semantic description of the target element (e.g. 'the search button'). "
-                    "MUST NOT contain DOM Node IDs.",
+        description="SHORT keyword description of the target element (e.g. 'search', 'checkout', 'delete'). "
+                    "MUST NOT contain DOM Node IDs or conversational phrases.",
     )
     value: str = Field(
         default="",
@@ -95,8 +95,12 @@ class GoalAction(BaseModel):
         if isinstance(v, ActionEnum):
             return v
         raw = str(v).lower().strip().replace(" ", "_")
-        if raw in ActionEnum.__members__:
-            return ActionEnum(raw)
+        
+        # Check if it matches an exact value
+        for action in ActionEnum:
+            if raw == action.value:
+                return action
+                
         alias = _ACTION_ALIAS.get(raw)
         if alias is not None:
             return alias
@@ -109,6 +113,14 @@ class GoalAction(BaseModel):
         if v is None:
             return ""
         return str(v)
+
+    @model_validator(mode="after")
+    def validate_intent_for_targeted_actions(self):
+        """Reject blank intents for actions that must target an element."""
+        requires_intent = {ActionEnum.CLICK, ActionEnum.TYPE, ActionEnum.SELECT_OPTION, ActionEnum.HOVER, ActionEnum.CHECK}
+        if self.action in requires_intent and not self.intent.strip():
+            raise ValueError(f"Action '{self.action.value}' requires a non-blank 'intent' to target an element.")
+        return self
 
 
 class EpochPlan(BaseModel):
@@ -194,7 +206,11 @@ Title: {active_title}
 ## BACKGROUND TABS
 {background_tabs}
 
-Output the JIT Epoch plan for the active tab. JSON only, no explanation."""
+## EXTRACTED DATA
+{extracted_data}
+
+Output the JIT Epoch plan for the active tab. JSON only, no explanation.
+If you have successfully extracted the data required by the GLOBAL OBJECTIVE, set is_final_step to True!"""
 
 
 # =============================================================================
@@ -239,6 +255,7 @@ class SightedPlanner:
         history: List[str],
         active_tab: Dict[str, Any],
         background_tabs: List[Dict[str, Any]],
+        extracted_data: Dict[str, Any] = None,
     ) -> EpochPlan:
         """Generate an Epoch plan for the current browser state."""
         start = time.time()
@@ -266,6 +283,7 @@ class SightedPlanner:
             active_dom=dom_text,
             network_context=network_text,
             background_tabs=bg_lines,
+            extracted_data=json.dumps(extracted_data or {}, indent=2),
         )
 
         for attempt in range(1, self.MAX_LLM_RETRIES + 1):

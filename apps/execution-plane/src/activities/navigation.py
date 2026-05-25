@@ -13,6 +13,8 @@ NETWORK_IDLE_TIMEOUT = int(os.getenv("NETWORK_IDLE_TIMEOUT_MS", "5000"))
 CLICK_RETRY_ATTEMPTS = int(os.getenv("CLICK_RETRY_ATTEMPTS", "3"))
 CLICK_RETRY_DELAY_MS = int(os.getenv("CLICK_RETRY_DELAY_MS", "500"))
 
+from playwright_stealth import stealth_async
+
 @asynccontextmanager
 async def safe_browser_context(playwright_instance, launch_args, storage_state=None):
     """
@@ -39,8 +41,16 @@ async def safe_browser_context(playwright_instance, launch_args, storage_state=N
         final_args["proxy"] = launch_args["proxy"]
     
     browser = await playwright_instance.chromium.launch(**final_args)
-    context = await browser.new_context(storage_state=storage_state)
+    
+    # Apply anti-detection user agent and headers
+    context = await browser.new_context(
+        storage_state=storage_state,
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    )
+    
     page = await context.new_page()
+    await stealth_async(page)
+    
     try:
         # We yield browser, context, and page to allow explicit closure in exception handlers
         yield browser, context, page

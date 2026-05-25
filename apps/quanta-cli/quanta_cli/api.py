@@ -53,9 +53,13 @@ async def execute_mission(target_url: str, prompt: str, credential_id: Optional[
 
     payload = {
         "target_url": target_url,
-        "credential_id": credential_id,
-        "objective": prompt
+        "objective": prompt,
+        "engine_settings": {
+            "engine_mode": "sighted"  # Route through SightedPipeline (re-planning on failure)
+        }
     }
+    if credential_id:
+        payload["credential_id"] = credential_id
 
     headers = {
         "Authorization": f"Bearer {api_key}",
