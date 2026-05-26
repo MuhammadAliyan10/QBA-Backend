@@ -170,6 +170,7 @@ VALID ACTIONS: click, type, select_option, extract_text, extract_list, extract_t
 
 IMPORTANT NOTES ON ACTIONS:
 - "type": Types text into an input field. Requires "intent" (which input to target) AND "value" (text to type). After typing, if the input requires submission (like a todo input), emit a follow-up "press_key" with value "Enter".
+- "extract_list": Extracts a list of items (e.g. products, search results) from a container. Use this immediately on the search results page. DO NOT repeat the search if you are already on the results page.
 - "check": Toggles a checkbox element (e.g. marking a todo as completed).
 - "click": Clicks a button, link, or interactive element.
 - "press_key": Presses a keyboard key. Common values: "Enter", "Tab", "Escape".

@@ -126,8 +126,21 @@ def execute(
                         console.print(f"  [cyan]Data:[/cyan] {data}")
                 elif event_type == "WORKFLOW_STATUS":
                     if status in ["SUCCESS", "COMPLETED"]:
+                        inline_data = event.get("extracted_data")
+                        if inline_data:
+                            console.print(f"\n[bold green][OK] Mission Completed Successfully.[/bold green]")
+                            console.print(f"\n[bold magenta]Extracted Data:[/bold magenta]")
+                            import json
+                            if isinstance(inline_data, str):
+                                try:
+                                    inline_data = json.loads(inline_data)
+                                except Exception:
+                                    pass
+                            console.print(f"[white]{json.dumps(inline_data, indent=2)}[/white]")
+                            return
+
                         console.print(f"\n[bold green][OK] Mission Completed Successfully.[/bold green]")
-                        # Fetch final job details to print extracted data
+                        # Fetch final job details to print extracted data (Fallback)
                         try:
                             import httpx, os
                             from .api import get_api_key

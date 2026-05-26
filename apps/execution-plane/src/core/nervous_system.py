@@ -79,7 +79,8 @@ class NervousSystem:
                 workflow_payload = json.dumps({
                     "type": "WORKFLOW_STATUS",
                     "status": "success" if status == "COMPLETED" else "failed",
-                    "message": message
+                    "message": message,
+                    "extracted_data": json.loads(data) if data else None,
                 })
                 await cls.publish(f"quanta.telemetry.{job_id}", workflow_payload)
 

@@ -459,6 +459,15 @@ func (c *WorkflowController) HandleGetJob(ctx *gin.Context) {
 		"resultUrl":    job.ResultURL,
 		"createdAt":    job.CreatedAt.UnixMilli(),
 	}
+
+	// Include extracted data from the Result column
+	if len(job.Result) > 0 {
+		var resultData interface{}
+		if err := json.Unmarshal(job.Result, &resultData); err == nil {
+			resp["extracted_data"] = resultData
+		}
+	}
+
 	if job.StartedAt != nil {
 		resp["startTime"] = job.StartedAt.UnixMilli()
 	}

@@ -409,7 +409,7 @@ class SightedPipeline:
                                 "title": harvest.get("title", ""),
                                 "dom_map_text": json.dumps(
                                     harvest.get("dom_map"), indent=2
-                                )[:6000],
+                                )[:40000],
                                 "network_payloads": harvest.get("network_payloads", []),
                             }
 
@@ -491,6 +491,7 @@ class SightedPipeline:
                                     job_id, "COMPLETED",
                                     "[Pipeline] Objective achieved.",
                                     "complete",
+                                    data=json.dumps(result.extracted_data) if result.extracted_data else "",
                                 )
                                 break
 

@@ -339,13 +339,28 @@ class GoalExecutor:
 
     async def _action_extract_list(self, goal: GoalAction, page: Page) -> GoalResult:
         element = await self._resolve_intent(goal, page)
-        items = await element.query_selector_all("li, tr, [role='listitem'], article")
+        # Try specific list selectors first, then fallback to direct children if none found
+        items = await element.query_selector_all("li, tr, [role='listitem'], article, .s-result-item, [data-component-type='s-search-result']")
+        if not items:
+            # Fallback to any generic div that looks like a card or direct children
+            items = await element.query_selector_all("> div, > span")
+        
         texts = []
         for item in items[:50]:
             t = await item.inner_text()
             stripped = t.strip()
-            if stripped:
-                texts.append(stripped)
+            if stripped and len(stripped) > 5:
+                # take first line or sensible substring to avoid massive text blobs
+                first_line = stripped.split('\n')[0].strip()
+                if first_line:
+                    texts.append(first_line)
+        
+        # If still empty, just grab the text of the main element and split by newlines
+        if not texts:
+            raw_text = await element.inner_text()
+            lines = [line.strip() for line in raw_text.split('\n') if line.strip() and len(line.strip()) > 5]
+            texts = lines[:50]
+            
         return GoalResult(goal_id=goal.goal_id, success=True, extracted_data=texts)
 
     async def _action_extract_table(self, goal: GoalAction, page: Page) -> GoalResult:
@@ -469,8 +484,9 @@ class GoalExecutor:
         Resolve a semantic intent string to a live ElementHandle via SmartFinder.
         """
         finder = self._get_smart_finder(page)
+        intent_str = goal.intent if goal.intent else goal.value
         result = await finder.find(
-            intent=goal.intent,
+            intent=intent_str,
             timeout=self.SMART_FINDER_TIMEOUT_MS,
         )
 
