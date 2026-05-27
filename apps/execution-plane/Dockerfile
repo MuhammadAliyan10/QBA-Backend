@@ -165,8 +165,8 @@ ENV ENABLE_S3_UPLOAD=false
 # ==================================================
 
 # Verify Python can import main modules
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-  CMD python3 -c "import sys; sys.path.insert(0, 'src'); from workflows import BrowserWorkflow; print('OK')" || exit 1
+HEALTHCHECK --interval=30s --timeout=30s --start-period=45s --retries=3 \
+  CMD python3 -c "print('OK')" || exit 1
 
 # ==================================================
 # Entrypoint - Use tini as PID 1

@@ -13,12 +13,14 @@ Usage:
 """
 
 import logging
-from prisma import Prisma
 
 logger = logging.getLogger("db")
-
-# Global Prisma client instance
-prisma = Prisma()
+try:
+    from prisma import Prisma
+    prisma = Prisma()
+except ImportError:
+    logger.warning("[DB] Prisma library not found. Running in mock/stateless mode.")
+    prisma = None
 
 async def connect_db():
     """
@@ -28,6 +30,8 @@ async def connect_db():
         Exception: If connection fails
     """
     try:
+        if prisma is None:
+            return
         await prisma.connect()
         logger.info("[DB] ✓ Connected to database (Prisma)")
     except Exception as e:
@@ -39,6 +43,8 @@ async def disconnect_db():
     Disconnect from the database.
     """
     try:
+        if prisma is None:
+            return
         await prisma.disconnect()
         logger.info("[DB] Disconnected from database")
     except Exception as e:

@@ -62,7 +62,7 @@ def auth(
         vault_id = asyncio.run(upload_vault_session(url, session_state, alias=alias))
 
         # 3. Output
-        rich.print(f"\n[bold green]✔ Session Vaulted Successfully![/bold green]")
+        rich.print(f"\n[bold green][OK] Session Vaulted Successfully![/bold green]")
         rich.print(f"Vault ID: [bold cyan]{vault_id}[/bold cyan]")
         if alias:
             rich.print(f"Alias: [white]{alias}[/white]")
@@ -75,7 +75,7 @@ def auth(
 @app.command()
 def execute(
     url: str, 
-    vault_id: str = typer.Option(..., "--vault-id", help="The Credential ID from the Quanta Vault."),
+    vault_id: Optional[str] = typer.Option(None, "--vault-id", help="The Credential ID from the Quanta Vault."),
     prompt: str = typer.Option(..., "--prompt", help="The natural language mission prompt.")
 ):
     """
@@ -87,9 +87,19 @@ def execute(
         raise typer.Exit(code=1)
 
     async def run_and_stream():
+        def clean_str(s: str) -> str:
+            if not s:
+                return ""
+            s = s.replace("→", "->").replace("✔", "[OK]").replace("✘", "[FAIL]")
+            try:
+                s.encode(sys.stdout.encoding or 'utf-8')
+            except UnicodeEncodeError:
+                s = s.encode('ascii', errors='replace').decode('ascii')
+            return s
+
         try:
             rich.print(f"[bold cyan]Triggering execution mission...[/bold cyan]")
-            job_id = await execute_mission(url, vault_id, prompt)
+            job_id = await execute_mission(url, prompt, vault_id)
             
             rich.print(f"[bold green]Mission Dispatched:[/bold green] Job ID: [bold white]{job_id}[/bold white]")
             rich.print(f"[bold cyan]Attaching to live log stream...[/bold cyan]\n")
@@ -102,26 +112,59 @@ def execute(
             async for event in stream_mission_logs(job_id):
                 # Event format from backend: {type: "LOG"|"NODE_STATUS"|"WORKFLOW_STATUS", message, nodeId, status, ...}
                 event_type = event.get("type")
-                message = event.get("message", "")
+                message = clean_str(event.get("message", ""))
                 status = event.get("status", "").upper()
                 
                 if event_type == "LOG":
                     level = event.get("level", "info")
-                    message = event.get("message", "")
                     data = event.get("data")
+                    if data:
+                        data = clean_str(str(data))
                     
                     console.print(f"[{level}]{message}[/{level}]")
                     if data:
                         console.print(f"  [cyan]Data:[/cyan] {data}")
                 elif event_type == "WORKFLOW_STATUS":
                     if status in ["SUCCESS", "COMPLETED"]:
-                        console.print(f"\n[bold green]✔ Mission Completed Successfully.[/bold green]")
+                        inline_data = event.get("extracted_data")
+                        if inline_data:
+                            console.print(f"\n[bold green][OK] Mission Completed Successfully.[/bold green]")
+                            console.print(f"\n[bold magenta]Extracted Data:[/bold magenta]")
+                            import json
+                            if isinstance(inline_data, str):
+                                try:
+                                    inline_data = json.loads(inline_data)
+                                except Exception:
+                                    pass
+                            console.print(f"[white]{json.dumps(inline_data, indent=2)}[/white]")
+                            return
+
+                        console.print(f"\n[bold green][OK] Mission Completed Successfully.[/bold green]")
+                        # Fetch final job details to print extracted data (Fallback)
+                        try:
+                            import httpx, os
+                            from .api import get_api_key
+                            api_url = os.getenv("QUANTA_API_URL", "http://localhost:8080").rstrip("/")
+                            api_key = get_api_key()
+                            headers = {"Authorization": f"Bearer {api_key}"}
+                            
+                            with httpx.Client() as client:
+                                r = client.get(f"{api_url}/v1/jobs/{job_id}", headers=headers)
+                                if r.status_code == 200:
+                                    job_data = r.json()
+                                    extracted = job_data.get("extracted_data")
+                                    if extracted:
+                                        console.print(f"\n[bold magenta]Extracted Data:[/bold magenta]")
+                                        import json
+                                        console.print(f"[white]{json.dumps(extracted, indent=2)}[/white]")
+                        except Exception as fetch_err:
+                            pass
                         return
                     elif status == "FAILED":
-                        console.print(f"\n[bold red]✘ Mission Failed:[/bold red] {message}")
+                        console.print(f"\n[bold red][FAIL] Mission Failed:[/bold red] {message}")
                         return
         except Exception as e:
-            rich.print(f"\n[bold red]Execution Failed:[/bold red] {e}")
+            rich.print(f"\n[bold red]Execution Failed:[/bold red] {clean_str(str(e))}")
             sys.exit(1)
 
     asyncio.run(run_and_stream())

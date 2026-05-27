@@ -86,7 +86,7 @@ async def persist_job_tokens(ledger: JobTokenLedger) -> None:
     try:
         from db import prisma
 
-        if not prisma.is_connected():
+        if prisma is None or not prisma.is_connected():
             logger.warning("[TokenTelemetry] Prisma not connected, skipping persistence")
             return
 
@@ -126,7 +126,7 @@ async def persist_user_usage(ledger: JobTokenLedger) -> None:
     try:
         from db import prisma
 
-        if not prisma.is_connected():
+        if prisma is None or not prisma.is_connected():
             return
 
         today = date.today()
@@ -232,11 +232,11 @@ def instrument_planner(planner: Any, user_id: str, job_id: str) -> None:
     """
     original_plan = planner.plan_epoch
 
-    async def instrumented_plan(objective, history, active_tab, background_tabs):
+    async def instrumented_plan(objective, history, active_tab, background_tabs, extracted_data=None):
         ledger = get_ledger(job_id, user_id)
         start = time.time()
 
-        epoch = await original_plan(objective, history, active_tab, background_tabs)
+        epoch = await original_plan(objective, history, active_tab, background_tabs, extracted_data)
 
         duration_ms = int((time.time() - start) * 1000)
 

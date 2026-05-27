@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
+from core.url_utils import resolve_final_url
+
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from core.planning.harvester import harvest_context
@@ -283,6 +285,10 @@ class SightedPipeline:
                 if user_id or job_id:
                     instrument_planner(self.planner, user_id, job_id)
 
+                # Pre-resolve redirects so Chromium doesn't crash on
+                # bare-domain TLS redirects (e.g. amazon.com → www.amazon.com)
+                url = await resolve_final_url(url)
+
                 await NervousSystem.publish_update(
                     job_id, "RUNNING", f"[Pipeline] Navigating to {url}", "init",
                 )
@@ -403,7 +409,7 @@ class SightedPipeline:
                                 "title": harvest.get("title", ""),
                                 "dom_map_text": json.dumps(
                                     harvest.get("dom_map"), indent=2
-                                )[:6000],
+                                )[:40000],
                                 "network_payloads": harvest.get("network_payloads", []),
                             }
 
@@ -426,7 +432,7 @@ class SightedPipeline:
                                 f"[{epoch_label}] Planning actions...", "think",
                             )
                             epoch_plan = await self.planner.plan_epoch(
-                                objective, history, active_tab_data, background_tabs,
+                                objective, history, active_tab_data, background_tabs, result.extracted_data
                             )
                             result.llm_calls += 1
 
@@ -445,7 +451,8 @@ class SightedPipeline:
 
                             accumulated_epochs.append(epoch_plan)
                             result.goals_planned += len(epoch_plan.intents)
-                            history.append(epoch_plan.strategic_objective)
+                            executed_actions_str = ", ".join(f"{g.action.value}('{g.intent}')" for g in epoch_plan.intents)
+                            history.append(f"{epoch_plan.strategic_objective} [Actions: {executed_actions_str}]")
 
                             logger.info(
                                 f"[Pipeline] [{epoch_label}] Strategy: "
@@ -484,6 +491,7 @@ class SightedPipeline:
                                     job_id, "COMPLETED",
                                     "[Pipeline] Objective achieved.",
                                     "complete",
+                                    data=json.dumps(result.extracted_data) if result.extracted_data else "",
                                 )
                                 break
 

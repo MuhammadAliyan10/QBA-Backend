@@ -534,29 +534,29 @@ class SmartFinder:
     # Relevant element selectors
     RELEVANT_SELECTORS = [
         # Interactive
-        "button:visible", "a:visible", "input:visible", "select:visible", "textarea:visible",
-        "[role='button']:visible", "[role='link']:visible", "[onclick]:visible",
-        "div[class*='btn']:visible", "div[class*='button']:visible",
-        "span[class*='btn']:visible", "span[class*='button']:visible",
+        "button", "a", "input", "select", "textarea",
+        "[role='button']", "[role='link']", "[onclick]",
+        "div[class*='btn']", "div[class*='button']",
+        "span[class*='btn']", "span[class*='button']",
 
         # Semantic / Content
-        "h1:visible", "h2:visible", "h3:visible", "h4:visible", "h5:visible", "h6:visible",
-        "p:visible", "article:visible", "section:visible", "label:visible",
-        "span:visible",  # Common for prop values on doc sites
+        "h1", "h2", "h3", "h4", "h5", "h6",
+        "p", "article", "section", "label",
+        "span",  # Common for prop values on doc sites
 
         # Data / Structure
-        "table:visible", "tr:visible", "td:visible", "th:visible",
-        "ul:visible", "ol:visible", "li:visible",
-        "dl:visible", "dt:visible", "dd:visible",  # Definition lists (common in prop docs)
-        "[data-testid]:visible", "[data-cy]:visible", "[data-qa]:visible",
+        "table", "tr", "td", "th",
+        "ul", "ol", "li",
+        "dl", "dt", "dd",  # Definition lists (common in prop docs)
+        "[data-testid]", "[data-cy]", "[data-qa]",
 
         # Code / Documentation
-        "code:visible",   # Inline code (prop values, defaults)
-        "pre:visible",    # Code blocks
-        "kbd:visible",    # Keyboard/key values
+        "code",   # Inline code (prop values, defaults)
+        "pre",    # Code blocks
+        "kbd",    # Keyboard/key values
 
         # Visual
-        "img:visible", "svg:visible",
+        "img", "svg",
     ]
 
     # Shadow DOM piercing selectors (Playwright >>> combinator)
@@ -618,39 +618,82 @@ class SmartFinder:
         # =======================================================================
         self.STRUCTURAL_SELECTORS: dict[str, list[str]] = {
             # ── Search ───────────────────────────────────────────────
-            "search": [
+            "search input": [
                 "input[type='search']", "[role='searchbox']",
                 "input[placeholder*='search' i]", "input[aria-label*='search' i]",
                 "input[name*='search' i]", "input[name='q']", "input[name='query']",
-                "[data-testid*='search' i]",
+                "[data-testid*='search' i]", "button[aria-label*='search' i]",
+                ".search-bar", ".search-input", "#search"
             ],
-            # ── Auth ─────────────────────────────────────────────────
-            "password": ["input[type='password']", "input[name*='password' i]", "input[placeholder*='password' i]"],
-            "email": ["input[type='email']", "input[name*='email' i]", "input[placeholder*='email' i]", "input[autocomplete='email']"],
-            "username": ["input[name='username']", "input[name='user']", "input[name='login']", "input[placeholder*='username' i]"],
+            "find": ["input[type='search']", "input[placeholder*='find' i]", "button:has-text('Find')"],
+            # ── Auth & Account ─────────────────────────────────────────
+            "password": ["input[type='password']", "input[name*='password' i]", "input[placeholder*='password' i]", "#password"],
+            "email": ["input[type='email']", "input[name*='email' i]", "input[placeholder*='email' i]", "input[autocomplete='email']", "#email"],
+            "username": ["input[name='username']", "input[name='user']", "input[name='login']", "input[placeholder*='username' i]", "#username"],
             "submit": ["[type='submit']", "button[type='submit']"],
-            "login": ["button[type='submit']", "[type='submit']", "button:has-text('Sign in')", "button:has-text('Log in')", "a:has-text('Sign in')"],
+            "login": ["button[type='submit']", "[type='submit']", "button:has-text('Sign in')", "button:has-text('Log in')", "a:has-text('Sign in')", "a:has-text('Login')"],
             "sign in": ["button:has-text('Sign in')", "a:has-text('Sign in')", "button:has-text('Sign In')", "[type='submit']"],
             "sign up": ["a:has-text('Sign up')", "button:has-text('Sign up')", "a:has-text('Register')", "button:has-text('Create account')"],
+            "register": ["a:has-text('Register')", "button:has-text('Register')", "a:has-text('Sign up')"],
+            "logout": ["button:has-text('Log out')", "a:has-text('Log out')", "a:has-text('Logout')", "button:has-text('Sign out')", "a:has-text('Sign out')"],
+            "sign out": ["button:has-text('Sign out')", "a:has-text('Sign out')", "button:has-text('Log out')"],
+            "profile": ["a[href*='profile']", "[aria-label*='profile' i]", "a:has-text('Profile')", "button:has-text('Profile')", ".profile"],
+            # ── Lists & Ordinals ───────────────────────────────────────
+            "1st": ["li:nth-of-type(1)", "tr:nth-of-type(1)", "div:nth-of-type(1)", "h2:nth-of-type(1)", "h3:nth-of-type(1)"],
+            "first": ["li:nth-of-type(1)", "tr:nth-of-type(1)", "div:nth-of-type(1)", "h2:nth-of-type(1)", "h3:nth-of-type(1)"],
+            "2nd": ["li:nth-of-type(2)", "tr:nth-of-type(2)", "div:nth-of-type(2)", "h2:nth-of-type(2)", "h3:nth-of-type(2)"],
+            "second": ["li:nth-of-type(2)", "tr:nth-of-type(2)", "div:nth-of-type(2)", "h2:nth-of-type(2)", "h3:nth-of-type(2)"],
+            "3rd": ["li:nth-of-type(3)", "tr:nth-of-type(3)", "div:nth-of-type(3)", "h2:nth-of-type(3)", "h3:nth-of-type(3)"],
+            "third": ["li:nth-of-type(3)", "tr:nth-of-type(3)", "div:nth-of-type(3)", "h2:nth-of-type(3)", "h3:nth-of-type(3)"],
+            "4th": ["li:nth-of-type(4)", "tr:nth-of-type(4)", "div:nth-of-type(4)", "h2:nth-of-type(4)", "h3:nth-of-type(4)"],
+            "fourth": ["li:nth-of-type(4)", "tr:nth-of-type(4)", "div:nth-of-type(4)", "h2:nth-of-type(4)", "h3:nth-of-type(4)"],
+            "5th": ["li:nth-of-type(5)", "tr:nth-of-type(5)", "div:nth-of-type(5)", "h2:nth-of-type(5)", "h3:nth-of-type(5)"],
+            "fifth": ["li:nth-of-type(5)", "tr:nth-of-type(5)", "div:nth-of-type(5)", "h2:nth-of-type(5)", "h3:nth-of-type(5)"],
+            "account": ["a[href*='account']", "[aria-label*='account' i]", "a:has-text('Account')", "button:has-text('Account')"],
+            "settings": ["a[href*='settings']", "[aria-label*='settings' i]", "a:has-text('Settings')", "button:has-text('Settings')", ".settings"],
+            "dashboard": ["a[href*='dashboard']", "a:has-text('Dashboard')", ".dashboard"],
 
-            # ── Navigation ───────────────────────────────────────────
-            "home": ["a[href='/']", "a[href='#home']", "[aria-label*='home' i]", "a:has-text('Home')"],
-            "back": ["[aria-label*='back' i]", "button:has-text('Back')", "a:has-text('Back')"],
-            "next": ["button:has-text('Next')", "a:has-text('Next')", "[aria-label*='next' i]", "a[rel='next']"],
-            "previous": ["button:has-text('Prev')", "button:has-text('Previous')", "[aria-label*='prev' i]", "a[rel='prev']"],
+            # ── Navigation & Common Actions ──────────────────────────
+            "home": ["a[href='/']", "a[href='#home']", "[aria-label*='home' i]", "a:has-text('Home')", ".logo", ".brand"],
+            "back": ["[aria-label*='back' i]", "button:has-text('Back')", "a:has-text('Back')", ".back-button"],
+            "next": ["button:has-text('Next')", "a:has-text('Next')", "[aria-label*='next' i]", "a[rel='next']", ".next-button"],
+            "previous": ["button:has-text('Prev')", "button:has-text('Previous')", "[aria-label*='prev' i]", "a[rel='prev']", ".prev-button"],
             "navbar": ["nav a", "[role='navigation'] a", ".nav-link", "header a"],
+            "menu": ["[aria-label*='menu' i]", "button:has-text('Menu')", ".hamburger", ".menu-toggle"],
+            "options": ["[aria-label*='options' i]", "button:has-text('Options')", ".options"],
+            "details": ["a:has-text('Details')", "button:has-text('Details')", ".details"],
+            "info": ["[aria-label*='info' i]", "button:has-text('Info')", ".info"],
 
-            # ── Dialogs ──────────────────────────────────────────────
+            # ── Dialogs & Forms ──────────────────────────────────────
             "accept": ["button:has-text('Accept')", "button:has-text('Allow')", "button:has-text('OK')", "button:has-text('Agree')"],
             "close": ["[aria-label*='close' i]", "button:has-text('Close')", "[data-testid*='close' i]", ".close"],
             "cancel": ["button:has-text('Cancel')", "[aria-label*='cancel' i]", "button:has-text('Dismiss')"],
             "confirm": ["button:has-text('Confirm')", "button:has-text('Yes')", "button:has-text('Proceed')"],
+            "save": ["button:has-text('Save')", "button:has-text('Update')", "[aria-label*='save' i]", "[type='submit']"],
+            "update": ["button:has-text('Update')", "button:has-text('Save Changes')", "[aria-label*='update' i]"],
+            "edit": ["button:has-text('Edit')", "a:has-text('Edit')", "[aria-label*='edit' i]"],
+            "delete": ["button:has-text('Delete')", "button:has-text('Remove')", "[aria-label*='delete' i]", ".delete-btn"],
+            "remove": ["button:has-text('Remove')", "button:has-text('Delete')", "[aria-label*='remove' i]"],
+            "add": ["button:has-text('Add')", "a:has-text('Add')", "[aria-label*='add' i]", "button:has-text('Create')"],
+            "create": ["button:has-text('Create')", "a:has-text('Create')", "button:has-text('New')"],
+            "new": ["button:has-text('New')", "a:has-text('New')", "[aria-label*='new' i]"],
+            "send": ["button:has-text('Send')", "[aria-label*='send' i]", "button:has-text('Submit')"],
+            "share": ["button:has-text('Share')", "a:has-text('Share')", "[aria-label*='share' i]"],
+            "reply": ["button:has-text('Reply')", "a:has-text('Reply')", "[aria-label*='reply' i]"],
+            "favorite": ["button:has-text('Favorite')", "[aria-label*='favorite' i]", "[aria-label*='like' i]", "button:has-text('Like')"],
 
-            # ── Commerce ─────────────────────────────────────────────
-            "cart": ["[aria-label*='cart' i]", "a[href*='cart']", "[data-testid*='cart' i]"],
+            # ── Commerce & Products ──────────────────────────────────
+            "cart": ["[aria-label*='cart' i]", "a[href*='cart']", "[data-testid*='cart' i]", ".cart"],
             "checkout": ["button:has-text('Checkout')", "a:has-text('Checkout')", "a[href*='checkout']"],
-            "add to cart": ["button:has-text('Add to cart')", "button:has-text('Add to bag')", "[data-testid*='add-to-cart' i]"],
+            "add to cart": ["button:has-text('Add to cart')", "button:has-text('Add to bag')", "[data-testid*='add-to-cart' i]", "button:has-text('Add to Cart')"],
             "buy": ["button:has-text('Buy')", "button:has-text('Purchase')", "button:has-text('Order')"],
+            "purchase": ["button:has-text('Purchase')", "button:has-text('Buy')"],
+            "product": ["[data-testid*='product' i]", ".product", ".product-list", "ul.products", ".item", "article.product"],
+            "item": [".item", ".product-item", ".list-item", "li.item"],
+            "list": ["ul", "ol", "[role='list']", ".list", ".grid", "table", ".items"],
+            "view more": ["button:has-text('View more')", "a:has-text('View more')", "button:has-text('Show more')"],
+            "show more": ["button:has-text('Show more')", "a:has-text('Show more')", "button:has-text('View more')"],
+            "more": ["button:has-text('More')", "a:has-text('More')", "button:has-text('View more')", "button:has-text('Show more')"],
 
             # ── Filter / Sidebar ─────────────────────────────────────
             "filter": [
@@ -702,8 +745,15 @@ class SmartFinder:
 
             # ── Result / List Items ──────────────────────────────────
             "first result": ["li:first-of-type a", "article:first-of-type a", "[data-testid*='result']:first-of-type a"],
-            "first": ["li:first-of-type a", "article:first-of-type a", "tr:first-of-type a"],
+            "first": ["li:nth-of-type(1) a", "li:nth-of-type(1) h2", "h2:nth-of-type(1)", "li:nth-of-type(1)"],
+            "second": ["li:nth-of-type(2) a", "li:nth-of-type(2) h2", "h2:nth-of-type(2)", "li:nth-of-type(2)"],
+            "third": ["li:nth-of-type(3) a", "li:nth-of-type(3) h2", "h2:nth-of-type(3)", "li:nth-of-type(3)"],
+            "fourth": ["li:nth-of-type(4) a", "li:nth-of-type(4) h2", "h2:nth-of-type(4)", "li:nth-of-type(4)"],
+            "fifth": ["li:nth-of-type(5) a", "li:nth-of-type(5) h2", "h2:nth-of-type(5)", "li:nth-of-type(5)"],
+            "last": ["li:last-of-type a", "li:last-of-type h2", "h2:last-of-type", "li:last-of-type"],
             "result": ["article a", "li a", "[data-testid*='result'] a", ".search-result a"],
+            "product": [".s-search-results", ".s-result-list", "ul", "tbody", "article"],
+            "products": [".s-search-results", ".s-result-list", "ul", "tbody", "article"],
 
             # ── About / Description ──────────────────────────────────
             "about": [".about", "[itemprop='description']", "p.description", "h2:has-text('About')", ".BorderGrid-cell p"],
@@ -1083,18 +1133,40 @@ class SmartFinder:
         """
         intent_lower = intent.lower()
 
-        # Tokenize intent into keywords (skip short filler words)
-        stop_words = {"the", "a", "an", "of", "on", "in", "at", "to", "for", "and", "or"}
-        intent_words = [w for w in intent_lower.split() if len(w) > 2 and w not in stop_words]
+        intent_clean = intent_lower.strip()
+        noise_words = [
+            "the ", "a ", "an ", " button", " link", " image", " text",
+            " in ", " of ", " on ", " for ", " results", " result", " items", " item",
+            " page", " top 5 ", " top ", " list ",
+            "please ", "click ", "extract ", "find ", "get ", "show ", "navigate ", "to ",
+            "from ", "query ", "current ", "website ", "url ", "top 1 ", "top 2 ",
+            "top 3 ", "top 4 ",
+            "all ", "any ", "some ", "and ", "or ", "with ", "about ", "into ", "out ",
+            # Aggressive LLM filler
+            "i will ", "sure ", "here are ", "here is ", "let's ", "we can ", "could you ",
+            "can you ", "would you ", "i can ", "i found ", "here the ", "below are ", "below is ",
+            "certainly ", "absolutely ", "of course ", "let me ", "i'm ", "i am ",
+            "just ", "simply ", "now ", "then ", "first ", "second ", "third ", "finally ",
+            "of the ", "from the "
+        ]
+        for noise in noise_words:
+            intent_clean = intent_clean.replace(noise, " ")
+        intent_clean = " ".join(intent_clean.split())
 
         # Collect matching selectors from the map
         selectors_to_try: list[str] = []
         for keyword, css_list in self.STRUCTURAL_SELECTORS.items():
             keyword_words = keyword.split()
             # Match if ALL keyword words are present in the intent
-            if all(kw in intent_lower for kw in keyword_words):
-                selectors_to_try.extend(css_list)
-                logger.debug(f"[Layer 0] Keyword match: '{keyword}' → {len(css_list)} selectors")
+            if all(kw in intent_clean for kw in keyword_words):
+                # ANTI-GREEDY LOCK: The keyword must represent a significant portion of the intent
+                # Lowered to 0.2, and explicitly bypassed for ordinals, so they are not rejected
+                is_ordinal = keyword in ["1st", "first", "2nd", "second", "3rd", "third", "4th", "fourth", "5th", "fifth", "last", "first result"]
+                if is_ordinal or len(keyword) >= (len(intent_clean) * 0.2):
+                    selectors_to_try.extend(css_list)
+                    logger.debug(f"[Layer 0] Keyword match: '{keyword}' → {len(css_list)} selectors")
+                else:
+                    logger.debug(f"[Layer 0] Keyword '{keyword}' found but rejected (intent too long/ambiguous).")
 
         if not selectors_to_try:
             return FindResult(layer=FinderLayer.STRUCTURAL)
@@ -1146,21 +1218,23 @@ class SmartFinder:
         css_parts: list[str] = []
         if "*" not in allowed_tags:
             for tag in allowed_tags:
-                css_parts.append(f"{tag}:visible")
+                css_parts.append(f"{tag}")
+        
+        start_time = time.time()
         if "*" not in allowed_roles:
             for role in allowed_roles:
-                css_parts.append(f"[role='{role}']:visible")
+                css_parts.append(f"[role='{role}']")
         if allowed_attrs:
             for attr in allowed_attrs:
-                css_parts.append(f"[{attr}]:visible")
+                css_parts.append(f"[{attr}]")
 
         # Fallback: if wildcard, use broad interactive selectors
         if "*" in allowed_tags:
             css_parts = [
-                "a:visible", "button:visible", "input:visible", "select:visible",
-                "textarea:visible", "[role]:visible", "label:visible",
-                "h1:visible", "h2:visible", "h3:visible", "h4:visible",
-                "p:visible", "span:visible", "li:visible", "td:visible",
+                "a", "button", "input", "select",
+                "textarea", "[role]", "label",
+                "h1", "h2", "h3", "h4",
+                "p", "span", "li", "td",
             ]
 
         # Scope to container if provided
@@ -1180,6 +1254,9 @@ class SmartFinder:
         for css in css_parts:
             if len(candidates) >= max_candidates:
                 break
+            if time.time() - start_time > 3.0:
+                logger.debug("[CandidateTable] ⏱️ Timeout (3.0s) reached in outer loop, truncating table.")
+                break
             try:
                 if hasattr(scope, 'query_selector_all'):
                     elements = await scope.query_selector_all(css)
@@ -1191,6 +1268,12 @@ class SmartFinder:
             for el in elements:
                 if len(candidates) >= max_candidates:
                     break
+                
+                # Prevent event loop blocking and enforce strict 3-second limit
+                if time.time() - start_time > 3.0:
+                    logger.debug("[CandidateTable] ⏱️ Timeout (3.0s) reached, truncating table.")
+                    break
+                await asyncio.sleep(0)  # yield to event loop
 
                 # Deduplicate by handle identity
                 el_id = id(el)
@@ -1345,6 +1428,27 @@ class SmartFinder:
 
         for anchor in anchors:
             anchor_clean = anchor.lower().strip()
+            
+            # Strip common conversational filler added by LLMs
+            noise_words = [
+                "the ", "a ", "an ", " button", " link", " image", " text",
+                " in ", " of ", " on ", " for ", " results", " result", " items", " item",
+                " page", " top 5 ", " top ", " list ",
+                "please ", "click ", "extract ", "find ", "get ", "show ", "navigate ", "to ",
+                "from ", "query ", "current ", "website ", "url ", "top 1 ", "top 2 ",
+                "top 3 ", "top 4 ",
+                "all ", "any ", "some ", "and ", "or ", "with ", "about ", "into ", "out ",
+                # Aggressive LLM filler
+                "i will ", "sure ", "here are ", "here is ", "let's ", "we can ", "could you ",
+                "can you ", "would you ", "i can ", "i found ", "here the ", "below are ", "below is ",
+                "certainly ", "absolutely ", "of course ", "let me ", "i'm ", "i am ",
+                "just ", "simply ", "now ", "then ", "first ", "second ", "third ", "finally ",
+                "of the ", "from the "
+            ]
+            for noise in noise_words:
+                anchor_clean = anchor_clean.replace(noise, " ")
+            anchor_clean = " ".join(anchor_clean.split())  # normalize whitespace
+            
             if not anchor_clean:
                 continue
 
@@ -1549,16 +1653,32 @@ class SmartFinder:
         # ── Step 3: LLM rescue with compact top-20 table ─────────────
         logger.info("[Recovery] Step 3: LLM rescue with compact candidate table...")
         try:
-            # Build compact text representation for the LLM
-            compact_table = self._format_candidate_table_for_llm(candidates[:20], intent)
-            tree_context = compact_table
+            compact_candidates = candidates[:20]
+            compact_table = self._format_candidate_table_for_llm(compact_candidates, intent)
 
-            result = await self._layer4_cognitive(intent, tree_context=tree_context)
-            if result and result.found:
-                result.new_signature = await self._compute_element_signature(result.element)
-                result.duration_ms = int((time.time() - start_time) * 1000)
-                logger.info(f"[Recovery] ✅ Step 3 LLM HIT in {result.duration_ms}ms")
-                return result
+            # Call AI agent directly!
+            node_id_str = await self.ai_agent.recover(intent, axtree_map=compact_table)
+            
+            if node_id_str and node_id_str.isdigit():
+                idx = int(node_id_str) - 1
+                if 0 <= idx < len(compact_candidates):
+                    selected = compact_candidates[idx]
+                    duration = int((time.time() - start_time) * 1000)
+                    logger.info(f"[Recovery] ✅ Step 3 LLM HIT (Candidate #{idx+1}) in {duration}ms")
+                    
+                    # Compute signature if we have elements
+                    try:
+                        signature = await self._compute_element_signature(selected.handle)
+                    except:
+                        signature = {}
+                        
+                    result = FindResult(
+                        element=selected.handle, layer=FinderLayer.COGNITIVE,
+                        confidence=0.85, duration_ms=duration,
+                        candidates_checked=len(candidates)
+                    )
+                    result.new_signature = signature
+                    return result
         except Exception as e:
             logger.warning(f"[Recovery] Step 3 LLM failed: {e}")
 
@@ -1748,7 +1868,10 @@ class SmartFinder:
                 if key in anchor or anchor in key:
                     synonyms.extend(syn_list)
 
-        for candidate in candidates:
+        for i, candidate in enumerate(candidates):
+            if i % 50 == 0:
+                await asyncio.sleep(0)  # Yield to event loop to allow timeouts to fire
+                
             # Collect all text signals from this element
             element_signals = [
                 candidate.text.lower(),
@@ -2052,7 +2175,7 @@ class SmartFinder:
             glass = GlassBoxEngine()
 
             # 1. Get all candidates (including those outside current search scope)
-            candidates = await self._get_interactive_elements(scan_mode="all")
+            candidates = await self._get_interactive_elements(scan_mode="all", max_candidates=150)
             handles = [c.handle for c in candidates]
 
             # 2. Extract Pruned AXTree
@@ -2086,13 +2209,15 @@ class SmartFinder:
         include_shadow_dom: bool = True,
         include_iframes: bool = True,
         iframe_depth: int = 0,
-        scan_mode: str = "interactive"
+        scan_mode: str = "interactive",
+        max_candidates: Optional[int] = None
     ) -> list[ElementCandidate]:
         """
         Get relevant elements on the page.
         """
         candidates: list[ElementCandidate] = []
         position_index = 0
+        max_cands = max_candidates or self.MAX_CANDIDATES
 
         # Determine base element (container or page)
         base = self.page
@@ -2126,8 +2251,8 @@ class SmartFinder:
                 elements = await self.page.query_selector_all(combined_selector)
 
             for element in elements:
-                if len(candidates) >= self.MAX_CANDIDATES:
-                    logger.debug(f"[Elements] Hit MAX_CANDIDATES limit ({self.MAX_CANDIDATES})")
+                if len(candidates) >= max_cands:
+                    logger.debug(f"[Elements] Hit MAX_CANDIDATES limit ({max_cands})")
                     break
 
                 candidate = await self._extract_candidate(element, position_index)
@@ -2136,14 +2261,14 @@ class SmartFinder:
                     position_index += 1
 
             # Shadow DOM piercing (if enabled and not at limit)
-            if include_shadow_dom and len(candidates) < self.MAX_CANDIDATES:
+            if include_shadow_dom and len(candidates) < max_cands:
                 for shadow_selector in self.SHADOW_DOM_SELECTORS:
-                    if len(candidates) >= self.MAX_CANDIDATES:
+                    if len(candidates) >= max_cands:
                         break
                     try:
                         shadow_elements = await self.page.query_selector_all(shadow_selector)
                         for element in shadow_elements:
-                            if len(candidates) >= self.MAX_CANDIDATES:
+                            if len(candidates) >= max_cands:
                                 break
                             candidate = await self._extract_candidate(element, position_index)
                             if candidate:
@@ -2154,16 +2279,16 @@ class SmartFinder:
                         logger.debug(f"[Shadow DOM] Piercing failed for {shadow_selector}: {e}")
 
             # iFrame recursion (if enabled and under depth limit)
-            if include_iframes and iframe_depth < self.MAX_IFRAME_DEPTH and len(candidates) < self.MAX_CANDIDATES:
+            if include_iframes and iframe_depth < self.MAX_IFRAME_DEPTH and len(candidates) < max_cands:
                 for frame in self.page.frames:
                     if frame == self.page.main_frame:
                         continue  # Already processed main frame
-                    if len(candidates) >= self.MAX_CANDIDATES:
+                    if len(candidates) >= max_cands:
                         break
                     try:
                         frame_elements = await frame.query_selector_all(combined_selector)
                         for element in frame_elements:
-                            if len(candidates) >= self.MAX_CANDIDATES:
+                            if len(candidates) >= max_cands:
                                 break
                             candidate = await self._extract_candidate(element, position_index)
                             if candidate:
@@ -2175,7 +2300,7 @@ class SmartFinder:
         except Exception as e:
             logger.warning(f"[SmartFinder] Error getting interactive elements: {e}")
 
-        logger.debug(f"[Elements] Found {len(candidates)} candidates (limit: {self.MAX_CANDIDATES})")
+        logger.debug(f"[Elements] Found {len(candidates)} candidates (limit: {max_cands})")
         return candidates
 
     async def _extract_candidate(

@@ -89,7 +89,7 @@ async def browser_automation_activity(payload: dict) -> dict:
     job_id = payload.get("job_id")
     workflow_id = payload.get("workflow_id")
     target_url = payload.get("target_url")
-    navigation_objective = payload.get("navigation_objective")
+    navigation_objective = payload.get("navigation_objective") or payload.get("objective")
     params = payload.get("params", {})
 
     # DIAGNOSTIC TELEMETRY

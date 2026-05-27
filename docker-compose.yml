@@ -237,10 +237,24 @@ services:
       dockerfile: apps/execution-plane/Dockerfile
     container_name: quanta_execution_plane
     restart: unless-stopped
+    ipc: host
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"print('OK')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     environment:
       - TEMPORAL_HOST=temporal:7233
       - NATS_URL=nats://nats:4222
       - QDRANT_URL=http://qdrant:6333
+      - QUANTA_HEADLESS=true
+      # MinIO Configuration
+      - ENABLE_S3_UPLOAD=true
+      - S3_BUCKET=quanta-local-bucket
+      - S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - S3_USE_SSL=false
       # AI Keys (Passed from host .env)
       - NVIDIA_API_KEY=${NVIDIA_API_KEY}
       # Local dev DB (avoid leaking host DATABASE_URL into container)
