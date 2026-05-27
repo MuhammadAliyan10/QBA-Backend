@@ -4,6 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from playwright.async_api import async_playwright, Page, ElementHandle
 from playwright.async_api import TimeoutError as PlaywrightTimeout
+import psutil
 from core.selector.smart_finder import SmartFinder
 
 logger = logging.getLogger("activity")
@@ -13,50 +14,61 @@ NETWORK_IDLE_TIMEOUT = int(os.getenv("NETWORK_IDLE_TIMEOUT_MS", "5000"))
 CLICK_RETRY_ATTEMPTS = int(os.getenv("CLICK_RETRY_ATTEMPTS", "3"))
 CLICK_RETRY_DELAY_MS = int(os.getenv("CLICK_RETRY_DELAY_MS", "500"))
 
-from playwright_stealth import stealth_async
-
 @asynccontextmanager
 async def safe_browser_context(playwright_instance, launch_args, storage_state=None):
     """
     Guarantees browser and context closure even on catastrophic crashes.
     Prevents zombie Chromium processes and memory leaks.
+
+    PATCH 4: After cooperative close, runs psutil-based child process
+    reaping to SIGKILL any orphaned chrome/chromium binaries.
     """
     # Respect the caller's launch_args while providing sensible defaults.
     # Environment override: QUANTA_HEADLESS=true forces headless in production.
     env_headless = os.getenv("QUANTA_HEADLESS", "").lower() == "true"
-    
+
     headless = env_headless if env_headless else launch_args.get("headless", False)
     slow_mo = launch_args.get("slow_mo", 800)
     args = launch_args.get("args", ["--no-sandbox", "--disable-setuid-sandbox"])
-    
+
     # Merge in --start-maximized for visual mode
     if not headless and "--start-maximized" not in args:
         args.append("--start-maximized")
-    
+
     # Build final launch config
     final_args = {"headless": headless, "slow_mo": slow_mo, "args": args}
-    
+
     # Pass through proxy if provided
     if "proxy" in launch_args:
         final_args["proxy"] = launch_args["proxy"]
-    
+
     browser = await playwright_instance.chromium.launch(**final_args)
-    
+
     # Apply anti-detection user agent and headers
     context = await browser.new_context(
         storage_state=storage_state,
         user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     )
-    
+
     page = await context.new_page()
     await stealth_async(page)
-    
+
     try:
         # We yield browser, context, and page to allow explicit closure in exception handlers
         yield browser, context, page
     finally:
-        await context.close()
-        await browser.close()
+        # Phase 1: Cooperative close (Playwright's own cleanup)
+        try:
+            await context.close()
+        except Exception as ctx_err:
+            logger.warning(f"[BrowserContext] Context close failed: {ctx_err}")
+        try:
+            await browser.close()
+        except Exception as br_err:
+            logger.warning(f"[BrowserContext] Browser close failed: {br_err}")
+
+        # Phase 2: Nuclear fallback — reap any orphaned Chromium processes
+        _reap_orphan_chromium_processes()
 
 
 async def click_with_retry(
@@ -176,7 +188,7 @@ async def safe_wait_for_network_idle(page: Page, timeout_ms: int = NETWORK_IDLE_
         # TASK 7 FIX: networkidle is unreliable for hydration on heavy SPAs.
         # We wait for the initial load and then allow for GraphQL/XHR hydration.
         await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
-        
+
         # Semantic Latch: Allow the page to physically hydrate with actual feed data.
         await asyncio.sleep(2.0)
     except PlaywrightTimeout:

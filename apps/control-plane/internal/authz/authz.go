@@ -11,7 +11,9 @@ var ErrNotFound = errors.New("job not found or unauthorized")
 
 func LoadJobForUser(db *gorm.DB, jobID string, userID string) (models.Job, error) {
 	var job models.Job
-	if err := db.Where("id = ? AND user_id = ?", jobID, userID).First(&job).Error; err != nil {
+	if err := db.Joins("LEFT JOIN user_profiles ON user_profiles.id = jobs.user_id").
+		Where("jobs.id = ? AND (jobs.user_id::text = ? OR user_profiles.clerk_user_id = ?)", jobID, userID, userID).
+		First(&job).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return job, ErrNotFound
 		}
@@ -22,6 +24,9 @@ func LoadJobForUser(db *gorm.DB, jobID string, userID string) (models.Job, error
 
 func UserOwnsJob(db *gorm.DB, jobID string, userID string) bool {
 	var count int64
-	db.Model(&models.Job{}).Where("id = ? AND user_id = ?", jobID, userID).Count(&count)
+	db.Table("jobs").
+		Joins("LEFT JOIN user_profiles ON user_profiles.id = jobs.user_id").
+		Where("jobs.id = ? AND (jobs.user_id::text = ? OR user_profiles.clerk_user_id = ?)", jobID, userID, userID).
+		Count(&count)
 	return count > 0
 }

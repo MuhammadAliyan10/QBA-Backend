@@ -251,6 +251,8 @@ def convert_graph_to_steps(
         # Extract config from node data
         node_data = node.get("data", {})
         config = node_data.get("config", {})
+        if not config and "inputs" in node_data:
+            config = node_data.get("inputs", {})
         label = node_data.get("label", node_type)
 
         # Build step params from config

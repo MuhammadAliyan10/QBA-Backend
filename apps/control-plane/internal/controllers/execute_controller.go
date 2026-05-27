@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ─── REQUEST / RESPONSE ─────────────────────────────────────────────────────
@@ -108,32 +109,9 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 		return
 	}
 
-	// Idempotent retry: job row already exists
-	var existingJob models.Job
-	if err := ec.db.Where("id = ?", jobID).First(&existingJob).Error; err == nil {
-		if existingJob.UserID != tenantID {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error":   "forbidden",
-				"message": "Idempotency key belongs to another user",
-			})
-			return
-		}
-		runID, terr := ec.tm.GetExistingRunID(c.Request.Context(), jobID)
-		if terr != nil {
-			c.JSON(http.StatusConflict, gin.H{
-				"error":   "duplicate_execution",
-				"message": "Job exists but workflow state could not be loaded",
-				"job_id":  jobID,
-			})
-			return
-		}
-		c.JSON(http.StatusOK, ExecuteResponse{
-			JobID:  jobID,
-			RunID:  runID,
-			Status: "already_running",
-		})
-		return
-	}
+	// NOTE: Idempotency is now enforced atomically at the DB layer via
+	// clause.OnConflict below. The old First()+Create() pattern had a
+	// thundering-herd race condition under concurrent requests.
 
 	preflightCtx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 	defer cancel()
@@ -225,8 +203,17 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 		u := strings.TrimSpace(req.CallbackURL)
 		job.WebhookURL = &u
 	}
-	if err := ec.db.Create(job).Error; err != nil {
-		log.Printf("[ExecuteController] DB Error: failed to create job: %v", err)
+
+	// PATCH 2: Atomic UPSERT — eliminates thundering-herd race condition.
+	// If a row with this ID already exists, DoNothing prevents a duplicate insert.
+	// We then check RowsAffected to detect idempotent retries.
+	result := ec.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoNothing: true,
+	}).Create(job)
+
+	if result.Error != nil {
+		log.Printf("[ExecuteController] DB Error: failed to create job: %v", result.Error)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "database_error",
 			"message": "Failed to persist job record",
@@ -234,14 +221,53 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 		return
 	}
 
+	// RowsAffected == 0 means the job already existed (idempotent retry).
+	if result.RowsAffected == 0 {
+		var existingJob models.Job
+		if err := ec.db.Where("id = ?", jobID).First(&existingJob).Error; err != nil {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":   "duplicate_execution",
+				"message": "Job exists but could not be loaded",
+				"job_id":  jobID,
+			})
+			return
+		}
+		if existingJob.UserID != tenantID {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":   "forbidden",
+				"message": "Idempotency key belongs to another user",
+			})
+			return
+		}
+		runID, terr := ec.tm.GetExistingRunID(c.Request.Context(), jobID)
+		if terr != nil {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":   "duplicate_execution",
+				"message": "Job exists but workflow state could not be loaded",
+				"job_id":  jobID,
+			})
+			return
+		}
+		c.JSON(http.StatusOK, ExecuteResponse{
+			JobID:  jobID,
+			RunID:  runID,
+			Status: "already_running",
+		})
+		return
+	}
+
 	// Resolve session_state: credential_id takes precedence over inline sessionState.
+	// PATCH 3: Strict Vault Resolution — differentiate "not found" from "DB dead".
 	resolvedSessionState := req.SessionState
 	if strings.TrimSpace(req.CredentialID) != "" {
 		var vaultSession models.VaultSession
 		// 1. Try to find in the new VaultSessions table (quanta auth flow)
-		if err := ec.db.Where("id = ? AND user_id = ?", req.CredentialID, tenantID).First(&vaultSession).Error; err == nil {
+		vaultErr := ec.db.Where("id = ? AND user_id = ?", req.CredentialID, tenantID).First(&vaultSession).Error
+
+		if vaultErr == nil {
+			// Found in Vault — decrypt and use
 			log.Printf("[ExecuteController] Found session in Vault | JobID=%s | VaultID=%s", jobID, req.CredentialID)
-			
+
 			plaintext, err := ec.vaultCrypto.Decrypt(vaultSession.EncryptedState)
 			if err != nil {
 				log.Printf("[ExecuteController] Vault decryption error: %v", err)
@@ -256,8 +282,9 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 				return
 			}
 			resolvedSessionState = sessionMap
-		} else {
-			// 2. Fallback to legacy Credentials table
+
+		} else if errors.Is(vaultErr, gorm.ErrRecordNotFound) {
+			// Record genuinely does not exist in VaultSessions → safe to fallback to legacy
 			var cred models.Credential
 			if err := ec.db.Where("id = ? AND client_id = ?", req.CredentialID, tenantID).First(&cred).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -267,7 +294,7 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 					})
 					return
 				}
-				log.Printf("[ExecuteController] Credential DB error: %v", err)
+				log.Printf("[ExecuteController] Legacy credential DB error: %v", err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "database_error", "message": "Failed to load credential"})
 				return
 			}
@@ -287,6 +314,15 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 			}
 			resolvedSessionState = sessionMap
 			log.Printf("[ExecuteController] Injecting decrypted legacy credential | JobID=%s | CredID=%s", jobID, req.CredentialID)
+
+		} else {
+			// DB infrastructure error (connection dead, timeout, etc.) — abort immediately.
+			log.Printf("[ExecuteController] FATAL: Vault DB query failed (not ErrRecordNotFound): %v", vaultErr)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error":   "database_error",
+				"message": "Fatal database error during vault session resolution",
+			})
+			return
 		}
 	}
 
@@ -299,8 +335,14 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 		return
 	}
 
+	// PATCH 1: Detach from HTTP request context for Temporal dispatch.
+	// If the API client disconnects (TCP reset, browser close, timeout),
+	// the HTTP context cancels. Without detachment, this kills the Temporal
+	// StartExecution RPC, orphaning the already-persisted job in QUEUED state.
+	detachedCtx := context.WithoutCancel(c.Request.Context())
+
 	runID, err := ec.tm.StartExecution(
-		c.Request.Context(),
+		detachedCtx,
 		jobID,
 		workflowID,
 		req.TargetURL,

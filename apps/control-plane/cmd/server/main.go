@@ -588,7 +588,7 @@ func main() {
 		protected.GET("/v1/execute/:job_id/stream", streamMgr.HandleSSE)
 	}
 
-	protected.GET("/ws", wsManager.HandleRequest)
+	r.GET("/ws", wsManager.HandleRequest)
 
 	// 9. Start Server
 	port := os.Getenv("PORT_GO_API")
