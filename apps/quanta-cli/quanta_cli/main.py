@@ -76,7 +76,9 @@ def auth(
 def execute(
     url: str, 
     vault_id: Optional[str] = typer.Option(None, "--vault-id", help="The Credential ID from the Quanta Vault."),
-    prompt: str = typer.Option(..., "--prompt", help="The natural language mission prompt.")
+    prompt: str = typer.Option(..., "--prompt", help="The natural language mission prompt."),
+    file_path: Optional[str] = typer.Option(None, "--file", help="Path to a local file (e.g. PDF) to attach to the mission. Max 1.5MB."),
+    extraction_schema: Optional[str] = typer.Option(None, "--extraction-schema", help="JSON string for extraction schema.")
 ):
     """
     Trigger an agentic execution mission using a vaulted session.
@@ -99,7 +101,7 @@ def execute(
 
         try:
             rich.print(f"[bold cyan]Triggering execution mission...[/bold cyan]")
-            job_id = await execute_mission(url, prompt, vault_id)
+            job_id = await execute_mission(url, prompt, vault_id, file_path, extraction_schema)
             
             rich.print(f"[bold green]Mission Dispatched:[/bold green] Job ID: [bold white]{job_id}[/bold white]")
             rich.print(f"[bold cyan]Attaching to live log stream...[/bold cyan]\n")
@@ -142,7 +144,7 @@ def execute(
                         console.print(f"\n[bold green][OK] Mission Completed Successfully.[/bold green]")
                         # Fetch final job details to print extracted data (Fallback)
                         try:
-                            import httpx, os
+                            import httpx, os, urllib.request
                             from .api import get_api_key
                             api_url = os.getenv("QUANTA_API_URL", "http://localhost:8080").rstrip("/")
                             api_key = get_api_key()
@@ -154,9 +156,19 @@ def execute(
                                     job_data = r.json()
                                     extracted = job_data.get("extracted_data")
                                     if extracted:
-                                        console.print(f"\n[bold magenta]Extracted Data:[/bold magenta]")
-                                        import json
-                                        console.print(f"[white]{json.dumps(extracted, indent=2)}[/white]")
+                                        if isinstance(extracted, dict) and "artifact_url" in extracted:
+                                            artifact_url = extracted["artifact_url"]
+                                            dl_dir = os.path.join(os.getcwd(), "downloads")
+                                            os.makedirs(dl_dir, exist_ok=True)
+                                            out_path = os.path.join(dl_dir, f"quanta_artifact_{job_id[:8]}.csv")
+                                            
+                                            console.print(f"[bold cyan]Downloading artifact from secure storage...[/bold cyan]")
+                                            urllib.request.urlretrieve(artifact_url, out_path)
+                                            console.print(f"[bold green]Artifact Downloaded:[/bold green] {out_path}")
+                                        else:
+                                            console.print(f"\n[bold magenta]Extracted Data:[/bold magenta]")
+                                            import json
+                                            console.print(f"[white]{json.dumps(extracted, indent=2)}[/white]")
                         except Exception as fetch_err:
                             pass
                         return

@@ -15,6 +15,8 @@ Key Features:
 
 import logging
 import json
+import re
+import sys
 from typing import Dict, Optional, Any, List
 from playwright.async_api import Page, Request, Response
 
@@ -26,6 +28,13 @@ class NetworkSniffer:
     The Traffic Analyst Module (Level 5).
     Captures verified API Credentials and Payloads for high-speed replay.
     """
+
+    # 10MB memory cap for captured payloads to prevent OOM on enterprise sites
+    MAX_CAPTURE_BYTES = 10 * 1024 * 1024
+
+    # Regex pattern for all known JSON hijacking prefixes
+    # Covers: Meta "for (;;);", Google ")]}'", various ")]}'\n" patterns
+    _HIJACK_PREFIX_RE = re.compile(r"^(?:for\s*\(;;\);|\)\]\}'?\n?|while\(1\);|\)&&\()\s*")
 
     def __init__(self, target_domain: Optional[str] = None):
         """
@@ -39,6 +48,7 @@ class NetworkSniffer:
         self.verified_session: Optional[Dict] = None
         self.rate_limited = False
         self.captured_responses = []
+        self._captured_bytes = 0
 
     async def start_sniffing(self, page: Page):
         """
@@ -93,25 +103,28 @@ class NetworkSniffer:
                             # 1. Try standard JSON parsing first
                             data = await response.json()
                         except Exception:
-                            # 2. Fallback: Raw text sanitization for Meta defense bypass
+                            # 2. Fallback: Regex-based hijacking prefix stripping
                             try:
                                 raw_text = await response.text()
-                                if "for (;;);" in raw_text:
-                                    clean_text = raw_text.replace("for (;;);", "").strip()
-                                    data = json.loads(clean_text)
+                                stripped = self._HIJACK_PREFIX_RE.sub("", raw_text).strip()
+                                if stripped != raw_text.strip():
+                                    data = json.loads(stripped)
                                     bypass_triggered = True
                                 else:
-                                    # Try parsing raw text as JSON anyway if it's not prefixed
                                     data = json.loads(raw_text)
                             except Exception:
                                 pass
 
                         if data and isinstance(data, (list, dict)):
-                            data_str = str(data)
-                            payload_size = len(data_str)
+                            payload_size = sys.getsizeof(json.dumps(data))
 
                             # Endpoint Heuristic (Drop obvious tracking endpoints)
                             if not (is_fb_graphql or is_generic_graphql) and any(k in lower_url for k in ['track', 'analytics', 'telemetry', 'beacon', 'metrics', 'log']):
+                                return
+
+                            # Memory Cap: Reject if cumulative captured bytes exceed threshold
+                            if self._captured_bytes + payload_size > self.MAX_CAPTURE_BYTES:
+                                logger.warning(f"[Network] Memory cap reached ({self._captured_bytes} bytes). Dropping payload from {url[:60]}")
                                 return
 
                             self.captured_responses.append({
@@ -120,14 +133,16 @@ class NetworkSniffer:
                                 "data": data,
                                 "size": payload_size
                             })
+                            self._captured_bytes += payload_size
 
                             if bypass_triggered:
-                                logger.info(f"🔓 [Network] Bypassed Meta JSON hijacking for {url[:60]}...")
+                                logger.info(f"[Network] Bypassed JSON hijacking prefix for {url[:60]}...")
 
-                            # 3. Memory Cap (Keep top 20 largest payloads)
-                            self.captured_responses.sort(key=lambda x: x["size"], reverse=True)
+                            # Keep top 20 largest payloads, evict smallest
                             if len(self.captured_responses) > 20:
-                                self.captured_responses.pop()
+                                self.captured_responses.sort(key=lambda x: x["size"], reverse=True)
+                                evicted = self.captured_responses.pop()
+                                self._captured_bytes -= evicted["size"]
 
                             logger.info(f"[Network] Intercepted JSON Payload ({payload_size} bytes) from {url[:60]}...")
                 except Exception:
@@ -202,6 +217,25 @@ class NetworkSniffer:
     def get_captured_responses(self) -> List[Dict]:
         """Returns the list of intercepted JSON payloads."""
         return self.captured_responses
+
+    def get_stitched_payloads(self) -> List[Any]:
+        """
+        Merges all captured JSON arrays from paginated XHR/GraphQL calls.
+        Detects list-typed values at the same key path and concatenates them.
+        Returns a flat list of all merged rows.
+        """
+        merged_rows = []
+        for resp in self.captured_responses:
+            data = resp.get("data")
+            if isinstance(data, list):
+                merged_rows.extend(data)
+            elif isinstance(data, dict):
+                # Find the first list-typed value (common API pattern: {"results": [...]})
+                for key, value in data.items():
+                    if isinstance(value, list) and len(value) > 0:
+                        merged_rows.extend(value)
+                        break
+        return merged_rows
 
 
 # Example usage (for testing)

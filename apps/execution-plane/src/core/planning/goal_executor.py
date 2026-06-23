@@ -21,6 +21,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from playwright.async_api import (
     BrowserContext,
@@ -503,11 +504,31 @@ class GoalExecutor:
     # STATE DESYNC DETECTION
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _is_genuine_navigation(old_url: str, new_url: str) -> bool:
+        """
+        Compare two URLs ignoring query parameters and fragments.
+
+        SPAs frequently append tracking params (?utm_source, ?ref=) or
+        hash fragments (#section) that do NOT represent a real page
+        navigation. Only a change in netloc or path constitutes a
+        genuine navigation event.
+        """
+        old_parsed = urlparse(old_url)
+        new_parsed = urlparse(new_url)
+        return (
+            old_parsed.netloc != new_parsed.netloc
+            or old_parsed.path != new_parsed.path
+        )
+
     async def _detect_desync(
         self, goal: GoalAction, page: Page, pre_url: str, pre_tab_count: int
     ) -> None:
         """
         Check if a navigation or new-tab event fired unexpectedly.
+
+        Ignores benign query-parameter / fragment changes that SPAs
+        routinely append (analytics, tracking, hash routing).
         """
         navigational_actions = {ActionEnum.NAVIGATE, ActionEnum.SWITCH_TAB, ActionEnum.NEW_TAB}
 
@@ -517,7 +538,7 @@ class GoalExecutor:
         current_url = page.url
         current_tab_count = len(self.context.pages)
 
-        url_changed = current_url != pre_url
+        url_changed = self._is_genuine_navigation(pre_url, current_url)
         new_tab_opened = current_tab_count > pre_tab_count
 
         if url_changed or new_tab_opened:

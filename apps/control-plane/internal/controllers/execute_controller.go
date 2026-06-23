@@ -25,8 +25,16 @@ import (
 
 // ExecuteRequest is the JSON body for POST /v1/execute.
 type ExecuteRequest struct {
-	TargetURL      string                 `json:"target_url" binding:"required"`
-	Objective      string                 `json:"objective" binding:"required"`
+	// TargetURL is the primary target. Deprecated in favor of TargetUrls but kept for backward compat.
+	TargetURL  string   `json:"target_url,omitempty"`
+	// TargetUrls is the preferred multi-URL field. If empty, TargetURL is used as a single-element list.
+	TargetUrls []string `json:"target_urls,omitempty"`
+	// NavigationObjective drives Phase 1 (click/type). If empty, Phase 1 is skipped entirely.
+	NavigationObjective string `json:"navigation_objective,omitempty"`
+	// ExtractionSchema drives Phase 2 (semantic data extraction). Must be provided for extraction.
+	ExtractionSchema map[string]interface{} `json:"extraction_schema,omitempty"`
+	// Objective is deprecated. Kept for backward compat — maps to NavigationObjective if set.
+	Objective      string                 `json:"objective,omitempty"`
 	EngineSettings map[string]interface{} `json:"engine_settings,omitempty"`
 	CallbackURL    string                 `json:"callback_url,omitempty"`
 	// SessionState is an optional pre-authenticated Playwright storage_state dictionary.
@@ -37,6 +45,8 @@ type ExecuteRequest struct {
 	// When set, the handler decrypts the stored session_data and injects it as session_state,
 	// taking priority over an inline sessionState value.
 	CredentialID string `json:"credential_id,omitempty"`
+	// Attachments carries Base64-encoded files from the CLI.
+	Attachments []temporal.Attachment `json:"attachments,omitempty"`
 }
 
 // ExecuteResponse is the HTTP 202 response body.
@@ -90,10 +100,48 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "invalid_request",
-			"message": "Missing required fields: target_url, objective",
+			"message": "Invalid request body",
 			"details": err.Error(),
 		})
 		return
+	}
+
+	// Normalize TargetUrls: merge deprecated TargetURL into the array.
+	if len(req.TargetUrls) == 0 && strings.TrimSpace(req.TargetURL) != "" {
+		req.TargetUrls = []string{req.TargetURL}
+	}
+	if len(req.TargetUrls) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid_request",
+			"message": "At least one target URL is required (target_url or target_urls)",
+		})
+		return
+	}
+	// Set TargetURL to first element for backward compat (URL validation, etc.)
+	req.TargetURL = req.TargetUrls[0]
+
+	// Normalize Objective: map deprecated objective to navigation_objective.
+	if strings.TrimSpace(req.NavigationObjective) == "" && strings.TrimSpace(req.Objective) != "" {
+		req.NavigationObjective = req.Objective
+	}
+	if strings.TrimSpace(req.NavigationObjective) == "" && req.ExtractionSchema == nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "invalid_request",
+			"message": "At least one of navigation_objective or extraction_schema must be provided",
+		})
+		return
+	}
+
+	// PATCH: 1.5MB Payload Cap (Base64 is ~33% larger, so we allow up to ~2MB of string length)
+	const maxBase64Length = 2 * 1024 * 1024 // 2MB
+	for _, att := range req.Attachments {
+		if len(att.Base64) > maxBase64Length {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{
+				"error":   "payload_too_large",
+				"message": "Attachment exceeds the 1.5MB maximum file size limit",
+			})
+			return
+		}
 	}
 
 	jobID := strings.TrimSpace(c.GetHeader("X-Idempotency-Key"))
@@ -163,18 +211,19 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 		return
 	}
 
-	logicRes, err := ec.lv.ValidateLogic(preflightCtx, req.Objective, urlRes.Domain)
-	if err != nil {
-		// Best-effort in local/dev: do not fail the request on validator timeouts/errors.
-		// The executor will deterministically fail later if the objective is impossible.
-		log.Printf("[PreFlight] Logic Validator Error (non-fatal): %v", err)
-	} else if logicRes != nil && !logicRes.IsPossible {
-		log.Printf("[PreFlight] Logic Rejected | JobID=%s | Reason=%s", jobID, logicRes.Reason)
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":   "logic_rejected",
-			"message": logicRes.Reason,
-		})
-		return
+	// Validate logic only if a navigation objective is provided.
+	if strings.TrimSpace(req.NavigationObjective) != "" {
+		logicRes, err := ec.lv.ValidateLogic(preflightCtx, req.NavigationObjective, urlRes.Domain)
+		if err != nil {
+			log.Printf("[PreFlight] Logic Validator Error (non-fatal): %v", err)
+		} else if logicRes != nil && !logicRes.IsPossible {
+			log.Printf("[PreFlight] Logic Rejected | JobID=%s | Reason=%s", jobID, logicRes.Reason)
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "logic_rejected",
+				"message": logicRes.Reason,
+			})
+			return
+		}
 	}
 
 	log.Printf("[PreFlight] Checks Passed | JobID=%s", jobID)
@@ -345,10 +394,12 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 		detachedCtx,
 		jobID,
 		workflowID,
-		req.TargetURL,
-		req.Objective,
+		req.TargetUrls,
+		req.NavigationObjective,
+		req.ExtractionSchema,
 		req.EngineSettings,
 		resolvedSessionState,
+		req.Attachments,
 	)
 
 	if err != nil {

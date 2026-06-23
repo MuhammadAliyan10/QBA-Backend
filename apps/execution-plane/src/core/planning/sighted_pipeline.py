@@ -474,6 +474,23 @@ class SightedPipeline:
                             result.extracted_data.update(report.extracted_data)
                             consecutive_desyncs = 0
 
+                            # -----------------------------------------------
+                            # SHORT-CIRCUIT: If we have extracted data and the
+                            # epoch succeeded, the objective is met. Do NOT
+                            # let the loop continue to the next epoch where
+                            # SPA URL mutations can trigger a false desync.
+                            # -----------------------------------------------
+                            if report.success and result.extracted_data:
+                                result.success = True
+                                result.status = "COMPLETED"
+                                await NervousSystem.publish_update(
+                                    job_id, "COMPLETED",
+                                    "[Pipeline] Objective achieved (extraction short-circuit).",
+                                    "complete",
+                                    data=json.dumps(result.extracted_data),
+                                )
+                                break
+
                             if not report.success:
                                 result.status = "FAILED"
                                 result.error = report.error

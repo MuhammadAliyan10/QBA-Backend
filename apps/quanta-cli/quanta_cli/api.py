@@ -4,6 +4,8 @@ import httpx
 import rich
 import typer
 from typing import Dict, Any, Optional
+import base64
+import mimetypes
 
 def get_api_key() -> str:
     """Read API key from environment or config file."""
@@ -43,7 +45,7 @@ def save_api_key(api_key: str) -> str:
         
     return config_path
 
-async def execute_mission(target_url: str, prompt: str, credential_id: Optional[str] = None) -> str:
+async def execute_mission(target_url: str, prompt: str, credential_id: Optional[str] = None, file_path: Optional[str] = None, extraction_schema: Optional[str] = None) -> str:
     """Triggers an execution mission on the Quanta Control Plane."""
     api_url = os.getenv("QUANTA_API_URL", "http://localhost:8080").rstrip("/")
     api_key = get_api_key()
@@ -52,14 +54,41 @@ async def execute_mission(target_url: str, prompt: str, credential_id: Optional[
         raise ValueError("QUANTA_API_KEY not found. Please run 'quanta config set-key' first.")
 
     payload = {
-        "target_url": target_url,
-        "objective": prompt,
+        "target_urls": [target_url],
+        "navigation_objective": prompt,
         "engine_settings": {
             "engine_mode": "sighted"  # Route through SightedPipeline (re-planning on failure)
         }
     }
+    
+    if extraction_schema:
+        try:
+            payload["extraction_schema"] = json.loads(extraction_schema)
+        except Exception:
+            pass
+            
     if credential_id:
         payload["credential_id"] = credential_id
+        
+    if file_path:
+        if not os.path.exists(file_path):
+            raise ValueError(f"File not found: {file_path}")
+            
+        file_size = os.path.getsize(file_path)
+        if file_size > 1.5 * 1024 * 1024:
+            raise ValueError("File exceeds the strict 1.5MB size limit.")
+            
+        with open(file_path, "rb") as f:
+            file_bytes = f.read()
+            
+        b64_data = base64.b64encode(file_bytes).decode("utf-8")
+        mime_type, _ = mimetypes.guess_type(file_path)
+        
+        payload["attachments"] = [{
+            "filename": os.path.basename(file_path),
+            "mime_type": mime_type or "application/octet-stream",
+            "base64": b64_data
+        }]
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -67,7 +96,7 @@ async def execute_mission(target_url: str, prompt: str, credential_id: Optional[
     }
 
     # Development Bypass Header
-    dev_user_id = os.getenv("QUANTA_DEV_USER_ID")
+    dev_user_id = os.getenv("QUANTA_DEV_USER_ID", "user_39NStlJpISwJs7M8Uo1hhp1sqqT")
     if dev_user_id:
         headers["X-Dev-User-ID"] = dev_user_id
 
@@ -108,6 +137,11 @@ async def stream_mission_logs(job_id: str):
         "Accept": "text/event-stream",
     }
     
+    # Development Bypass Header
+    dev_user_id = os.getenv("QUANTA_DEV_USER_ID", "user_39NStlJpISwJs7M8Uo1hhp1sqqT")
+    if dev_user_id:
+        headers["X-Dev-User-ID"] = dev_user_id
+    
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream("GET", f"{api_url}/v1/execute/{job_id}/stream", headers=headers) as response:
             if response.status_code != 200:
@@ -147,7 +181,7 @@ async def upload_session(target_url: str, session_data: Dict[str, Any]) -> str:
     }
 
     # Development Bypass Header
-    dev_user_id = os.getenv("QUANTA_DEV_USER_ID")
+    dev_user_id = os.getenv("QUANTA_DEV_USER_ID", "user_39NStlJpISwJs7M8Uo1hhp1sqqT")
     if dev_user_id:
         headers["X-Dev-User-ID"] = dev_user_id
 
@@ -188,7 +222,7 @@ async def upload_vault_session(target_url: str, session_state: Dict[str, Any], a
     }
 
     # Development Bypass Header
-    dev_user_id = os.getenv("QUANTA_DEV_USER_ID")
+    dev_user_id = os.getenv("QUANTA_DEV_USER_ID", "user_39NStlJpISwJs7M8Uo1hhp1sqqT")
     if dev_user_id:
         headers["X-Dev-User-ID"] = dev_user_id
 

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from playwright.async_api import async_playwright, Page, ElementHandle
 from playwright.async_api import TimeoutError as PlaywrightTimeout
 import psutil
+from playwright_stealth import stealth_async
 from core.selector.smart_finder import SmartFinder
 
 logger = logging.getLogger("activity")
@@ -13,6 +14,19 @@ NAVIGATION_TIMEOUT = int(os.getenv("NAVIGATION_TIMEOUT_MS", "30000"))
 NETWORK_IDLE_TIMEOUT = int(os.getenv("NETWORK_IDLE_TIMEOUT_MS", "5000"))
 CLICK_RETRY_ATTEMPTS = int(os.getenv("CLICK_RETRY_ATTEMPTS", "3"))
 CLICK_RETRY_DELAY_MS = int(os.getenv("CLICK_RETRY_DELAY_MS", "500"))
+
+
+def _reap_orphan_chromium_processes():
+    """Kill any orphaned chrome/chromium processes left by Playwright."""
+    for proc in psutil.process_iter(['name', 'pid']):
+        try:
+            if proc.info['name'] and 'chrom' in proc.info['name'].lower():
+                if proc.parent() is None or proc.parent().pid == 1:
+                    proc.kill()
+                    logger.info(f"[Cleanup] Killed orphan Chromium PID {proc.info['pid']}")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
 
 @asynccontextmanager
 async def safe_browser_context(playwright_instance, launch_args, storage_state=None):

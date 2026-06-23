@@ -248,12 +248,22 @@ class SafeLLMClient:
         """Extract JSON from potential markdown code blocks or preambles."""
         text = text.strip()
 
-        # Find the first '{' and the last '}'
-        start_idx = text.find("{")
-        end_idx = text.rfind("}")
+        # Find the first '{' or '[' and the matching last '}' or ']'
+        obj_start = text.find("{")
+        obj_end = text.rfind("}")
+        arr_start = text.find("[")
+        arr_end = text.rfind("]")
 
-        if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
-            return text[start_idx:end_idx+1]
+        candidates = []
+        if obj_start != -1 and obj_end != -1 and obj_end >= obj_start:
+            candidates.append((obj_start, obj_end))
+        if arr_start != -1 and arr_end != -1 and arr_end >= arr_start:
+            candidates.append((arr_start, arr_end))
+
+        if candidates:
+            # Pick whichever appears first in the text
+            best = min(candidates, key=lambda c: c[0])
+            return text[best[0]:best[1] + 1]
 
         return text
 

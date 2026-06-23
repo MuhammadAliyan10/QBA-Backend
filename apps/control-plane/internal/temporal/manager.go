@@ -28,17 +28,32 @@ const (
 
 // ─── WORKFLOW INPUT ──────────────────────────────────────────────────────────
 
+// Attachment represents a Base64-encoded file uploaded from the CLI.
+// The Python worker materializes it to disk before execution.
+type Attachment struct {
+	Filename string `json:"filename"`
+	MimeType string `json:"mime_type"`
+	Base64   string `json:"base64"`
+}
+
 // WorkflowInput is the payload sent to the Python Temporal worker.
 // Must match the Python workflow's expected input schema exactly.
 type WorkflowInput struct {
-	JobID          string                 `json:"job_id"`
-	WorkflowID     string                 `json:"workflow_id"`
-	TargetURL      string                 `json:"target_url"`
-	Objective      string                 `json:"objective"`
+	JobID               string                 `json:"job_id"`
+	WorkflowID          string                 `json:"workflow_id"`
+	TargetURL           string                 `json:"target_url"`
+	TargetUrls          []string               `json:"target_urls"`
+	NavigationObjective string                 `json:"navigation_objective,omitempty"`
+	ExtractionSchema    map[string]interface{} `json:"extraction_schema,omitempty"`
+	// Objective is deprecated. Kept for backward compat with older Python workers.
+	Objective      string                 `json:"objective,omitempty"`
 	EngineSettings map[string]interface{} `json:"engine_settings,omitempty"`
 	// SessionState carries a pre-authenticated Playwright storage_state dictionary.
 	// Nil/omitted when no BYOS session is provided by the caller.
-	SessionState   map[string]interface{} `json:"sessionState,omitempty"`
+	SessionState map[string]interface{} `json:"sessionState,omitempty"`
+	// Attachments carries Base64-encoded files from the CLI.
+	// The Python worker decodes and writes them to a temp directory.
+	Attachments []Attachment `json:"attachments,omitempty"`
 }
 
 // ─── TEMPORAL MANAGER ────────────────────────────────────────────────────────
@@ -84,21 +99,33 @@ func (tm *TemporalManager) StartExecution(
 	ctx context.Context,
 	jobID string,
 	workflowID string,
-	targetURL string,
-	objective string,
+	targetUrls []string,
+	navigationObjective string,
+	extractionSchema map[string]interface{},
 	engineSettings map[string]interface{},
 	sessionState map[string]interface{},
+	attachments []Attachment,
 ) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, StartTimeout)
 	defer cancel()
 
+	// Backward compat: set TargetURL to first element.
+	primaryURL := ""
+	if len(targetUrls) > 0 {
+		primaryURL = targetUrls[0]
+	}
+
 	input := WorkflowInput{
-		JobID:          jobID,
-		WorkflowID:     workflowID,
-		TargetURL:      targetURL,
-		Objective:      objective,
-		EngineSettings: engineSettings,
-		SessionState:   sessionState,
+		JobID:               jobID,
+		WorkflowID:          workflowID,
+		TargetURL:           primaryURL,
+		TargetUrls:          targetUrls,
+		NavigationObjective: navigationObjective,
+		ExtractionSchema:    extractionSchema,
+		Objective:           navigationObjective, // Backward compat for older workers
+		EngineSettings:      engineSettings,
+		SessionState:        sessionState,
+		Attachments:         attachments,
 	}
 
 	opts := client.StartWorkflowOptions{
@@ -112,7 +139,7 @@ func (tm *TemporalManager) StartExecution(
 		return "", fmt.Errorf("failed to start workflow: %w", err)
 	}
 
-	log.Printf("[TemporalManager] Started workflow | ID=%s | RunID=%s", jobID, run.GetRunID())
+	log.Printf("[TemporalManager] Started workflow | ID=%s | RunID=%s | URLs=%d", jobID, run.GetRunID(), len(targetUrls))
 	return run.GetRunID(), nil
 }
 

@@ -1,6 +1,6 @@
 """
 DEPRECATED: This file is a legacy monolith. 
-Execution has been migrated to core_workflow.py and the ActionRegistry.
+Execution has been migrated to coreWorkflow.py and the ActionRegistry.
 Do not add new features here.
 Rollback option only.
 """
