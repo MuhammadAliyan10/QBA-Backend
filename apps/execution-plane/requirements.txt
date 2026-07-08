@@ -106,6 +106,7 @@ opentelemetry-semantic-conventions==0.48b0
 # -----------------------------
 python-dotenv==1.0.1
 tenacity==8.5.0
+markdownify==0.13.1
 pillow==10.4.0
 psutil==6.0.0
 tqdm==4.66.5

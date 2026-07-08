@@ -184,8 +184,9 @@ func (sc *SightedController) HandleSightedAsync(c *gin.Context) {
 		c.Request.Context(),
 		jobID,
 		workflowID,
-		req.TargetURL,
+		[]string{req.TargetURL},
 		req.Objective,
+		nil, // ExtractionSchema
 		engineSettings,
 		nil, // sessionState: sighted pipeline does not use BYOS sessions
 		nil, // attachments
@@ -289,7 +290,7 @@ func (sc *SightedController) HandleSightedSync(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
 	defer cancel()
 
-	runID, err := sc.tm.StartExecution(ctx, jobID, workflowID, req.TargetURL, req.Objective, engineSettings, nil, nil)
+	runID, err := sc.tm.StartExecution(ctx, jobID, workflowID, []string{req.TargetURL}, req.Objective, nil, engineSettings, nil, nil)
 	if err != nil {
 		log.Printf("[SightedController] Sync execution failed to start: %v", err)
 		sc.updateJobStatus(jobID, "FAILED", err.Error())

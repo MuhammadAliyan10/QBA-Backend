@@ -237,6 +237,8 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 		TriggerType: "ON_DEMAND",
 		RecipeJSON:  []byte("{}"),
 		IsActive:    true,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
 	}
 	if err := ec.db.Create(workflow).Error; err != nil {
 		log.Printf("[ExecuteController] DB Error: failed to create placeholder workflow: %v", err)
@@ -247,6 +249,8 @@ func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
 		UserID:     tenantID,
 		WorkflowID: workflowID,
 		Status:     "QUEUED",
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
 	}
 	if strings.TrimSpace(req.CallbackURL) != "" {
 		u := strings.TrimSpace(req.CallbackURL)
