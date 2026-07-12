@@ -120,19 +120,19 @@ async def execute_universal_agent(
                     f"Objective: {navigation_objective}\n"
                     f"URL: {page.url}\n\n"
                     f"Context:\n{dom_state['pageText']}\n\n"
-                    f"Elements:\n{dom_state['marksText']}\n\n"
+                    f"Elements:\n{dom_state['marksText'][:10000]}\n\n"
                     f"{file_ctx}"
                     "RULES:\n"
-                    "1. Only act on visible Elements IDs. No hallucinations.\n"
-                    "2. If objective complete/success state reached, return status: 'ui_ready', actions: [].\n"
+                    "1. ONLY use the strictly numeric [ID]s listed in the Elements section. NEVER hallucinate string IDs like 'search' or 'tsf'.\n"
+                    "2. If objective complete/success state reached, return status: \"ui_ready\", actions: [].\n"
                     "3. If already on target URL, do NOT click nav links again. Act on the page.\n"
-                    "4. Typing: {'type': 'type', 'target_id': 'X', 'value': 'text'}. Clicking: {'type': 'click', 'target_id': 'X'}.\n"
-                    "5. File Upload: {'type': 'upload', 'target_id': 'X', 'value': '/path/to/file'}\n"
-                    "Output ONLY raw JSON:\n"
+                    "4. Typing: {\"type\": \"type\", \"target_id\": \"12\", \"value\": \"text\"}. Clicking: {\"type\": \"click\", \"target_id\": \"5\"}.\n"
+                    "5. File Upload: {\"type\": \"upload\", \"target_id\": \"9\", \"value\": \"/path/to/file\"}\n"
+                    "Output ONLY raw JSON using DOUBLE QUOTES:\n"
                     "{\n"
                     '  "thought_process": "brief",\n'
                     '  "actions": [{"type": "click", "target_id": "105"}],\n'
-                    '  "status": "in_progress" | "ui_ready"\n'
+                    '  "status": "in_progress"\n'
                     "}"
                 )
                 

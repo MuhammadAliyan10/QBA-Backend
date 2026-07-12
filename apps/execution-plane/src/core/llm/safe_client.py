@@ -79,7 +79,7 @@ class SafeLLMClient:
             self.provider = "nvidia"
             self.api_key  = api_key  or os.getenv("NVIDIA_API_KEY")
             self.base_url = base_url or "https://integrate.api.nvidia.com/v1/chat/completions"
-            self.model    = os.getenv("LLM_MODEL", "meta/llama-3.3-70b-instruct")
+            self.model    = os.getenv("LLM_MODEL", "meta/llama-3.1-8b-instruct")
 
         if not self.api_key:
             logger.warning(
@@ -128,7 +128,7 @@ class SafeLLMClient:
                 json={
                     "model": self.model,
                     "temperature": 0.1,
-                    "max_tokens": 1000,
+                    "max_tokens": 4096,
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt}
@@ -205,7 +205,7 @@ class SafeLLMClient:
                 json={
                     "model": self.model,
                     "temperature": 0.1,
-                    "max_tokens": 1000,
+                    "max_tokens": 4096,
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt}
@@ -268,8 +268,8 @@ class SafeLLMClient:
         return text
 
     @retry(
-        stop=stop_after_attempt(10),
-        wait=wait_exponential(multiplier=2, min=5, max=60),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type((httpx.RequestError,)),
         before_sleep=before_sleep_log(logger, logging.WARNING)
     )
@@ -292,7 +292,7 @@ class SafeLLMClient:
                 json={
                     "model": self.model,
                     "temperature": temperature,
-                    "max_tokens": 1000,
+                    "max_tokens": 4096,
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
