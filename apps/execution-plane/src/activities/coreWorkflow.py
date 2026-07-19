@@ -470,7 +470,21 @@ async def browser_automation_activity(payload: dict) -> dict:
                             materialized_files=materialized_files
                         )
                         
-                        if extraction_schema and ua_result.get("status") == "success":
+                        ua_status = ua_result.get("status")
+
+                        if ua_status in ("stopped", "failed"):
+                            reason = ua_result.get("reason", "Unknown reason")
+                            tokens = ua_result.get("tokens", 0)
+                            logger.error(f"[{job_id}] Universal Agent stopped/failed: {reason} | tokens_used={tokens}")
+                            await NervousSystem.publish_update(job_id, "FAILED", f"Agent stopped: {reason}", "error")
+                            return {
+                                "status": "FAILED",
+                                "job_id": job_id,
+                                "error": f"Agent stopped: {reason}",
+                                "tokens_used": tokens,
+                            }
+
+                        if extraction_schema and ua_status == "success":
                             extracted_data = ua_result.get("data")
                             aggregated_results.append(extracted_data)
                             data_json = json.dumps(extracted_data)

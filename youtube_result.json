@@ -1,15 +1,15 @@
 {
   "success": false,
-  "latency": "201.13s",
+  "latency": "55.49s",
   "result_data": {
-    "createdAt": 1783837044331,
+    "createdAt": 1784439639529,
     "creditsUsed": 0,
     "duration": 0,
-    "endTime": 1783837242645,
-    "errorMessage": "Critical Error: RetryError[<Future at 0xfffea991f520 state=finished raised ReadTimeout>]",
-    "id": "eb3a754f-111f-4f43-a9bb-39ace63cad68",
+    "endTime": 1784439689949,
+    "errorMessage": "Agent stopped: all_actions_failed_loop",
+    "id": "4f1c40eb-8d18-454b-b661-b3a7482c779f",
     "resultUrl": null,
     "status": "FAILED",
-    "workflowId": "ad684d7a-beec-484e-a93d-413dfbf9b934"
+    "workflowId": "a8b71aa5-0fb8-4af6-99a1-9e4aaaeb5c7c"
   }
 }
