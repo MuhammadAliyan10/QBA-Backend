@@ -226,13 +226,70 @@ class RecipePlanner:
 
         raise CompilationFailedError("Retries exhausted.")
 
-    async def generate(self, prompt: str, url: str, **kwargs) -> PlannerResult:
-        st = time.time()
-        try:
-            r = await self.generate_with_retry(prompt, url, job_id=kwargs.get('job_id'))
-            return PlannerResult(success=True, recipe=r.model_dump(mode='json'), generation_ms=int((time.time()-st)*1000))
-        except Exception as e:
-            return PlannerResult(success=False, error=str(e), generation_ms=int((time.time()-st)*1000))
+    async def plan_objective(
+        self,
+        objective: str,
+        url: str,
+        job_id: Optional[str] = None,
+    ) -> Optional[List[dict]]:
+        """
+        Generate a flat, ordered list of StepDirection dicts from a user objective.
+        Returns None on failure (caller falls back to blind UA mode).
+        Used by the Universal Agent to get a pre-computed plan before starting the nav loop.
+        """
+        messages = [
+            {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"## TARGET_URL\n{url}\n\n"
+                    f"## USER_REQUEST\n{objective}\n\n"
+                    "Now output STRICT JSON only, no markdown, no commentary."
+                )
+            }
+        ]
+
+        schema = QuantaPlan.model_json_schema()
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {"name": "quantaplan", "schema": schema, "strict": True}
+        }
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                content = await self._call_nim(messages, response_format)
+                clean = content.strip()
+                s, e = clean.find("{"), clean.rfind("}")
+                if s != -1 and e != -1:
+                    clean = clean[s:e + 1]
+                plan = QuantaPlan.model_validate_json(clean)
+                step_list = [
+                    {
+                        "step_id":          s.step_id,
+                        "intent_type":      s.intent_type,
+                        "arguments":        s.arguments,
+                        "success_criteria": s.success_criteria,
+                        "timeout_ms":       s.timeout_ms,
+                        "max_retries":      s.max_retries,
+                    }
+                    for s in plan.subtasks
+                ]
+                logger.info(
+                    f"[{job_id}] Planner generated {len(step_list)}-step plan for: {objective[:60]}"
+                )
+                return step_list
+            except ValidationError as ve:
+                messages.extend([
+                    {"role": "assistant", "content": content},
+                    {"role": "user",      "content": f"Fix schema errors:\n{ve.json()}"}
+                ])
+            except Exception as exc:
+                logger.warning(f"[{job_id}] Planner attempt {attempt + 1} failed: {exc}")
+                await asyncio.sleep(1)
+
+        logger.error(f"[{job_id}] Planner exhausted retries — UA will run in blind mode")
+        return None
+
 
     async def _call_nim(self, messages: list[dict[str, str]], response_format: Dict) -> str:
         r = await GetClient().post(NIM_API_URL, json={"model": NIM_MODEL, "messages": messages, "temperature": 0.1, "response_format": response_format}, headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"})

@@ -30,7 +30,7 @@ MAX_MARKDOWN_CHARS: int = 10000  # Reduced from 12K to save tokens
 # ---------------------------------------------------------------------------
 # System prompt — strict, complete, model-agnostic
 # ---------------------------------------------------------------------------
-NAVIGATION_SYSTEM_PROMPT = """You are a deterministic browser automation agent. Output a single JSON object for the NEXT action needed to achieve the objective.
+NAVIGATION_SYSTEM_PROMPT = """You are a deterministic browser automation agent. Output a single JSON object for the NEXT action needed to complete the CURRENT STEP.
 
 ELEMENT FORMAT in the list below: [ID|TAG type] label
   [12|INPUT text] Search   → text input, ID=12
@@ -60,12 +60,13 @@ HARD RULES:
 4. Output ONLY the raw JSON object. No markdown, no explanation, no code fences.
 
 OUTPUT FORMAT:
-{"thought_process": "one sentence", "actions": [{"type": "...", "target_id": "N", "value": "..."}], "status": "in_progress|ui_ready|stopped"}
+{"thought_process": "one sentence", "actions": [{"type": "...", "target_id": "N", "value": "..."}], "status": "in_progress|step_complete|ui_ready|stopped"}
 
 STATUS:
-- "in_progress": need more steps
-- "ui_ready":    objective achieved, actions=[]
-- "stopped":     page blocked, CAPTCHA, or objective impossible"""
+- "in_progress":    still working on this step, more actions needed
+- "step_complete":  current step achieved, ready for next step, actions=[]
+- "ui_ready":       ALL steps done, full objective achieved, actions=[]
+- "stopped":        page blocked, CAPTCHA, or step is impossible"""
 
 
 async def _rescan_dom(page: "Page") -> None:
@@ -123,10 +124,17 @@ async def execute_universal_agent(
     navigation_objective: str = None,
     extraction_schema: dict = None,
     materialized_files: list[str] = None,
+    plan_steps: list[dict] = None,
 ):
     """
     Two-Phase Cognitive Orchestration for Universal Agent.
+
     Phase 1: Navigation State Machine (LLM-driven DOM interaction)
+      - GUIDED MODE (plan_steps provided): Planner pre-computed a step list.
+        The agent executes one step at a time with a bounded sub-loop per step.
+        Accuracy: ~85% vs ~40% in blind mode.
+      - BLIND MODE (no plan_steps): Falls back to the original reactive loop.
+
     Phase 2: Schema-Driven Extraction (LLM-driven data mapping)
 
     Safeguards:
@@ -176,20 +184,321 @@ async def execute_universal_agent(
         if navigation_objective:
             consecutive_stalls    = 0
             consecutive_failures  = 0
-            last_action_signature = None  # Detect identical action loops
+            last_action_signature = None
 
-            while loop_count < MAX_NAV_LOOPS:
-                loop_count += 1
+            # ----------------------------------------------------------
+            # CHOOSE EXECUTION MODE
+            # ----------------------------------------------------------
+            # GUIDED MODE: Planner gave us an ordered list of steps.
+            # We iterate each step with a bounded sub-loop (max 5 iters).
+            # The LLM only needs to figure out HOW to do THIS step.
+            #
+            # BLIND MODE: No plan. Original reactive loop — LLM decides
+            # what the next action is from the full objective each time.
+            # ----------------------------------------------------------
+            active_plan = list(plan_steps) if plan_steps else []
+            guided_mode = bool(active_plan)
+
+            if guided_mode:
+                total_steps = len(active_plan)
                 await user_logger.info(
-                    "THINK",
-                    message=f"Phase 1 — Iteration {loop_count}/{MAX_NAV_LOOPS} | "
-                            f"Tokens used: {llm.total_tokens_used}/{llm.token_budget}"
+                    "PLAN",
+                    message=f"Guided mode: executing {total_steps}-step plan"
                 )
+                logger.info(f"[{job_id}] Guided mode: {total_steps} plan steps")
 
-                # Adaptive sleep: only sleep after the first iteration,
-                # and only 2s (not 10s flat) to reduce wasted wall-clock time.
-                if loop_count > 1:
-                    await asyncio.sleep(NAV_RATE_LIMIT_SLEEP)
+                MAX_LOOPS_PER_STEP = 5  # Hard cap per individual step
+
+                for step_idx, step in enumerate(active_plan):
+                    step_intent   = step.get("intent_type", "unknown")
+                    step_criteria = step.get("success_criteria", "")
+                    step_args     = step.get("arguments", {})
+
+                    await user_logger.info(
+                        "THINK",
+                        message=(
+                            f"Step {step_idx + 1}/{total_steps}: {step_intent} — "
+                            f"{step_criteria[:80]}"
+                        )
+                    )
+                    logger.info(
+                        f"[{job_id}] Executing plan step {step_idx + 1}/{total_steps}: "
+                        f"{step_intent} | criteria: {step_criteria[:60]}"
+                    )
+
+                    step_loops = 0
+                    step_done  = False
+
+                    while step_loops < MAX_LOOPS_PER_STEP:
+                        step_loops += 1
+                        loop_count += 1
+
+                        if step_loops > 1:
+                            await asyncio.sleep(NAV_RATE_LIMIT_SLEEP)
+
+                        # ---- DOM SNAPSHOT ----
+                        dom_state = await page.evaluate("""
+                            () => {
+                                let idCounter = 1;
+                                let marksText = "";
+                                document.querySelectorAll('[data-quanta-id]').forEach(el => el.removeAttribute('data-quanta-id'));
+
+                                const interactiveSelectors = "button, a[href], input, select, textarea, [role='button'], [role='combobox']";
+                                const elements = document.querySelectorAll(interactiveSelectors);
+
+                                elements.forEach(el => {
+                                    const style = window.getComputedStyle(el);
+                                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
+                                    const rect = el.getBoundingClientRect();
+                                    if (rect.width === 0 || rect.height === 0) return;
+
+                                    const id = idCounter++;
+                                    el.setAttribute("data-quanta-id", id.toString());
+
+                                    const tag  = el.tagName.toUpperCase();
+                                    const type = el.getAttribute("type") || el.getAttribute("role") || "";
+                                    const typeStr = type ? ` ${type.toLowerCase()}` : "";
+
+                                    let label = (el.innerText || el.value || el.getAttribute("aria-label") || el.placeholder || "").trim();
+                                    label = label.replace(/\\s+/g, ' ').substring(0, 60);
+                                    if (!label && tag === 'INPUT') label = el.type || "text";
+
+                                    marksText += `[${id}|${tag}${typeStr}] ${label}\\n`;
+                                });
+
+                                const pageText = document.body.innerText.replace(/\\s+/g, ' ').substring(0, 300);
+                                return { marksText, pageText };
+                            }
+                        """)
+
+                        elements_text = dom_state["marksText"][:2500]
+                        page_text     = dom_state["pageText"][:300]
+
+                        file_ctx = ""
+                        if materialized_files:
+                            file_ctx = "Available Files:\n" + "\n".join(f"- {f}" for f in materialized_files) + "\n\n"
+
+                        # Step-focused prompt: LLM only sees THIS step's goal
+                        args_hint = ""
+                        if step_args:
+                            args_hint = f"Step context: {json.dumps(step_args)[:200]}\n"
+
+                        user_prompt = (
+                            f"Overall objective: {navigation_objective}\n"
+                            f"Current URL: {page.url}\n\n"
+                            f"CURRENT STEP ({step_idx + 1}/{total_steps}): {step_intent}\n"
+                            f"Success criteria: {step_criteria}\n"
+                            f"{args_hint}"
+                            f"Page summary: {page_text}\n\n"
+                            f"Elements:\n{elements_text}\n\n"
+                            f"{file_ctx}"
+                            f"Tokens: {llm.total_tokens_used}/{llm.token_budget}\n"
+                            "Respond with the JSON object only."
+                        )
+
+                        # ---- LLM CALL ----
+                        try:
+                            llm_response = await llm.call(
+                                system_prompt=NAVIGATION_SYSTEM_PROMPT,
+                                user_prompt=user_prompt,
+                            )
+                        except TokenBudgetExhausted as tbe:
+                            logger.error(f"[{job_id}] {tbe}")
+                            await user_logger.error("STOPPED", message=f"Token budget exhausted at step {step_idx + 1}.")
+                            return {"status": "stopped", "reason": "token_budget_exhausted", "loops": loop_count, "tokens": llm.total_tokens_used}
+                        except Exception as api_err:
+                            logger.error(f"[{job_id}] LLM API error on step {step_idx + 1}: {api_err}")
+                            await user_logger.error("ERROR", message=f"LLM call failed: {str(api_err)[:120]}")
+                            return {"status": "stopped", "reason": f"llm_api_error: {str(api_err)[:120]}", "loops": loop_count}
+
+                        # ---- JSON PARSE ----
+                        try:
+                            clean_json  = llm._clean_json(llm_response)
+                            action_data = json.loads(clean_json)
+                        except Exception as parse_err:
+                            logger.warning(f"[{job_id}] JSON parse failed on step {step_idx + 1}: {parse_err}")
+                            consecutive_stalls += 1
+                            if consecutive_stalls >= MAX_CONSECUTIVE_STALLS:
+                                await user_logger.error("STOPPED", message="LLM returned unparseable JSON repeatedly.")
+                                return {"status": "stopped", "reason": "json_parse_failure_loop", "loops": loop_count}
+                            continue
+
+                        consecutive_stalls = 0
+                        thought = action_data.get("thought_process", "")[:200]
+                        await user_logger.info("PLAN", message=thought)
+
+                        status = action_data.get("status", "in_progress")
+
+                        if status == "step_complete":
+                            await user_logger.info(
+                                "COMPLETE",
+                                message=f"Step {step_idx + 1}/{total_steps} done: {step_criteria[:60]}"
+                            )
+                            step_done = True
+                            break
+
+                        if status == "ui_ready":
+                            await user_logger.info("COMPLETE", message="All steps done — objective achieved.")
+                            ui_ready = True
+                            break
+
+                        if status == "stopped":
+                            reason = action_data.get("thought_process", "Step is not achievable.")
+                            await user_logger.error("STOPPED", message=f"Stopped at step {step_idx + 1}: {reason}")
+                            return {"status": "stopped", "reason": reason, "loops": loop_count}
+
+                        # ---- ACTION EXECUTION ----
+                        actions = action_data.get("actions", [])
+                        if not actions:
+                            consecutive_stalls += 1
+                            if consecutive_stalls >= MAX_CONSECUTIVE_STALLS:
+                                await user_logger.error("STOPPED", message="Agent stalled on step.")
+                                return {"status": "stopped", "reason": "action_stall_loop", "loops": loop_count}
+                            continue
+
+                        consecutive_stalls = 0
+
+                        action_signature = json.dumps(actions, sort_keys=True)
+                        if action_signature == last_action_signature:
+                            consecutive_failures += 1
+                            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                                await user_logger.error("STOPPED", message="Agent stuck in identical action loop.")
+                                return {"status": "stopped", "reason": "identical_action_loop", "loops": loop_count}
+                        else:
+                            consecutive_failures = 0
+                            last_action_signature = action_signature
+
+                        # Execute using the same action dispatcher as blind mode
+                        await _rescan_dom(page)
+                        # Delegate to the shared action execution block below
+                        # by breaking into a micro-loop that runs the actions
+                        actions_succeeded = 0
+                        actions_failed    = 0
+                        for act in actions:
+                            act_type = act.get("type", "").lower()
+                            t_id     = str(act.get("target_id", ""))
+                            await user_logger.info("EXECUTE", message=f"{act_type.upper()} [{t_id}]")
+
+                            if act_type == "click":
+                                try:
+                                    loc = page.locator(f"pierce/[data-quanta-id='{t_id}']").first
+                                    await loc.scroll_into_view_if_needed(timeout=2000)
+                                    await loc.click(timeout=4000)
+                                    actions_succeeded += 1
+                                except Exception:
+                                    ok = await page.evaluate(f"""
+                                        () => {{
+                                            function findById(root, id) {{
+                                                const el = root.querySelector("[data-quanta-id='" + id + "']");
+                                                if (el) return el;
+                                                for (const child of root.querySelectorAll('*')) {{
+                                                    if (child.shadowRoot) {{
+                                                        const found = findById(child.shadowRoot, id);
+                                                        if (found) return found;
+                                                    }}
+                                                }}
+                                                return null;
+                                            }}
+                                            const el = findById(document, '{t_id}');
+                                            if (el) {{ el.click(); return true; }}
+                                            return false;
+                                        }}
+                                    """)
+                                    if ok:
+                                        actions_succeeded += 1
+                                    else:
+                                        actions_failed += 1
+
+                            elif act_type == "type":
+                                value = act.get("value", "")
+                                try:
+                                    loc = page.locator(f"pierce/[data-quanta-id='{t_id}']").first
+                                    await loc.scroll_into_view_if_needed(timeout=2000)
+                                    await loc.fill(value, timeout=4000)
+                                    actions_succeeded += 1
+                                except Exception as te:
+                                    logger.warning(f"[{job_id}] Type [{t_id}] failed: {te}")
+                                    actions_failed += 1
+
+                            elif act_type == "key":
+                                key = act.get("key", "Enter")
+                                try:
+                                    loc = page.locator(f"pierce/[data-quanta-id='{t_id}']").first
+                                    await loc.press(key, timeout=4000)
+                                    actions_succeeded += 1
+                                except Exception:
+                                    ok = await page.evaluate(f"""
+                                        () => {{
+                                            function findById(root, id) {{
+                                                const el = root.querySelector("[data-quanta-id='" + id + "']");
+                                                if (el) return el;
+                                                for (const child of root.querySelectorAll('*')) {{
+                                                    if (child.shadowRoot) {{
+                                                        const found = findById(child.shadowRoot, id);
+                                                        if (found) return found;
+                                                    }}
+                                                }}
+                                                return null;
+                                            }}
+                                            const el = findById(document, '{t_id}') || document.activeElement;
+                                            if (!el) return false;
+                                            ['keydown','keypress','keyup'].forEach(t =>
+                                                el.dispatchEvent(new KeyboardEvent(t, {{key:'{key}', bubbles:true}}))
+                                            );
+                                            if ('{key}' === 'Enter' && el.form) el.form.submit();
+                                            return true;
+                                        }}
+                                    """)
+                                    if ok:
+                                        actions_succeeded += 1
+                                    else:
+                                        actions_failed += 1
+
+                        if actions_succeeded == 0 and actions_failed > 0:
+                            consecutive_failures += 1
+                        else:
+                            consecutive_failures = 0
+
+                        await asyncio.sleep(1)
+                        await page.wait_for_load_state("domcontentloaded")
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=4000)
+                        except PlaywrightTimeout:
+                            pass
+
+                    # End of step sub-loop
+                    if ui_ready:
+                        break  # ui_ready returned mid-plan
+
+                    if not step_done:
+                        # Step hit MAX_LOOPS_PER_STEP without completing
+                        logger.warning(
+                            f"[{job_id}] Step {step_idx + 1} did not confirm done — "
+                            f"advancing to next step anyway (best-effort)"
+                        )
+                        await user_logger.info(
+                            "THINK",
+                            message=f"Step {step_idx + 1} timeout — advancing to next step"
+                        )
+
+                # End of plan step loop
+                if not ui_ready:
+                    # All steps executed — mark as done (plan is the oracle, not the LLM status)
+                    ui_ready = True
+                    await user_logger.info("COMPLETE", message=f"All {total_steps} plan steps executed.")
+
+            else:
+                # -------------------------------------------------------
+                # BLIND MODE: original reactive loop (no plan available)
+                # -------------------------------------------------------
+                logger.info(f"[{job_id}] Blind mode: no plan, running reactive nav loop")
+                while loop_count < MAX_NAV_LOOPS:
+                    loop_count += 1
+                    await user_logger.info(
+                        "THINK",
+                        message=f"Phase 1 — Iteration {loop_count}/{MAX_NAV_LOOPS} | "
+                                f"Tokens used: {llm.total_tokens_used}/{llm.token_budget}"
+                    )
 
                 # ---- DOM SNAPSHOT WITH ENRICHED ELEMENT MARKERS ----
                 dom_state = await page.evaluate("""

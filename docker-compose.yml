@@ -260,7 +260,7 @@ services:
       # AI Keys & Model Config
       - NVIDIA_API_KEY=${NVIDIA_API_KEY}
       - LLM_PROVIDER=${LLM_PROVIDER:-nvidia}
-      - LLM_MODEL=${LLM_MODEL:-meta/llama-3.1-70b-instruct}
+      - LLM_MODEL=${LLM_MODEL:-meta/llama-3.1-8b-instruct}
       - LLM_EXTRACTION_MODEL=${LLM_EXTRACTION_MODEL:-meta/llama-3.3-70b-instruct}
       - LLM_TOKEN_BUDGET=${LLM_TOKEN_BUDGET:-40000}
       # Session & Security
