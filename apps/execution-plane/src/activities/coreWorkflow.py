@@ -160,16 +160,17 @@ async def browser_automation_activity(payload: dict) -> dict:
         )
 
     if not steps:
-        # SOURCE B: RAG/Qdrant vector search
+        # SOURCE B: RAG/Qdrant vector search — match by task description, not by UUID
         recipe_mgr = get_recipe_manager()
-        recipe = recipe_mgr.find_recipe(workflow_id)
+        rag_query = navigation_objective or target_url or workflow_id
+        recipe = recipe_mgr.find_recipe(rag_query)
 
         if recipe:
             steps = recipe['steps']
             logger.info(f"[System] Found recipe via vector search: '{recipe['name']}' (score: {recipe['score']:.3f})")
             await NervousSystem.publish_update(
                 job_id, "RUNNING",
-                f"[RAG] Loaded workflow: '{recipe['name']}' (semantic match)",
+                f"[RAG] Loaded workflow: '{recipe['name']}' (semantic match: {recipe['score']:.2f})",
                 "init"
             )
 
@@ -492,6 +493,29 @@ async def browser_automation_activity(payload: dict) -> dict:
                                 f"quanta.telemetry.{job_id}",
                                 json.dumps({"type": "log", "message": f"[Extractor] URL {url_index + 1} Payload: {data_json}"})
                             )
+                            # Auto-save recipe after first successful extraction so repeat
+                            # requests with the same objective skip the agent entirely.
+                            if navigation_objective and url_index == 0:
+                                try:
+                                    recipe_mgr = get_recipe_manager()
+                                    import hashlib as _hl
+                                    recipe_name = "ua_" + _hl.md5(navigation_objective.encode()).hexdigest()[:12]
+                                    recipe_mgr.save_recipe(
+                                        name=recipe_name,
+                                        description=navigation_objective,
+                                        steps=[{
+                                            "action": "UNIVERSAL_AGENT",
+                                            "params": {
+                                                "target_url": current_url,
+                                                "navigation_objective": navigation_objective,
+                                                "extraction_schema": extraction_schema,
+                                            }
+                                        }],
+                                        user_id=user_id
+                                    )
+                                    logger.info(f"[{job_id}] Auto-saved recipe '{recipe_name}' for objective: {navigation_objective[:80]}")
+                                except Exception as recipe_err:
+                                    logger.warning(f"[{job_id}] Recipe auto-save failed (non-fatal): {recipe_err}")
                     
                     # --- DATA_TRANSFORM: CSV Aggregation + Cloud Upload ---
                     if extraction_schema and aggregated_results:

@@ -19,9 +19,9 @@ from security.pii_scrubber import sanitize_payload
 logger = logging.getLogger("safe_llm_client")
 
 # ---------------------------------------------------------------------------
-# Budget constants — total tokens a single job may consume across all LLM calls
+# Budget constants
 # ---------------------------------------------------------------------------
-TOKEN_BUDGET_PER_JOB: int = int(os.getenv("LLM_TOKEN_BUDGET", "30000"))
+TOKEN_BUDGET_PER_JOB: int = int(os.getenv("LLM_TOKEN_BUDGET", "40000"))
 
 
 class LLMValidationException(Exception):
@@ -76,7 +76,7 @@ class SafeLLMClient:
       - Cumulative token telemetry
     """
 
-    def __init__(self, api_key: str = None, base_url: str = None):
+    def __init__(self, api_key: str = None, base_url: str = None, use_extraction_model: bool = False):
         self.provider = os.getenv("LLM_PROVIDER", "nvidia").strip().lower()
 
         if self.provider == "gemini":
@@ -87,7 +87,12 @@ class SafeLLMClient:
             self.provider = "nvidia"
             self.api_key  = api_key  or os.getenv("NVIDIA_API_KEY")
             self.base_url = base_url or "https://integrate.api.nvidia.com/v1/chat/completions"
-            self.model    = os.getenv("LLM_MODEL", "meta/llama-3.1-8b-instruct")
+            if use_extraction_model:
+                # Phase 2: Llama 3.3 70B — best at schema mapping and data extraction
+                self.model = os.getenv("LLM_EXTRACTION_MODEL", "meta/llama-3.3-70b-instruct")
+            else:
+                # Phase 1: Llama 3.1 70B — strong instruction following, accessible on all NIM keys
+                self.model = os.getenv("LLM_MODEL", "meta/llama-3.1-70b-instruct")
 
         if not self.api_key:
             logger.warning(
@@ -174,7 +179,8 @@ class SafeLLMClient:
         # Pre-flight: check budget before spending more tokens
         self._check_budget(self.total_tokens_used)
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        _llm_timeout = float(os.getenv("TIMEOUT_LLM_SEC", "120"))
+        async with httpx.AsyncClient(timeout=_llm_timeout) as client:
             response = await client.post(
                 self.base_url,
                 headers={

@@ -70,28 +70,47 @@ STATUS:
 
 async def _rescan_dom(page: "Page") -> None:
     """
-    Re-apply data-quanta-id markers to all visible interactive elements.
-    Called immediately before executing actions to ensure IDs are fresh
-    after the LLM call latency window (YouTube/SPAs re-render their DOM).
-    This is a fast client-side operation — no LLM call involved.
+    Re-apply data-quanta-id markers to all visible interactive elements,
+    including elements inside Shadow DOM (YouTube, GMail, etc. use Web Components
+    with shadow roots that standard querySelectorAll cannot pierce).
     """
     try:
         await page.evaluate("""
             () => {
                 let idCounter = 1;
-                document.querySelectorAll('[data-quanta-id]').forEach(el => el.removeAttribute('data-quanta-id'));
-                const selectors = "button, a[href], input, select, textarea, [role='button'], [role='combobox']";
-                document.querySelectorAll(selectors).forEach(el => {
-                    const style = window.getComputedStyle(el);
-                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
-                    const rect = el.getBoundingClientRect();
-                    if (rect.width === 0 || rect.height === 0) return;
-                    el.setAttribute('data-quanta-id', (idCounter++).toString());
-                });
+
+                // Remove all existing markers first
+                document.querySelectorAll('[data-quanta-id]').forEach(
+                    el => el.removeAttribute('data-quanta-id')
+                );
+
+                const SELECTORS = "button, a[href], input, select, textarea, [role='button'], [role='combobox'], [role='searchbox'], [role='textbox']";
+
+                function isVisible(el) {
+                    const s = window.getComputedStyle(el);
+                    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+                    const r = el.getBoundingClientRect();
+                    return r.width > 0 && r.height > 0;
+                }
+
+                function markRoot(root) {
+                    // Mark interactive elements in this root
+                    root.querySelectorAll(SELECTORS).forEach(el => {
+                        if (isVisible(el)) {
+                            el.setAttribute('data-quanta-id', (idCounter++).toString());
+                        }
+                    });
+                    // Recurse into every shadow root found in this root
+                    root.querySelectorAll('*').forEach(el => {
+                        if (el.shadowRoot) markRoot(el.shadowRoot);
+                    });
+                }
+
+                markRoot(document);
             }
         """)
     except Exception:
-        pass  # Non-fatal — best effort refresh
+        pass  # Non-fatal — best effort
 
 
 @activity.defn
@@ -204,7 +223,7 @@ async def execute_universal_agent(
                             marksText += `[${id}|${tag}${typeStr}] ${label}\\n`;
                         });
 
-                        const pageText = document.body.innerText.replace(/\\s+/g, ' ').substring(0, 600);
+                        const pageText = document.body.innerText.replace(/\\s+/g, ' ').substring(0, 300);
                         return { marksText, pageText };
                     }
                 """)
@@ -213,9 +232,9 @@ async def execute_universal_agent(
                 if materialized_files:
                     file_ctx = "Available Files:\n" + "\n".join(f"- {f}" for f in materialized_files) + "\n\n"
 
-                # Clamp element list to save tokens
-                elements_text = dom_state["marksText"][:6000]
-                page_text     = dom_state["pageText"]
+                # Clamp element list aggressively — 70B model needs smaller context to respond fast
+                elements_text = dom_state["marksText"][:2500]
+                page_text     = dom_state["pageText"][:300]
 
                 user_prompt = (
                     f"Objective: {navigation_objective}\n"
@@ -315,7 +334,6 @@ async def execute_universal_agent(
                         actions_failed += 1
                         continue
 
-                    locator = page.locator(f"[data-quanta-id='{t_id}']").first if t_id else None
 
                     if act_type == "navigate":
                         url = act.get("value", "")
@@ -334,10 +352,21 @@ async def execute_universal_agent(
 
                     if act_type == "click":
                         await user_logger.info("EXECUTE", message=f"Click [{t_id}]")
-                        # JS-first: works even when Shadow DOM blocks CSS attribute queries
+                        # JS-first with shadow DOM traversal
                         ok = await page.evaluate(f"""
                             () => {{
-                                const el = document.querySelector("[data-quanta-id='{t_id}']");
+                                function findById(root, id) {{
+                                    const el = root.querySelector("[data-quanta-id='" + id + "']");
+                                    if (el) return el;
+                                    for (const child of root.querySelectorAll('*')) {{
+                                        if (child.shadowRoot) {{
+                                            const found = findById(child.shadowRoot, id);
+                                            if (found) return found;
+                                        }}
+                                    }}
+                                    return null;
+                                }}
+                                const el = findById(document, '{t_id}');
                                 if (!el) return false;
                                 el.scrollIntoView({{block:'center'}});
                                 el.click();
@@ -348,7 +377,7 @@ async def execute_universal_agent(
                             actions_succeeded += 1
                         else:
                             try:
-                                loc = page.locator(f"[data-quanta-id='{t_id}']").first
+                                loc = page.locator(f"pierce/[data-quanta-id='{t_id}']").first
                                 await loc.scroll_into_view_if_needed(timeout=2000)
                                 await loc.click(timeout=4000)
                                 actions_succeeded += 1
@@ -362,12 +391,23 @@ async def execute_universal_agent(
                         safe_val = json.dumps(value)
                         ok = await page.evaluate(f"""
                             () => {{
-                                const el = document.querySelector("[data-quanta-id='{t_id}']");
+                                function findById(root, id) {{
+                                    const el = root.querySelector("[data-quanta-id='" + id + "']");
+                                    if (el) return el;
+                                    for (const child of root.querySelectorAll('*')) {{
+                                        if (child.shadowRoot) {{
+                                            const found = findById(child.shadowRoot, id);
+                                            if (found) return found;
+                                        }}
+                                    }}
+                                    return null;
+                                }}
+                                const el = findById(document, '{t_id}');
                                 if (!el) return false;
                                 el.scrollIntoView({{block:'center'}});
                                 el.focus();
                                 const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
-                                if (desc && el.tagName === 'INPUT') {{
+                                if (desc && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {{
                                     desc.set.call(el, {safe_val});
                                     el.dispatchEvent(new Event('input', {{bubbles:true}}));
                                     el.dispatchEvent(new Event('change', {{bubbles:true}}));
@@ -382,7 +422,7 @@ async def execute_universal_agent(
                             actions_succeeded += 1
                         else:
                             try:
-                                loc = page.locator(f"[data-quanta-id='{t_id}']").first
+                                loc = page.locator(f"pierce/[data-quanta-id='{t_id}']").first
                                 await loc.scroll_into_view_if_needed(timeout=2000)
                                 await loc.fill(value, timeout=4000)
                                 actions_succeeded += 1
@@ -394,13 +434,24 @@ async def execute_universal_agent(
                         key = act.get("key", "Enter")
                         await user_logger.info("EXECUTE", message=f"Key '{key}' on [{t_id}]")
                         try:
-                            loc = page.locator(f"[data-quanta-id='{t_id}']").first
+                            loc = page.locator(f"pierce/[data-quanta-id='{t_id}']").first
                             await loc.press(key, timeout=4000)
                             actions_succeeded += 1
                         except Exception:
                             ok = await page.evaluate(f"""
                                 () => {{
-                                    const el = document.querySelector("[data-quanta-id='{t_id}']") || document.activeElement;
+                                    function findById(root, id) {{
+                                        const el = root.querySelector("[data-quanta-id='" + id + "']");
+                                        if (el) return el;
+                                        for (const child of root.querySelectorAll('*')) {{
+                                            if (child.shadowRoot) {{
+                                                const found = findById(child.shadowRoot, id);
+                                                if (found) return found;
+                                            }}
+                                        }}
+                                        return null;
+                                    }}
+                                    const el = findById(document, '{t_id}') || document.activeElement;
                                     if (!el) return false;
                                     ['keydown','keypress','keyup'].forEach(t =>
                                         el.dispatchEvent(new KeyboardEvent(t, {{key:'{key}', bubbles:true}}))
@@ -475,7 +526,7 @@ async def execute_universal_agent(
 
         all_extracted_rows: list = []
         seen_hashes: set = set()
-        llm_extractor = SafeLLMClient()
+        llm_extractor = SafeLLMClient(use_extraction_model=True)
 
         for page_num in range(1, MAX_PAGES + 1):
             if page_num > 1:

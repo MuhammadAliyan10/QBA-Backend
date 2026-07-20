@@ -257,9 +257,16 @@ services:
       - AWS_ACCESS_KEY_ID=minioadmin
       - AWS_SECRET_ACCESS_KEY=minioadmin
       - S3_USE_SSL=false
-      # AI Keys (Passed from host .env)
+      # AI Keys & Model Config
       - NVIDIA_API_KEY=${NVIDIA_API_KEY}
-      # Local dev DB (avoid leaking host DATABASE_URL into container)
+      - LLM_PROVIDER=${LLM_PROVIDER:-nvidia}
+      - LLM_MODEL=${LLM_MODEL:-meta/llama-3.1-70b-instruct}
+      - LLM_EXTRACTION_MODEL=${LLM_EXTRACTION_MODEL:-meta/llama-3.3-70b-instruct}
+      - LLM_TOKEN_BUDGET=${LLM_TOKEN_BUDGET:-40000}
+      # Session & Security
+      - REDIS_URL=redis://redis:6379/0
+      - FERNET_KEY=${FERNET_KEY}
+      # Local dev DB
       - DATABASE_URL=postgresql://postgres:postgres@app_postgres:5432/quanta
     depends_on:
       temporal:
