@@ -354,6 +354,10 @@ class SessionManager:
         page.on("response", handle_response)
 
         try:
+            # Ensure URL has protocol scheme before navigation
+            if not target_url.startswith("http"):
+                target_url = f"https://{target_url}"
+
             # Navigate with a short timeout for verification
             await page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
 
@@ -368,8 +372,8 @@ class SessionManager:
 
             # 3. DOM Signature Matching (Math-First)
             # Harvest full DOM snapshot
-            harvester = DOMHarvester()
-            snapshot = await harvester.harvest(page)
+            harvester = DOMHarvester(page)
+            snapshot = await harvester.harvest()
 
             # Deferred import to break circular dependency with core.browser
             from core.planning.element_matcher import ElementMatcher
@@ -380,15 +384,21 @@ class SessionManager:
 
             # We use a provisional Intent for the matcher to look for auth markers
             auth_intent = Intent(
-                action="CLICK",
+                stepNumber=0,
+                action="click",
                 targetDescription="Logout or Sign Out or Log off",
-                qualifier="first"
+                value=None,
+                qualifier="first",
+                rawSentence="Check for Logout"
             )
 
             account_intent = Intent(
-                action="SEE",
+                stepNumber=0,
+                action="scrape",
                 targetDescription="My Account or Profile or User Menu",
-                qualifier="first"
+                value=None,
+                qualifier="first",
+                rawSentence="Check for Account Menu"
             )
 
             try:

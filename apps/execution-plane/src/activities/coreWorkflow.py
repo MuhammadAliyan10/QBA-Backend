@@ -327,7 +327,14 @@ async def browser_automation_activity(payload: dict) -> dict:
         launch_args = {
             "headless": False,
             "slow_mo": 800,
-            "args": ["--no-sandbox", "--disable-setuid-sandbox"]
+            "args": [
+                "--no-sandbox", 
+                "--disable-setuid-sandbox", 
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-software-rasterizer",
+                "--disable-webgl"
+            ]
         }
 
         # TASK 5 FIX: Optional Proxy Logic (The "Warden")

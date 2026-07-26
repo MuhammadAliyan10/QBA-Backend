@@ -8,6 +8,8 @@ import hashlib
 import markdownify
 from temporalio import activity
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
+from core.browser.session import SessionManager
+from core.browser.dom_harvester import DOMHarvester
 from core.llm.safe_client import SafeLLMClient, TokenBudgetExhausted
 from core.user_facing_logger import UserFriendlyLogger
 
@@ -149,6 +151,7 @@ async def execute_universal_agent(
         # ----------------------------------------------------------------
         # INITIAL NAVIGATION
         # ----------------------------------------------------------------
+        page.on("console", lambda msg: logger.info(f"[{job_id}] BROWSER CONSOLE: {msg.type} - {msg.text}"))
         if target_url:
             from core.url_utils import resolve_final_url
             target_url = await resolve_final_url(target_url)
@@ -158,6 +161,9 @@ async def execute_universal_agent(
                 await page.wait_for_load_state("networkidle", timeout=10000)
             except PlaywrightTimeout:
                 pass
+            
+            # Wait for SPA frameworks (like YouTube's Polymer) to construct their Shadow DOMs
+            await asyncio.sleep(3)
 
             # Session expiry fast-fail
             current_url_lower = page.url.lower()
@@ -237,42 +243,23 @@ async def execute_universal_agent(
                             await asyncio.sleep(NAV_RATE_LIMIT_SLEEP)
 
                         # ---- DOM SNAPSHOT ----
-                        dom_state = await page.evaluate("""
-                            () => {
-                                let idCounter = 1;
-                                let marksText = "";
-                                document.querySelectorAll('[data-quanta-id]').forEach(el => el.removeAttribute('data-quanta-id'));
+                        harvester = DOMHarvester(page)
+                        snapshot = await harvester.reHarvest()
+                        
+                        marksText = ""
+                        for el in snapshot.elements:
+                            tag = el.tag.upper()
+                            typeStr = f" {el.type}" if el.type else ""
+                            label = (el.text or el.ariaLabel or el.placeholder or "").strip()
+                            label = " ".join(label.split())[:60]
+                            if not label and tag == 'INPUT':
+                                label = el.type or "text"
+                            marksText += f"[{el.qId}|{tag}{typeStr}] {label}\n"
 
-                                const interactiveSelectors = "button, a[href], input, select, textarea, [role='button'], [role='combobox']";
-                                const elements = document.querySelectorAll(interactiveSelectors);
-
-                                elements.forEach(el => {
-                                    const style = window.getComputedStyle(el);
-                                    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
-                                    const rect = el.getBoundingClientRect();
-                                    if (rect.width === 0 || rect.height === 0) return;
-
-                                    const id = idCounter++;
-                                    el.setAttribute("data-quanta-id", id.toString());
-
-                                    const tag  = el.tagName.toUpperCase();
-                                    const type = el.getAttribute("type") || el.getAttribute("role") || "";
-                                    const typeStr = type ? ` ${type.toLowerCase()}` : "";
-
-                                    let label = (el.innerText || el.value || el.getAttribute("aria-label") || el.placeholder || "").trim();
-                                    label = label.replace(/\\s+/g, ' ').substring(0, 60);
-                                    if (!label && tag === 'INPUT') label = el.type || "text";
-
-                                    marksText += `[${id}|${tag}${typeStr}] ${label}\\n`;
-                                });
-
-                                const pageText = document.body.innerText.replace(/\\s+/g, ' ').substring(0, 300);
-                                return { marksText, pageText };
-                            }
-                        """)
-
-                        elements_text = dom_state["marksText"][:2500]
-                        page_text     = dom_state["pageText"][:300]
+                        page_text = await page.evaluate("document.body.innerText.replace(/\\s+/g, ' ').substring(0, 300)")
+                        
+                        elements_text = marksText[:2500]
+                        page_text     = page_text[:300]
 
                         file_ctx = ""
                         if materialized_files:
@@ -311,17 +298,25 @@ async def execute_universal_agent(
                             await user_logger.error("ERROR", message=f"LLM call failed: {str(api_err)[:120]}")
                             return {"status": "stopped", "reason": f"llm_api_error: {str(api_err)[:120]}", "loops": loop_count}
 
-                        # ---- JSON PARSE ----
+                        # ---- JSON PARSE WITH DYNAMIC SELF-CORRECTION ----
                         try:
                             clean_json  = llm._clean_json(llm_response)
                             action_data = json.loads(clean_json)
                         except Exception as parse_err:
-                            logger.warning(f"[{job_id}] JSON parse failed on step {step_idx + 1}: {parse_err}")
-                            consecutive_stalls += 1
-                            if consecutive_stalls >= MAX_CONSECUTIVE_STALLS:
-                                await user_logger.error("STOPPED", message="LLM returned unparseable JSON repeatedly.")
-                                return {"status": "stopped", "reason": "json_parse_failure_loop", "loops": loop_count}
-                            continue
+                            logger.warning(f"[{job_id}] JSON parse failed on step {step_idx + 1}: {parse_err}. Attempting self-correction...")
+                            try:
+                                correction_prompt = f"Your previous response had a JSON syntax error:\n{parse_err}\n\nRaw output:\n{llm_response}\n\nPlease return ONLY the corrected, perfectly valid JSON object."
+                                corrected_response = await _call_llm(system_prompt, correction_prompt, max_tokens=256)
+                                clean_json = llm._clean_json(corrected_response)
+                                action_data = json.loads(clean_json)
+                                logger.info(f"[{job_id}] LLM successfully self-corrected JSON.")
+                            except Exception as double_err:
+                                logger.warning(f"[{job_id}] JSON self-correction failed: {double_err}")
+                                consecutive_stalls += 1
+                                if consecutive_stalls >= MAX_CONSECUTIVE_STALLS:
+                                    await user_logger.error("STOPPED", message="LLM returned unparseable JSON repeatedly despite self-correction.")
+                                    return {"status": "stopped", "reason": "json_parse_failure_loop", "loops": loop_count}
+                                continue
 
                         consecutive_stalls = 0
                         thought = action_data.get("thought_process", "")[:200]
@@ -368,8 +363,9 @@ async def execute_universal_agent(
                             consecutive_failures = 0
                             last_action_signature = action_signature
 
-                        # Execute using the same action dispatcher as blind mode
-                        await _rescan_dom(page)
+                        # Re-scan the DOM using DOMHarvester to inject data-quanta-id (YouTube re-renders wipe them)
+                        await harvester.reHarvest()
+                        
                         # Delegate to the shared action execution block below
                         # by breaking into a micro-loop that runs the actions
                         actions_succeeded = 0
@@ -381,7 +377,7 @@ async def execute_universal_agent(
 
                             if act_type == "click":
                                 try:
-                                    loc = page.locator(f"pierce/[data-quanta-id='{t_id}']").first
+                                    loc = page.locator(f"[data-quanta-id='{t_id}']").first
                                     await loc.scroll_into_view_if_needed(timeout=2000)
                                     await loc.click(timeout=4000)
                                     actions_succeeded += 1
@@ -412,7 +408,7 @@ async def execute_universal_agent(
                             elif act_type == "type":
                                 value = act.get("value", "")
                                 try:
-                                    loc = page.locator(f"pierce/[data-quanta-id='{t_id}']").first
+                                    loc = page.locator(f"[data-quanta-id='{t_id}']").first
                                     await loc.scroll_into_view_if_needed(timeout=2000)
                                     await loc.fill(value, timeout=4000)
                                     actions_succeeded += 1
@@ -423,7 +419,7 @@ async def execute_universal_agent(
                             elif act_type == "key":
                                 key = act.get("key", "Enter")
                                 try:
-                                    loc = page.locator(f"pierce/[data-quanta-id='{t_id}']").first
+                                    loc = page.locator(f"[data-quanta-id='{t_id}']").first
                                     await loc.press(key, timeout=4000)
                                     actions_succeeded += 1
                                 except Exception:
@@ -500,253 +496,152 @@ async def execute_universal_agent(
                                 f"Tokens used: {llm.total_tokens_used}/{llm.token_budget}"
                     )
 
-                # ---- DOM SNAPSHOT WITH ENRICHED ELEMENT MARKERS ----
-                dom_state = await page.evaluate("""
-                    () => {
-                        let idCounter = 1;
-                        let marksText = "";
-                        document.querySelectorAll('[data-quanta-id]').forEach(el => el.removeAttribute('data-quanta-id'));
+                    # Wait for SPA frameworks (like YouTube's Polymer) to construct their Shadow DOMs before the first scan
+                    if loop_count == 1:
+                        await asyncio.sleep(10)
 
-                        const interactiveSelectors = "button, a[href], input, select, textarea, [role='button'], [role='combobox']";
-                        const elements = document.querySelectorAll(interactiveSelectors);
+                    # ---- DOM SNAPSHOT WITH ENRICHED ELEMENT MARKERS ----
+                    harvester = DOMHarvester(page)
+                    snapshot = await harvester.reHarvest()
+                    
+                    marksText = ""
+                    for el in snapshot.elements:
+                        tag = el.tag.upper()
+                        typeStr = f" {el.type}" if el.type else ""
+                        label = (el.text or el.ariaLabel or el.placeholder or "").strip()
+                        label = " ".join(label.split())[:60]
+                        if not label and tag == 'INPUT':
+                            label = el.type or "text"
+                        marksText += f"[{el.qId}|{tag}{typeStr}] {label}\n"
 
-                        elements.forEach(el => {
-                            const style = window.getComputedStyle(el);
-                            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return;
-                            const rect = el.getBoundingClientRect();
-                            if (rect.width === 0 || rect.height === 0) return;
+                    page_text = await page.evaluate("document.body.innerText.replace(/\\s+/g, ' ').substring(0, 300)")
+                    
+                    # Clamp element list aggressively — 70B model needs smaller context to respond fast
+                    elements_text = marksText[:2500]
+                    page_text     = page_text[:300]
+                    
+                    file_ctx = ""
+                    if materialized_files:
+                        file_ctx = f"Downloaded Files available for upload: {', '.join(materialized_files)}\n\n"
 
-                            const id = idCounter++;
-                            el.setAttribute("data-quanta-id", id.toString());
-
-                            // Enrich: TAG + type attribute for inputs
-                            const tag  = el.tagName.toUpperCase();
-                            const type = el.getAttribute("type") || el.getAttribute("role") || "";
-                            const typeStr = type ? ` ${type.toLowerCase()}` : "";
-
-                            let label = (el.innerText || el.value || el.getAttribute("aria-label") || el.placeholder || "").trim();
-                            label = label.replace(/\\s+/g, ' ').substring(0, 60);
-                            if (!label && tag === 'INPUT') label = el.type || "text";
-
-                            // Format: [ID|TAG type] label
-                            marksText += `[${id}|${tag}${typeStr}] ${label}\\n`;
-                        });
-
-                        const pageText = document.body.innerText.replace(/\\s+/g, ' ').substring(0, 300);
-                        return { marksText, pageText };
-                    }
-                """)
-
-                file_ctx = ""
-                if materialized_files:
-                    file_ctx = "Available Files:\n" + "\n".join(f"- {f}" for f in materialized_files) + "\n\n"
-
-                # Clamp element list aggressively — 70B model needs smaller context to respond fast
-                elements_text = dom_state["marksText"][:2500]
-                page_text     = dom_state["pageText"][:300]
-
-                user_prompt = (
-                    f"Objective: {navigation_objective}\n"
-                    f"Current URL: {page.url}\n\n"
-                    f"Page Summary: {page_text}\n\n"
-                    f"Elements (format: [ID|TAG type] label):\n{elements_text}\n\n"
-                    f"{file_ctx}"
-                    f"Tokens used so far: {llm.total_tokens_used}/{llm.token_budget}\n"
-                    "Respond with the JSON object only."
-                )
-
-                # ---- LLM CALL ----
-                try:
-                    llm_response = await llm.call(
-                        system_prompt=NAVIGATION_SYSTEM_PROMPT,
-                        user_prompt=user_prompt,
+                    user_prompt = (
+                        f"Objective: {navigation_objective}\n"
+                        f"Current URL: {page.url}\n\n"
+                        f"Page Summary: {page_text}\n\n"
+                        f"Elements (format: [ID|TAG type] label):\n{elements_text}\n\n"
+                        f"{file_ctx}"
+                        f"Tokens used so far: {llm.total_tokens_used}/{llm.token_budget}\n"
+                        "Respond with the JSON object only."
                     )
-                except TokenBudgetExhausted as tbe:
-                    logger.error(f"[{job_id}] {tbe}")
-                    await user_logger.error("STOPPED", message=f"Token budget exhausted after {llm.total_tokens_used} tokens. Stopping.")
-                    return {"status": "stopped", "reason": "token_budget_exhausted", "loops": loop_count, "tokens": llm.total_tokens_used}
-                except Exception as api_err:
-                    logger.error(f"[{job_id}] LLM API error: {api_err}")
-                    await user_logger.error("ERROR", message=f"LLM call failed: {str(api_err)[:120]}")
-                    return {"status": "stopped", "reason": f"llm_api_error: {str(api_err)[:120]}", "loops": loop_count}
 
-                # ---- JSON PARSE (safe_client already normalized quotes) ----
-                try:
-                    clean_json  = llm._clean_json(llm_response)
-                    action_data = json.loads(clean_json)
-                    logger.info(f"[{job_id}] LLM→ {clean_json[:300]}")
-                except Exception as parse_err:
-                    logger.error(f"[{job_id}] JSON parse failed after repair: {parse_err} | Raw: {llm_response[:200]}")
-                    consecutive_stalls += 1
-                    if consecutive_stalls >= MAX_CONSECUTIVE_STALLS:
-                        await user_logger.error("STOPPED", message="LLM repeatedly returned unparseable JSON. Stopping.")
-                        return {"status": "stopped", "reason": "json_parse_failure_loop", "loops": loop_count}
-                    continue
+                    # ---- LLM CALL ----
+                    try:
+                        llm_response = await llm.call(
+                            system_prompt=NAVIGATION_SYSTEM_PROMPT,
+                            user_prompt=user_prompt,
+                        )
+                    except TokenBudgetExhausted as tbe:
+                        logger.error(f"[{job_id}] {tbe}")
+                        await user_logger.error("STOPPED", message=f"Token budget exhausted after {llm.total_tokens_used} tokens. Stopping.")
+                        return {"status": "stopped", "reason": "token_budget_exhausted", "loops": loop_count, "tokens": llm.total_tokens_used}
+                    except Exception as api_err:
+                        logger.error(f"[{job_id}] LLM API error: {api_err}")
+                        await user_logger.error("ERROR", message=f"LLM call failed: {str(api_err)[:120]}")
+                        return {"status": "stopped", "reason": f"llm_api_error: {str(api_err)[:120]}", "loops": loop_count}
 
-                consecutive_stalls = 0  # Reset on successful parse
-                await user_logger.info("PLAN", message=action_data.get("thought_process", "")[:200])
-
-                # ---- STATUS CHECK ----
-                status = action_data.get("status", "in_progress")
-
-                if status == "ui_ready":
-                    await user_logger.info("COMPLETE", message="Phase 1: UI ready state reached.")
-                    ui_ready = True
-                    break
-
-                if status == "stopped":
-                    reason = action_data.get("thought_process", "LLM signalled objective is not achievable.")
-                    await user_logger.error("STOPPED", message=f"Agent stopped: {reason}")
-                    return {"status": "stopped", "reason": reason, "loops": loop_count}
-
-                # ---- ACTION EXECUTION ----
-                actions = action_data.get("actions", [])
-
-                if not actions:
-                    consecutive_stalls += 1
-                    logger.warning(f"[{job_id}] No actions returned (stall {consecutive_stalls}/{MAX_CONSECUTIVE_STALLS})")
-                    if consecutive_stalls >= MAX_CONSECUTIVE_STALLS:
-                        await user_logger.error("STOPPED", message="Agent stalled — LLM returned no actions repeatedly.")
-                        return {"status": "stopped", "reason": "action_stall_loop", "loops": loop_count}
-                    continue
-
-                consecutive_stalls = 0
-
-                # Detect identical action loop (same actions repeated = infinite loop)
-                action_signature = json.dumps(actions, sort_keys=True)
-                if action_signature == last_action_signature:
-                    consecutive_failures += 1
-                    logger.warning(f"[{job_id}] Identical action plan repeated (failure {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})")
-                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                        await user_logger.error("STOPPED", message="Agent stuck in identical action loop. Page may be blocking automation.")
-                        return {"status": "stopped", "reason": "identical_action_loop", "loops": loop_count}
-                else:
-                    consecutive_failures = 0
-                    last_action_signature = action_signature
-
-                # Execute each action
-                # Re-scan the DOM first to get fresh IDs — YouTube re-renders
-                # its Polymer components during the LLM call (~6-8s), wiping
-                # the data-quanta-id attributes we assigned at scan time.
-                await _rescan_dom(page)
-
-                actions_succeeded = 0
-                actions_failed    = 0
-
-                for act in actions:
-                    act_type = act.get("type")
-                    t_id     = str(act.get("target_id", "")).strip()
-
-                    # Validate: reject hallucinated string IDs (must be numeric)
-                    if t_id and not t_id.isdigit():
-                        logger.warning(f"[{job_id}] Rejected non-numeric target_id='{t_id}' — LLM hallucination.")
-                        actions_failed += 1
+                    # ---- JSON PARSE (safe_client already normalized quotes) ----
+                    try:
+                        clean_json  = llm._clean_json(llm_response)
+                        action_data = json.loads(clean_json)
+                        logger.info(f"[{job_id}] LLM→ {clean_json[:300]}")
+                    except Exception as parse_err:
+                        logger.error(f"[{job_id}] JSON parse failed after repair: {parse_err} | Raw: {llm_response[:200]}")
+                        consecutive_stalls += 1
+                        if consecutive_stalls >= MAX_CONSECUTIVE_STALLS:
+                            await user_logger.error("STOPPED", message="LLM repeatedly returned unparseable JSON. Stopping.")
+                            return {"status": "stopped", "reason": "json_parse_failure_loop", "loops": loop_count}
                         continue
 
+                    consecutive_stalls = 0  # Reset on successful parse
+                    await user_logger.info("PLAN", message=action_data.get("thought_process", "")[:200])
 
-                    if act_type == "navigate":
-                        url = act.get("value", "")
-                        if url:
-                            try:
-                                await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                                actions_succeeded += 1
-                            except Exception as e:
-                                logger.warning(f"[{job_id}] Navigate to '{url}' failed: {e}")
-                                actions_failed += 1
+                    # ---- STATUS CHECK ----
+                    status = action_data.get("status", "in_progress")
+
+                    if status == "ui_ready":
+                        await user_logger.info("COMPLETE", message="Phase 1: UI ready state reached.")
+                        ui_ready = True
+                        break
+
+                    if status == "stopped":
+                        reason = action_data.get("thought_process", "LLM signalled objective is not achievable.")
+                        await user_logger.error("STOPPED", message=f"Agent stopped: {reason}")
+                        return {"status": "stopped", "reason": reason, "loops": loop_count}
+
+                    # ---- ACTION EXECUTION ----
+                    actions = action_data.get("actions", [])
+
+                    if not actions:
+                        consecutive_stalls += 1
+                        logger.warning(f"[{job_id}] No actions returned (stall {consecutive_stalls}/{MAX_CONSECUTIVE_STALLS})")
+                        if consecutive_stalls >= MAX_CONSECUTIVE_STALLS:
+                            await user_logger.error("STOPPED", message="Agent stalled — LLM returned no actions repeatedly.")
+                            return {"status": "stopped", "reason": "action_stall_loop", "loops": loop_count}
                         continue
 
-                    if not t_id:
-                        actions_failed += 1
-                        continue
+                    consecutive_stalls = 0
 
-                    if act_type == "click":
-                        await user_logger.info("EXECUTE", message=f"Click [{t_id}]")
-                        # JS-first with shadow DOM traversal
-                        ok = await page.evaluate(f"""
-                            () => {{
-                                function findById(root, id) {{
-                                    const el = root.querySelector("[data-quanta-id='" + id + "']");
-                                    if (el) return el;
-                                    for (const child of root.querySelectorAll('*')) {{
-                                        if (child.shadowRoot) {{
-                                            const found = findById(child.shadowRoot, id);
-                                            if (found) return found;
-                                        }}
-                                    }}
-                                    return null;
-                                }}
-                                const el = findById(document, '{t_id}');
-                                if (!el) return false;
-                                el.scrollIntoView({{block:'center'}});
-                                el.click();
-                                return true;
-                            }}
-                        """)
-                        if ok:
-                            actions_succeeded += 1
-                        else:
-                            try:
-                                loc = page.locator(f"pierce/[data-quanta-id='{t_id}']").first
-                                await loc.scroll_into_view_if_needed(timeout=2000)
-                                await loc.click(timeout=4000)
-                                actions_succeeded += 1
-                            except Exception as e:
-                                logger.warning(f"[{job_id}] Click [{t_id}] failed (JS+PW): {e}")
-                                actions_failed += 1
+                    # Detect identical action loop (same actions repeated = infinite loop)
+                    action_signature = json.dumps(actions, sort_keys=True)
+                    if action_signature == last_action_signature:
+                        consecutive_failures += 1
+                        logger.warning(f"[{job_id}] Identical action plan repeated (failure {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})")
+                        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                            await user_logger.error("STOPPED", message="Agent stuck in identical action loop. Page may be blocking automation.")
+                            return {"status": "stopped", "reason": "identical_action_loop", "loops": loop_count}
+                    else:
+                        consecutive_failures = 0
+                        last_action_signature = action_signature
 
-                    elif act_type == "type":
-                        value = act.get("value", "")
-                        await user_logger.info("EXECUTE", message=f"Type '{value}' into [{t_id}]")
-                        safe_val = json.dumps(value)
-                        ok = await page.evaluate(f"""
-                            () => {{
-                                function findById(root, id) {{
-                                    const el = root.querySelector("[data-quanta-id='" + id + "']");
-                                    if (el) return el;
-                                    for (const child of root.querySelectorAll('*')) {{
-                                        if (child.shadowRoot) {{
-                                            const found = findById(child.shadowRoot, id);
-                                            if (found) return found;
-                                        }}
-                                    }}
-                                    return null;
-                                }}
-                                const el = findById(document, '{t_id}');
-                                if (!el) return false;
-                                el.scrollIntoView({{block:'center'}});
-                                el.focus();
-                                const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
-                                if (desc && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {{
-                                    desc.set.call(el, {safe_val});
-                                    el.dispatchEvent(new Event('input', {{bubbles:true}}));
-                                    el.dispatchEvent(new Event('change', {{bubbles:true}}));
-                                }} else {{
-                                    el.value = {safe_val};
-                                    el.dispatchEvent(new Event('input', {{bubbles:true}}));
-                                }}
-                                return true;
-                            }}
-                        """)
-                        if ok:
-                            actions_succeeded += 1
-                        else:
-                            try:
-                                loc = page.locator(f"pierce/[data-quanta-id='{t_id}']").first
-                                await loc.scroll_into_view_if_needed(timeout=2000)
-                                await loc.fill(value, timeout=4000)
-                                actions_succeeded += 1
-                            except Exception as e:
-                                logger.warning(f"[{job_id}] Type [{t_id}] failed (JS+PW): {e}")
-                                actions_failed += 1
+                    # Execute each action
+                    # Re-scan the DOM first to get fresh IDs — YouTube re-renders
+                    # its Polymer components during the LLM call (~6-8s), wiping
+                    # the data-quanta-id attributes we assigned at scan time.
+                    # Re-scan the DOM using DOMHarvester to get fresh IDs
+                    await harvester.reHarvest()
 
-                    elif act_type == "key":
-                        key = act.get("key", "Enter")
-                        await user_logger.info("EXECUTE", message=f"Key '{key}' on [{t_id}]")
-                        try:
-                            loc = page.locator(f"pierce/[data-quanta-id='{t_id}']").first
-                            await loc.press(key, timeout=4000)
-                            actions_succeeded += 1
-                        except Exception:
+                    actions_succeeded = 0
+                    actions_failed    = 0
+
+                    for act in actions:
+                        act_type = act.get("type")
+                        t_id     = str(act.get("target_id", "")).strip()
+
+                        # Validate: reject hallucinated string IDs (must be numeric)
+                        if t_id and not t_id.isdigit():
+                            logger.warning(f"[{job_id}] Rejected non-numeric target_id='{t_id}' — LLM hallucination.")
+                            actions_failed += 1
+                            continue
+
+
+                        if act_type == "navigate":
+                            url = act.get("value", "")
+                            if url:
+                                try:
+                                    await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                                    actions_succeeded += 1
+                                except Exception as e:
+                                    logger.warning(f"[{job_id}] Navigate to '{url}' failed: {e}")
+                                    actions_failed += 1
+                            continue
+
+                        if not t_id:
+                            actions_failed += 1
+                            continue
+
+                        if act_type == "click":
+                            await user_logger.info("EXECUTE", message=f"Click [{t_id}]")
+                            # JS-first with shadow DOM traversal
                             ok = await page.evaluate(f"""
                                 () => {{
                                     function findById(root, id) {{
@@ -760,55 +655,140 @@ async def execute_universal_agent(
                                         }}
                                         return null;
                                     }}
-                                    const el = findById(document, '{t_id}') || document.activeElement;
+                                    const el = findById(document, '{t_id}');
                                     if (!el) return false;
-                                    ['keydown','keypress','keyup'].forEach(t =>
-                                        el.dispatchEvent(new KeyboardEvent(t, {{key:'{key}', bubbles:true}}))
-                                    );
-                                    if ('{key}' === 'Enter' && el.form) el.form.submit();
+                                    el.scrollIntoView({{block:'center'}});
+                                    el.click();
                                     return true;
                                 }}
                             """)
                             if ok:
                                 actions_succeeded += 1
                             else:
-                                logger.warning(f"[{job_id}] Key '{key}' on [{t_id}] failed.")
+                                try:
+                                    loc = page.locator(f"*css=[data-quanta-id='{t_id}']").first
+                                    await loc.scroll_into_view_if_needed(timeout=2000)
+                                    await loc.click(timeout=4000)
+                                    actions_succeeded += 1
+                                except Exception as e:
+                                    logger.warning(f"[{job_id}] Click [{t_id}] failed (JS+PW): {e}")
+                                    actions_failed += 1
+
+                        elif act_type == "type":
+                            value = act.get("value", "")
+                            await user_logger.info("EXECUTE", message=f"Type '{value}' into [{t_id}]")
+                            safe_val = json.dumps(value)
+                            ok = await page.evaluate(f"""
+                                () => {{
+                                    function findById(root, id) {{
+                                        const el = root.querySelector("[data-quanta-id='" + id + "']");
+                                        if (el) return el;
+                                        for (const child of root.querySelectorAll('*')) {{
+                                            if (child.shadowRoot) {{
+                                                const found = findById(child.shadowRoot, id);
+                                                if (found) return found;
+                                            }}
+                                        }}
+                                        return null;
+                                    }}
+                                    const el = findById(document, '{t_id}');
+                                    if (!el) return false;
+                                    el.scrollIntoView({{block:'center'}});
+                                    el.focus();
+                                    const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+                                    if (desc && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {{
+                                        desc.set.call(el, {safe_val});
+                                        el.dispatchEvent(new Event('input', {{bubbles:true}}));
+                                        el.dispatchEvent(new Event('change', {{bubbles:true}}));
+                                    }} else {{
+                                        el.value = {safe_val};
+                                        el.dispatchEvent(new Event('input', {{bubbles:true}}));
+                                    }}
+                                    return true;
+                                }}
+                            """)
+                            if ok:
+                                actions_succeeded += 1
+                            else:
+                                try:
+                                    loc = page.locator(f"*css=[data-quanta-id='{t_id}']").first
+                                    await loc.scroll_into_view_if_needed(timeout=2000)
+                                    await loc.fill(value, timeout=4000)
+                                    actions_succeeded += 1
+                                except Exception as e:
+                                    logger.warning(f"[{job_id}] Type [{t_id}] failed (JS+PW): {e}")
+                                    actions_failed += 1
+
+                        elif act_type == "key":
+                            key = act.get("key", "Enter")
+                            await user_logger.info("EXECUTE", message=f"Key '{key}' on [{t_id}]")
+                            try:
+                                loc = page.locator(f"*css=[data-quanta-id='{t_id}']").first
+                                await loc.press(key, timeout=4000)
+                                actions_succeeded += 1
+                            except Exception:
+                                ok = await page.evaluate(f"""
+                                    () => {{
+                                        function findById(root, id) {{
+                                            const el = root.querySelector("[data-quanta-id='" + id + "']");
+                                            if (el) return el;
+                                            for (const child of root.querySelectorAll('*')) {{
+                                                if (child.shadowRoot) {{
+                                                    const found = findById(child.shadowRoot, id);
+                                                    if (found) return found;
+                                                }}
+                                            }}
+                                            return null;
+                                        }}
+                                        const el = findById(document, '{t_id}') || document.activeElement;
+                                        if (!el) return false;
+                                        ['keydown','keypress','keyup'].forEach(t =>
+                                            el.dispatchEvent(new KeyboardEvent(t, {{key:'{key}', bubbles:true}}))
+                                        );
+                                        if ('{key}' === 'Enter' && el.form) el.form.submit();
+                                        return true;
+                                    }}
+                                """)
+                                if ok:
+                                    actions_succeeded += 1
+                                else:
+                                    logger.warning(f"[{job_id}] Key '{key}' on [{t_id}] failed.")
+                                    actions_failed += 1
+
+                        elif act_type == "upload":
+                            value = act.get("value", "")
+                            await user_logger.info("EXECUTE", message=f"Upload '{value}' to [{t_id}]")
+                            try:
+                                loc = page.locator(f"[data-quanta-id='{t_id}']").first
+                                await loc.scroll_into_view_if_needed(timeout=2000)
+                                await loc.set_input_files(value, timeout=5000)
+                                actions_succeeded += 1
+                            except Exception as e:
+                                logger.warning(f"[{job_id}] Upload [{t_id}] failed: {e}")
                                 actions_failed += 1
 
-                    elif act_type == "upload":
-                        value = act.get("value", "")
-                        await user_logger.info("EXECUTE", message=f"Upload '{value}' to [{t_id}]")
-                        try:
-                            loc = page.locator(f"[data-quanta-id='{t_id}']").first
-                            await loc.scroll_into_view_if_needed(timeout=2000)
-                            await loc.set_input_files(value, timeout=5000)
-                            actions_succeeded += 1
-                        except Exception as e:
-                            logger.warning(f"[{job_id}] Upload [{t_id}] failed: {e}")
-                            actions_failed += 1
+                        else:
+                            logger.warning(f"[{job_id}] Unknown action type='{act_type}'.")
 
+                    logger.info(f"[{job_id}] Actions: {actions_succeeded} succeeded, {actions_failed} failed.")
+
+                    # If every action in this loop failed, count it as a failure
+                    if actions_succeeded == 0 and actions_failed > 0:
+                        consecutive_failures += 1
+                        logger.warning(f"[{job_id}] All actions failed (failure streak {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})")
+                        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                            await user_logger.error("STOPPED", message="All browser actions failed repeatedly. The page may be blocking automation.")
+                            return {"status": "stopped", "reason": "all_actions_failed_loop", "loops": loop_count}
                     else:
-                        logger.warning(f"[{job_id}] Unknown action type='{act_type}'.")
+                        consecutive_failures = 0
 
-                logger.info(f"[{job_id}] Actions: {actions_succeeded} succeeded, {actions_failed} failed.")
-
-                # If every action in this loop failed, count it as a failure
-                if actions_succeeded == 0 and actions_failed > 0:
-                    consecutive_failures += 1
-                    logger.warning(f"[{job_id}] All actions failed (failure streak {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})")
-                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                        await user_logger.error("STOPPED", message="All browser actions failed repeatedly. The page may be blocking automation.")
-                        return {"status": "stopped", "reason": "all_actions_failed_loop", "loops": loop_count}
-                else:
-                    consecutive_failures = 0
-
-                # Wait for DOM to settle after actions
-                await asyncio.sleep(1)
-                await page.wait_for_load_state("domcontentloaded")
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=4000)
-                except PlaywrightTimeout:
-                    pass  # Non-fatal — SPAs often stay networkidle-pending
+                    # Wait for DOM to settle after actions
+                    await asyncio.sleep(1)
+                    await page.wait_for_load_state("domcontentloaded")
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=4000)
+                    except PlaywrightTimeout:
+                        pass  # Non-fatal — SPAs often stay networkidle-pending
 
             # End of while loop
             if not ui_ready:
@@ -977,4 +957,4 @@ async def execute_universal_agent(
     except Exception as e:
         logger.error(f"[{job_id}] Universal Agent unhandled error: {str(e)}", exc_info=True)
         await user_logger.error("FAILURE", message=f"Agent crashed: {str(e)[:200]}")
-        raise
+        return {"status": "failed", "reason": f"browser_crashed: {str(e)[:100]}", "tokens_used": 0}

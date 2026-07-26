@@ -275,14 +275,20 @@
   ) {
     if (!node || elements.length >= MAX_ELEMENTS) return;
 
-    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    // Allow element nodes (1) and document fragments (11 - ShadowRoots)
+    if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== 11) return;
+
+    // For document fragments, tag name is undefined, default to empty string
+    const tag = (node.tagName || "").toLowerCase();
+
+    // Ignore non-visual elements
+    if (["script", "style", "noscript", "meta", "title"].includes(tag)) return;
 
     if (isInteractive(node)) {
       const style = window.getComputedStyle(node);
       if (isVisible(node, style)) {
         const pos = getAbsolutePosition(node);
         const sem = getSemantics(node);
-        const tag = node.tagName.toLowerCase();
         const fp = buildFingerprint(tag, sem.type, sem);
 
         // ── Deduplication: skip exact semantic + structural duplicates ──────

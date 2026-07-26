@@ -286,8 +286,24 @@ class DOMHarvester:
         """
         script = self._loadExtractorScript()
         try:
-            result = await self.page.evaluate(script)
-            return result if isinstance(result, list) else []
+            # Wrap the script in an IIFE, removing any trailing semicolon to avoid SyntaxError
+            clean_script = script.strip().rstrip(';')
+            result = await self.page.evaluate(f"({clean_script})()")
+            
+            if not isinstance(result, list):
+                logger.warning(f"[DOMHarvester] Result is NOT a list! Type: {type(result)} | Value: {str(result)[:200]}")
+                return []
+            
+            # Additional debug logging
+            if len(result) == 0:
+                html = await self.page.content()
+                try:
+                    body = await self.page.evaluate("document.body.innerHTML")
+                    logger.warning(f"[DOMHarvester] Returned empty list. Page URL: {self.page.url} | HTML Length: {len(html)} | Body: {body[:800]}")
+                except Exception as e:
+                    logger.warning(f"[DOMHarvester] Returned empty list. Page URL: {self.page.url} | HTML Length: {len(html)} | Body eval error: {e}")
+                
+            return result
         except Exception as exc:
             logger.error(f"[DOMHarvester] extractor.js evaluation failed: {exc}")
             return []
