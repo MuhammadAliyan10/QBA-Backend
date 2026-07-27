@@ -88,11 +88,11 @@ class SafeLLMClient:
             self.api_key  = api_key  or os.getenv("NVIDIA_API_KEY")
             self.base_url = base_url or "https://integrate.api.nvidia.com/v1/chat/completions"
             if use_extraction_model:
-                # Phase 2: Llama 3.3 70B — best at schema mapping and data extraction
-                self.model = os.getenv("LLM_EXTRACTION_MODEL", "meta/llama-3.3-70b-instruct")
+                # Phase 2: 8B model — fast, cheap, sufficient for schema-mapping a 4K markdown payload
+                self.model = os.getenv("LLM_EXTRACTION_MODEL", "meta/llama-3.1-8b-instruct")
             else:
-                # Phase 1: Llama 3.1 70B — strong instruction following, accessible on all NIM keys
-                self.model = os.getenv("LLM_MODEL", "meta/llama-3.1-70b-instruct")
+                # Phase 1: 8B — fast (~3s), handles navigation prompts well at 1200 tokens
+                self.model = os.getenv("LLM_MODEL", "meta/llama-3.1-8b-instruct")
 
         if not self.api_key:
             logger.warning(
@@ -149,7 +149,28 @@ class SafeLLMClient:
 
         if candidates:
             best = min(candidates, key=lambda c: c[0])
-            return text[best[0] : best[1] + 1]
+            extracted = text[best[0] : best[1] + 1]
+
+            # Truncation repair: if LLM hit max_tokens, the JSON may be cut off.
+            # Count open braces/brackets and close any that are unclosed.
+            try:
+                json.loads(extracted)
+                return extracted  # Already valid, fast path
+            except json.JSONDecodeError:
+                # Attempt to close unclosed structures
+                stack = []
+                PAIRS = {'{': '}', '[': ']'}
+                CLOSE = {'}', ']'}
+                for ch in extracted:
+                    if ch in PAIRS:
+                        stack.append(PAIRS[ch])
+                    elif ch in CLOSE:
+                        if stack and stack[-1] == ch:
+                            stack.pop()
+                # Append missing closers in reverse order
+                repaired = extracted + ''.join(reversed(stack))
+                logger.debug(f"[_clean_json] Attempted truncation repair: appended {len(stack)} closer(s)")
+                return repaired
 
         return text
 
@@ -179,7 +200,7 @@ class SafeLLMClient:
         # Pre-flight: check budget before spending more tokens
         self._check_budget(self.total_tokens_used)
 
-        _llm_timeout = float(os.getenv("TIMEOUT_LLM_SEC", "120"))
+        _llm_timeout = float(os.getenv("TIMEOUT_LLM_SEC", "40"))
         async with httpx.AsyncClient(timeout=_llm_timeout) as client:
             response = await client.post(
                 self.base_url,
@@ -226,7 +247,7 @@ class SafeLLMClient:
     # PUBLIC: Raw string call (used by Universal Agent Phase 1 & 2)
     # -----------------------------------------------------------------------
     @retry(
-        stop=stop_after_attempt(3),
+        stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type((httpx.RequestError,)),
         before_sleep=before_sleep_log(logger, logging.WARNING),
@@ -238,7 +259,12 @@ class SafeLLMClient:
         """
         if not self.api_key:
             raise ValueError("API key missing")
-        return await self._post(system_prompt, user_prompt, temperature, max_tokens=512)
+        result = await self._post(system_prompt, user_prompt, temperature, max_tokens=800)
+        # Log truncation warning if response doesn't look complete
+        stripped = result.strip()
+        if stripped and stripped[-1] not in ('}', ']', '"'):
+            logger.warning(f"[SafeLLMClient] Response may be truncated (ends with: ...{stripped[-30:]!r})")
+        return result
 
     # -----------------------------------------------------------------------
     # PUBLIC: Structured JSON call for step planning

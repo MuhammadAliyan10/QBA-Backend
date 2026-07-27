@@ -27,7 +27,7 @@ NAV_RATE_LIMIT_SLEEP: int = 2    # Seconds between loops (adaptive, not 10s flat
 # Phase 2 constants
 # ---------------------------------------------------------------------------
 MAX_PAGES: int = 10
-MAX_MARKDOWN_CHARS: int = 10000  # Reduced from 12K to save tokens
+MAX_MARKDOWN_CHARS: int = 4000   # ~4K chars is enough for any product listing page
 
 # ---------------------------------------------------------------------------
 # System prompt — strict, complete, model-agnostic
@@ -35,34 +35,34 @@ MAX_MARKDOWN_CHARS: int = 10000  # Reduced from 12K to save tokens
 NAVIGATION_SYSTEM_PROMPT = """You are a deterministic browser automation agent. Output a single JSON object for the NEXT action needed to complete the CURRENT STEP.
 
 ELEMENT FORMAT in the list below: [ID|TAG type] label
-  [12|INPUT text] Search   → text input, ID=12
-  [7|BUTTON] Submit        → button, ID=7
-  [3|A] Home               → link, ID=3
+  [q-12|INPUT text] Search   → text input, ID=q-12
+  [q-7|BUTTON] Submit        → button, ID=q-7
+  [q-3|A] Home               → link, ID=q-3
 
 ACTION TYPES — choose ONE per situation:
   "type"   → Fill an entire text string into an input field at once.
-             EXAMPLE: {"type": "type", "target_id": "12", "value": "latest AI news 2026"}
+             EXAMPLE: {"type": "type", "target_id": "q-12", "value": "latest AI news 2026"}
              ⚠ NEVER use "key" to type letters one by one. Use "type" for ALL text entry.
   "click"  → Click a button, link, or element.
-             EXAMPLE: {"type": "click", "target_id": "7"}
+             EXAMPLE: {"type": "click", "target_id": "q-7"}
   "key"    → Press ONE special key (Enter, Tab, Escape, ArrowDown). NOT for typing text.
-             EXAMPLE: {"type": "key", "target_id": "12", "key": "Enter"}
+             EXAMPLE: {"type": "key", "target_id": "q-12", "key": "Enter"}
   "upload" → Set a file on a file input.
-             EXAMPLE: {"type": "upload", "target_id": "5", "value": "/path/file.pdf"}
+             EXAMPLE: {"type": "upload", "target_id": "q-5", "value": "/path/file.pdf"}
 
 SEARCH PATTERN (use this exact pattern for search tasks):
-  Step 1: {"type": "type", "target_id": "<INPUT_ID>", "value": "your full search query"}
-  Step 2: {"type": "key",  "target_id": "<INPUT_ID>", "key": "Enter"}
+  Step 1: {"type": "type", "target_id": "q-<INPUT_ID>", "value": "your full search query"}
+  Step 2: {"type": "key",  "target_id": "q-<INPUT_ID>", "key": "Enter"}
   Do both in ONE response as two actions in the actions array.
 
 HARD RULES:
-1. ONLY use numeric IDs from the Elements list. NEVER invent IDs like "tsf", "search-icon", "btnK".
+1. ONLY use IDs from the Elements list exactly as shown (e.g. q-12, q-7). NEVER invent IDs.
 2. NEVER press individual letter keys to spell out words. Use "type" with the full value string.
 3. ALL JSON must use double quotes. Single quotes = parse error.
 4. Output ONLY the raw JSON object. No markdown, no explanation, no code fences.
 
 OUTPUT FORMAT:
-{"thought_process": "one sentence", "actions": [{"type": "...", "target_id": "N", "value": "..."}], "status": "in_progress|step_complete|ui_ready|stopped"}
+{"thought_process": "one sentence", "actions": [{"type": "...", "target_id": "q-N", "value": "..."}], "status": "in_progress|step_complete|ui_ready|stopped"}
 
 STATUS:
 - "in_progress":    still working on this step, more actions needed
@@ -156,18 +156,34 @@ async def execute_universal_agent(
             from core.url_utils import resolve_final_url
             target_url = await resolve_final_url(target_url)
             await user_logger.info("NAVIGATE", message=f"Opening: {target_url}")
-            await page.goto(target_url, wait_until="domcontentloaded")
-            try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
-            except PlaywrightTimeout:
-                pass
-            
-            # Wait for SPA frameworks (like YouTube's Polymer) to construct their Shadow DOMs
-            await asyncio.sleep(3)
 
-            # Session expiry fast-fail
+            # Crash-resilient navigation: try commit first (fast, prevents WebGL WAF crash), fall back to domcontentloaded
+            for nav_attempt in range(2):
+                try:
+                    wait_mode = "commit" if nav_attempt == 0 else "domcontentloaded"
+                    await page.goto(target_url, wait_until=wait_mode, timeout=30000)
+                    if nav_attempt == 1: # Wait for idle if we did a full load
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=8000)
+                        except PlaywrightTimeout:
+                            pass
+                    break  # Navigation succeeded
+                except Exception as nav_err:
+                    if nav_attempt == 0 and ("crashed" in str(nav_err).lower() or "target" in str(nav_err).lower()):
+                        logger.warning(f"[{job_id}] Page crashed on commit nav attempt, retrying with domcontentloaded: {nav_err}")
+                        await asyncio.sleep(1)
+                        continue
+                    raise  # Re-raise on second attempt or unrelated error
+
+            # Wait for SPA frameworks to construct their Shadow DOMs
+            await asyncio.sleep(2)
+
+            # Session expiry fast-fail — guard page.title() against crashed renderer
             current_url_lower = page.url.lower()
-            page_title_lower  = (await page.title()).lower()
+            try:
+                page_title_lower = (await page.title()).lower()
+            except Exception:
+                page_title_lower = ""
             auth_indicators   = ["login", "signin", "sign-in", "sign_in", "auth", "sso", "oauth", "accounts/login"]
             title_indicators  = ["sign in", "log in", "login", "authenticate"]
 
@@ -179,6 +195,27 @@ async def execute_universal_agent(
                     type="SessionExpired",
                     non_retryable=True,
                 )
+
+            # WAF/Challenge fast-fail — detect before renderer crashes executing the challenge JS
+            WAF_URL_INDICATORS = [
+                "splashui/challenge", "challenge?ap=", "/challenge/",
+                "cf-challenge", "distil_r_captcha", "px-captcha",
+                "/sorry/index", "recaptcha", "bot-check", "access-denied",
+            ]
+            if any(indicator in current_url_lower for indicator in WAF_URL_INDICATORS):
+                await user_logger.error(
+                    "BLOCKED",
+                    message=f"WAF/CAPTCHA challenge detected at navigation ({page.url[:80]}). Residential proxy required."
+                )
+                return {
+                    "status": "blocked",
+                    "reason": (
+                        f"Target site redirected to WAF challenge: {page.url[:120]}. "
+                        "Configure PROXY_SERVER env var with residential proxy credentials to bypass."
+                    ),
+                    "loops": 0,
+                    "tokens": 0,
+                }
 
         # ----------------------------------------------------------------
         # PHASE 1: NAVIGATION STATE MACHINE
@@ -242,12 +279,19 @@ async def execute_universal_agent(
                         if step_loops > 1:
                             await asyncio.sleep(NAV_RATE_LIMIT_SLEEP)
 
-                        # ---- DOM SNAPSHOT ----
+                        # ---- DOM SNAPSHOT (smart selection) ----
                         harvester = DOMHarvester(page)
                         snapshot = await harvester.reHarvest()
-                        
+
+                        # Always include links/buttons + viewport elements, padded to 80 total
+                        link_els   = [e for e in snapshot.elements if e.tag in ("a", "button") and e.text]
+                        link_ids   = {e.qId for e in link_els}
+                        vp_els     = [e for e in snapshot.elements if e.inViewport and e.qId not in link_ids]
+                        bf_els     = [e for e in snapshot.elements if not e.inViewport and e.qId not in link_ids]
+                        combined   = (link_els + vp_els + bf_els)[:80]
+
                         marksText = ""
-                        for el in snapshot.elements:
+                        for el in combined:
                             tag = el.tag.upper()
                             typeStr = f" {el.type}" if el.type else ""
                             label = (el.text or el.ariaLabel or el.placeholder or "").strip()
@@ -257,8 +301,8 @@ async def execute_universal_agent(
                             marksText += f"[{el.qId}|{tag}{typeStr}] {label}\n"
 
                         page_text = await page.evaluate("document.body.innerText.replace(/\\s+/g, ' ').substring(0, 300)")
-                        
-                        elements_text = marksText[:2500]
+
+                        elements_text = marksText
                         page_text     = page_text[:300]
 
                         file_ctx = ""
@@ -289,6 +333,7 @@ async def execute_universal_agent(
                                 system_prompt=NAVIGATION_SYSTEM_PROMPT,
                                 user_prompt=user_prompt,
                             )
+                            logger.info(f"[{job_id}] LLM raw (step {step_idx+1}): {llm_response[:300]!r}")
                         except TokenBudgetExhausted as tbe:
                             logger.error(f"[{job_id}] {tbe}")
                             await user_logger.error("STOPPED", message=f"Token budget exhausted at step {step_idx + 1}.")
@@ -305,16 +350,19 @@ async def execute_universal_agent(
                         except Exception as parse_err:
                             logger.warning(f"[{job_id}] JSON parse failed on step {step_idx + 1}: {parse_err}. Attempting self-correction...")
                             try:
-                                correction_prompt = f"Your previous response had a JSON syntax error:\n{parse_err}\n\nRaw output:\n{llm_response}\n\nPlease return ONLY the corrected, perfectly valid JSON object."
-                                corrected_response = await _call_llm(system_prompt, correction_prompt, max_tokens=256)
+                                correction_prompt = f"JSON syntax error: {parse_err}\n\nRaw output was:\n{llm_response[:400]}\n\nReturn ONLY the corrected valid JSON object with no explanation."
+                                corrected_response = await llm.call(
+                                    system_prompt=NAVIGATION_SYSTEM_PROMPT,
+                                    user_prompt=correction_prompt,
+                                )
                                 clean_json = llm._clean_json(corrected_response)
                                 action_data = json.loads(clean_json)
-                                logger.info(f"[{job_id}] LLM successfully self-corrected JSON.")
+                                logger.info(f"[{job_id}] LLM self-corrected JSON successfully.")
                             except Exception as double_err:
                                 logger.warning(f"[{job_id}] JSON self-correction failed: {double_err}")
                                 consecutive_stalls += 1
                                 if consecutive_stalls >= MAX_CONSECUTIVE_STALLS:
-                                    await user_logger.error("STOPPED", message="LLM returned unparseable JSON repeatedly despite self-correction.")
+                                    await user_logger.error("STOPPED", message="LLM returned unparseable JSON repeatedly.")
                                     return {"status": "stopped", "reason": "json_parse_failure_loop", "loops": loop_count}
                                 continue
 
@@ -345,6 +393,7 @@ async def execute_universal_agent(
                         # ---- ACTION EXECUTION ----
                         actions = action_data.get("actions", [])
                         if not actions:
+                            logger.warning(f"[{job_id}] actions=[] on step {step_idx+1}. Full action_data: {json.dumps(action_data)[:300]}")
                             consecutive_stalls += 1
                             if consecutive_stalls >= MAX_CONSECUTIVE_STALLS:
                                 await user_logger.error("STOPPED", message="Agent stalled on step.")
@@ -363,92 +412,98 @@ async def execute_universal_agent(
                             consecutive_failures = 0
                             last_action_signature = action_signature
 
-                        # Re-scan the DOM using DOMHarvester to inject data-quanta-id (YouTube re-renders wipe them)
-                        await harvester.reHarvest()
-                        
-                        # Delegate to the shared action execution block below
-                        # by breaking into a micro-loop that runs the actions
+                        # Re-harvest immediately before acting — injects fresh data-quanta-id
+                        fresh_snapshot = await harvester.reHarvest()
+                        # Build lookup: qId -> element (for XPath fallback)
+                        el_by_id = {e.qId: e for e in fresh_snapshot.elements}
+
                         actions_succeeded = 0
                         actions_failed    = 0
                         for act in actions:
                             act_type = act.get("type", "").lower()
-                            t_id     = str(act.get("target_id", ""))
+                            t_id     = str(act.get("target_id", "")).strip()
+                            # Normalize: LLM sometimes returns bare numbers ("5") instead of "q-5"
+                            if t_id and not t_id.startswith("q-") and t_id.isdigit():
+                                t_id = f"q-{t_id}"
                             await user_logger.info("EXECUTE", message=f"{act_type.upper()} [{t_id}]")
 
-                            if act_type == "click":
+                            # Resolve the stored element for XPath fallback
+                            stored_el = el_by_id.get(t_id)
+                            xpath_val = stored_el.xpath if stored_el else ""
+
+                            async def _locate(tid: str, xp: str):
+                                """Three-tier locator: qId attr → XPath → None."""
+                                loc = page.locator(f"[data-quanta-id='{tid}']").first
                                 try:
-                                    loc = page.locator(f"[data-quanta-id='{t_id}']").first
-                                    await loc.scroll_into_view_if_needed(timeout=2000)
-                                    await loc.click(timeout=4000)
-                                    actions_succeeded += 1
+                                    await loc.wait_for(state="attached", timeout=1500)
+                                    return loc
                                 except Exception:
-                                    ok = await page.evaluate(f"""
-                                        () => {{
-                                            function findById(root, id) {{
-                                                const el = root.querySelector("[data-quanta-id='" + id + "']");
-                                                if (el) return el;
-                                                for (const child of root.querySelectorAll('*')) {{
-                                                    if (child.shadowRoot) {{
-                                                        const found = findById(child.shadowRoot, id);
-                                                        if (found) return found;
-                                                    }}
-                                                }}
-                                                return null;
-                                            }}
-                                            const el = findById(document, '{t_id}');
-                                            if (el) {{ el.click(); return true; }}
-                                            return false;
-                                        }}
-                                    """)
-                                    if ok:
+                                    pass
+                                if xp:
+                                    xloc = page.locator(f"xpath={xp}").first
+                                    try:
+                                        await xloc.wait_for(state="attached", timeout=1500)
+                                        return xloc
+                                    except Exception:
+                                        pass
+                                return None
+
+                            if act_type == "click":
+                                loc = await _locate(t_id, xpath_val)
+                                if loc:
+                                    try:
+                                        await loc.scroll_into_view_if_needed(timeout=2000)
+                                        await loc.click(timeout=4000)
                                         actions_succeeded += 1
+                                    except Exception as e:
+                                        logger.warning(f"[{job_id}] Click [{t_id}] failed: {e}")
+                                        actions_failed += 1
+                                else:
+                                    # Coordinate-based last resort
+                                    if stored_el and stored_el.scrollY > 0:
+                                        try:
+                                            await page.evaluate(f"window.scrollTo(0, {max(0, stored_el.scrollY - 200)})")
+                                            await asyncio.sleep(0.3)
+                                            await page.mouse.click(stored_el.scrollX + stored_el.width // 2, min(stored_el.scrollY, 600))
+                                            actions_succeeded += 1
+                                        except Exception:
+                                            actions_failed += 1
                                     else:
                                         actions_failed += 1
 
                             elif act_type == "type":
                                 value = act.get("value", "")
-                                try:
-                                    loc = page.locator(f"[data-quanta-id='{t_id}']").first
-                                    await loc.scroll_into_view_if_needed(timeout=2000)
-                                    await loc.fill(value, timeout=4000)
-                                    actions_succeeded += 1
-                                except Exception as te:
-                                    logger.warning(f"[{job_id}] Type [{t_id}] failed: {te}")
+                                loc = await _locate(t_id, xpath_val)
+                                if loc:
+                                    try:
+                                        await loc.scroll_into_view_if_needed(timeout=2000)
+                                        await loc.fill(value, timeout=4000)
+                                        actions_succeeded += 1
+                                    except Exception:
+                                        try:
+                                            await loc.type(value, delay=30)
+                                            actions_succeeded += 1
+                                        except Exception as te:
+                                            logger.warning(f"[{job_id}] Type [{t_id}] failed: {te}")
+                                            actions_failed += 1
+                                else:
+                                    logger.warning(f"[{job_id}] Type [{t_id}]: element not found via qId or XPath")
                                     actions_failed += 1
 
                             elif act_type == "key":
                                 key = act.get("key", "Enter")
-                                try:
-                                    loc = page.locator(f"[data-quanta-id='{t_id}']").first
-                                    await loc.press(key, timeout=4000)
-                                    actions_succeeded += 1
-                                except Exception:
-                                    ok = await page.evaluate(f"""
-                                        () => {{
-                                            function findById(root, id) {{
-                                                const el = root.querySelector("[data-quanta-id='" + id + "']");
-                                                if (el) return el;
-                                                for (const child of root.querySelectorAll('*')) {{
-                                                    if (child.shadowRoot) {{
-                                                        const found = findById(child.shadowRoot, id);
-                                                        if (found) return found;
-                                                    }}
-                                                }}
-                                                return null;
-                                            }}
-                                            const el = findById(document, '{t_id}') || document.activeElement;
-                                            if (!el) return false;
-                                            ['keydown','keypress','keyup'].forEach(t =>
-                                                el.dispatchEvent(new KeyboardEvent(t, {{key:'{key}', bubbles:true}}))
-                                            );
-                                            if ('{key}' === 'Enter' && el.form) el.form.submit();
-                                            return true;
-                                        }}
-                                    """)
-                                    if ok:
+                                loc = await _locate(t_id, xpath_val)
+                                if loc:
+                                    try:
+                                        await loc.press(key, timeout=4000)
                                         actions_succeeded += 1
-                                    else:
+                                    except Exception as e:
+                                        logger.warning(f"[{job_id}] Key [{t_id}] failed: {e}")
                                         actions_failed += 1
+                                else:
+                                    # Dispatch keyboard event on active element as last resort
+                                    await page.keyboard.press(key)
+                                    actions_succeeded += 1
 
                         if actions_succeeded == 0 and actions_failed > 0:
                             consecutive_failures += 1
@@ -496,16 +551,18 @@ async def execute_universal_agent(
                                 f"Tokens used: {llm.total_tokens_used}/{llm.token_budget}"
                     )
 
-                    # Wait for SPA frameworks (like YouTube's Polymer) to construct their Shadow DOMs before the first scan
-                    if loop_count == 1:
-                        await asyncio.sleep(10)
-
-                    # ---- DOM SNAPSHOT WITH ENRICHED ELEMENT MARKERS ----
+                    # ---- DOM SNAPSHOT (smart selection) ----
                     harvester = DOMHarvester(page)
                     snapshot = await harvester.reHarvest()
-                    
+
+                    link_els   = [e for e in snapshot.elements if e.tag in ("a", "button") and e.text]
+                    link_ids   = {e.qId for e in link_els}
+                    vp_els     = [e for e in snapshot.elements if e.inViewport and e.qId not in link_ids]
+                    bf_els     = [e for e in snapshot.elements if not e.inViewport and e.qId not in link_ids]
+                    combined   = (link_els + vp_els + bf_els)[:80]
+
                     marksText = ""
-                    for el in snapshot.elements:
+                    for el in combined:
                         tag = el.tag.upper()
                         typeStr = f" {el.type}" if el.type else ""
                         label = (el.text or el.ariaLabel or el.placeholder or "").strip()
@@ -515,9 +572,7 @@ async def execute_universal_agent(
                         marksText += f"[{el.qId}|{tag}{typeStr}] {label}\n"
 
                     page_text = await page.evaluate("document.body.innerText.replace(/\\s+/g, ' ').substring(0, 300)")
-                    
-                    # Clamp element list aggressively — 70B model needs smaller context to respond fast
-                    elements_text = marksText[:2500]
+                    elements_text = marksText
                     page_text     = page_text[:300]
                     
                     file_ctx = ""
@@ -617,9 +672,13 @@ async def execute_universal_agent(
                         act_type = act.get("type")
                         t_id     = str(act.get("target_id", "")).strip()
 
-                        # Validate: reject hallucinated string IDs (must be numeric)
-                        if t_id and not t_id.isdigit():
-                            logger.warning(f"[{job_id}] Rejected non-numeric target_id='{t_id}' — LLM hallucination.")
+                        # Normalize: accept both "q-5" and bare "5" — always resolve to "q-5"
+                        if t_id.startswith("q-"):
+                            pass  # Already correct format
+                        elif t_id.isdigit():
+                            t_id = f"q-{t_id}"
+                        elif t_id:
+                            logger.warning(f"[{job_id}] Rejected unrecognized target_id='{t_id}' — LLM hallucination.")
                             actions_failed += 1
                             continue
 
@@ -805,6 +864,28 @@ async def execute_universal_agent(
             return {"status": "success", "loops": loop_count, "tokens": llm.total_tokens_used}
 
         await user_logger.info("THINK", message="Phase 2 — Schema-Driven Extraction...")
+
+        # ---- WAF / CHALLENGE PAGE DETECTION (before wasting tokens) ----
+        try:
+            page_html_sample = await page.content()
+            page_html_lower  = page_html_sample[:8000].lower()
+            waf_signatures = [
+                "splashui/challenge", "cf-browser-verification", "cloudflare",
+                "awswafintegration", "challenge-container", "distil_identify",
+                "px-captcha", "recaptcha", "hcaptcha", "datadome",
+                "bot-detection", "access denied", "enable javascript",
+            ]
+            hit = next((sig for sig in waf_signatures if sig in page_html_lower), None)
+            if hit:
+                await user_logger.error("BLOCKED", message=f"WAF/CAPTCHA detected ({hit}). Extraction requires residential proxies.")
+                return {
+                    "status": "blocked",
+                    "reason": f"WAF challenge detected: {hit}. Configure PROXY_SERVER env var with residential credentials.",
+                    "loops": loop_count,
+                    "tokens": llm.total_tokens_used,
+                }
+        except Exception:
+            pass  # Non-fatal — proceed and let extraction fail naturally
 
         # SPA hydration buffer
         try:

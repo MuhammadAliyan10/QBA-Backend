@@ -325,15 +325,24 @@ async def browser_automation_activity(payload: dict) -> dict:
     async with async_playwright() as p:
         # --- 4. BROWSER LAUNCH STRATEGY ---
         launch_args = {
-            "headless": False,
-            "slow_mo": 800,
+            "headless": True,
+            "slow_mo": 200,
             "args": [
-                "--no-sandbox", 
-                "--disable-setuid-sandbox", 
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
                 "--disable-software-rasterizer",
-                "--disable-webgl"
+                "--disable-webgl",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--no-first-run",
+                "--memory-pressure-off",
+                "--js-flags=--max-old-space-size=512",
+                "--disable-features=TranslateUI,BlinkGenPropertyTrees",
+                "--renderer-process-limit=1",
+                "--blink-settings=imagesEnabled=false",
             ]
         }
 

@@ -197,6 +197,44 @@
   }
 
   /**
+   * Builds a minimal unique XPath for an element.
+   * Used as a stable structural fallback when data-quanta-id is wiped by SPA re-renders.
+   * Prefers id-based shortcuts (//*[@id="..."]) for brevity and speed.
+   */
+  function getXPath(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return "";
+    // Shortcut: if the element has a unique id, this is the best selector
+    if (el.id) {
+      // Verify uniqueness — some frameworks duplicate IDs
+      try {
+        if (document.querySelectorAll(`#${CSS.escape(el.id)}`).length === 1) {
+          return `//*[@id="${el.id}"]`;
+        }
+      } catch (_) {}
+    }
+
+    const parts = [];
+    let node = el;
+    while (node && node.nodeType === Node.ELEMENT_NODE) {
+      const tag = node.tagName.toLowerCase();
+      let index = 1;
+      let sibling = node.previousElementSibling;
+      while (sibling) {
+        if (sibling.tagName.toLowerCase() === tag) index++;
+        sibling = sibling.previousElementSibling;
+      }
+      parts.unshift(index > 1 ? `${tag}[${index}]` : tag);
+      node = node.parentElement;
+      // Stop at body — we don't need the full /html/body/... prefix
+      if (node && node.tagName && node.tagName.toLowerCase() === "body") {
+        parts.unshift("body");
+        break;
+      }
+    }
+    return parts.length ? "//" + parts.join("/") : "";
+  }
+
+  /**
    * Extracts all semantic text signals from an element.
    * Returns normalized, truncated strings.
    */
@@ -320,6 +358,7 @@
               inShadowDom,
               inIframe,
               iframeIndex: iframeIdx,
+              xpath: getXPath(node),
             };
 
             // Merge semantic fields — omit null/empty to keep payload lean
