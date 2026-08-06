@@ -12,6 +12,7 @@ from core.browser.session import SessionManager
 from core.browser.dom_harvester import DOMHarvester
 from core.llm.safe_client import SafeLLMClient, TokenBudgetExhausted
 from core.user_facing_logger import UserFriendlyLogger
+from core.extraction.dom_extractor import extract_with_dom
 
 logger = logging.getLogger("activity")
 
@@ -419,6 +420,7 @@ async def execute_universal_agent(
 
                         actions_succeeded = 0
                         actions_failed    = 0
+                        url_before_action = page.url
                         for act in actions:
                             act_type = act.get("type", "").lower()
                             t_id     = str(act.get("target_id", "")).strip()
@@ -453,7 +455,7 @@ async def execute_universal_agent(
                                 if loc:
                                     try:
                                         await loc.scroll_into_view_if_needed(timeout=2000)
-                                        await loc.click(timeout=4000)
+                                        await loc.click(timeout=10000)
                                         actions_succeeded += 1
                                     except Exception as e:
                                         logger.warning(f"[{job_id}] Click [{t_id}] failed: {e}")
@@ -516,6 +518,13 @@ async def execute_universal_agent(
                             await page.wait_for_load_state("networkidle", timeout=4000)
                         except PlaywrightTimeout:
                             pass
+
+                        # URL-change = navigation succeeded → step is done
+                        if page.url != url_before_action and actions_succeeded > 0:
+                            logger.info(f"[{job_id}] URL changed to {page.url!r} after action — step {step_idx+1} complete.")
+                            await user_logger.info("COMPLETE", message=f"Navigated to {page.url[:80]}")
+                            step_done = True
+                            break
 
                     # End of step sub-loop
                     if ui_ready:
@@ -727,7 +736,7 @@ async def execute_universal_agent(
                                 try:
                                     loc = page.locator(f"*css=[data-quanta-id='{t_id}']").first
                                     await loc.scroll_into_view_if_needed(timeout=2000)
-                                    await loc.click(timeout=4000)
+                                    await loc.click(timeout=10000)
                                     actions_succeeded += 1
                                 except Exception as e:
                                     logger.warning(f"[{job_id}] Click [{t_id}] failed (JS+PW): {e}")
@@ -898,61 +907,78 @@ async def execute_universal_agent(
         seen_hashes: set = set()
         llm_extractor = SafeLLMClient(use_extraction_model=True)
 
+        # ------------------------------------------------------------------
+        # LLM fallback callable — used only when DOM extractor returns null
+        # for a specific field, not for the whole page.
+        # ------------------------------------------------------------------
+        async def _llm_field_fallback(partial_schema: dict, page_text: str) -> dict:
+            extraction_prompt = (
+                f"Extract data matching the Target Schema from the Page Content.\n\n"
+                f"Page Content:\n{page_text[:3000]}\n\n"
+                f"Target Schema:\n{json.dumps(partial_schema, indent=2)}\n\n"
+                "RULES: Map visible text to exact schema fields. Missing = null. "
+                "Return ONLY valid JSON. No explanation."
+            )
+            try:
+                raw = await llm_extractor.call(
+                    system_prompt="You are a strict JSON data extraction agent. Output only valid JSON.",
+                    user_prompt=extraction_prompt,
+                )
+                cleaned = llm_extractor._clean_json(raw)
+                return json.loads(cleaned)
+            except (TokenBudgetExhausted, Exception) as exc:
+                logger.warning(f"[{job_id}] LLM fallback failed: {exc}")
+                return {}
+
         for page_num in range(1, MAX_PAGES + 1):
             if page_num > 1:
                 await user_logger.progress(f"Extracting page {page_num}/{MAX_PAGES}...")
 
-            # Client-side DOM pruning — remove noise before markdown conversion
-            await page.evaluate("""
-                () => {
-                    document.querySelectorAll(
-                        'script, style, svg, nav, footer, header, aside, path, ' +
-                        'noscript, iframe, link[rel=stylesheet], meta, ' +
-                        '[role=banner], [role=navigation], [role=contentinfo], ' +
-                        '[aria-hidden=true], .cookie-banner, .modal-backdrop, .ads'
-                    ).forEach(el => el.remove());
-                }
-            """)
-
-            dom_html = await page.evaluate("() => ({ html: document.body.innerHTML })")
-            markdown_content = markdownify.markdownify(dom_html["html"], heading_style="ATX")
-
-            if len(markdown_content) > MAX_MARKDOWN_CHARS:
-                logger.warning(f"[{job_id}] Markdown truncated: {len(markdown_content)} → {MAX_MARKDOWN_CHARS}")
-                markdown_content = markdown_content[:MAX_MARKDOWN_CHARS]
-
-            logger.info(f"[{job_id}] Page {page_num} markdown size: {len(markdown_content)} chars")
-
-            extraction_prompt = (
-                f"Extract ALL data from this page matching the Target Schema.\n\n"
-                f"Page Content (Markdown):\n{markdown_content}\n\n"
-                f"Target Schema:\n{json.dumps(extraction_schema, indent=2)}\n\n"
-                "RULES:\n"
-                "1. Map visible page text to the exact schema fields. Do NOT invent data.\n"
-                "2. If a field is not present on the page, set it to null.\n"
-                "3. Return ONLY a valid JSON object or array. No explanation.\n"
-                "4. Use double quotes for all keys and string values."
-            )
-
+            # ------------------------------------------------------------------
+            # Phase 2 — Primary: schema-driven DOM extraction (deterministic)
+            # ------------------------------------------------------------------
             try:
-                llm_response = await llm_extractor.call(
-                    system_prompt="You are a strict JSON data extraction agent. Output only valid JSON.",
-                    user_prompt=extraction_prompt,
+                page_data = await extract_with_dom(
+                    page,
+                    extraction_schema,
+                    llm_fallback_fn=_llm_field_fallback,
                 )
+                logger.info(f"[{job_id}] Page {page_num} DOM extraction complete.")
             except TokenBudgetExhausted as tbe:
                 logger.error(f"[{job_id}] Extraction budget exhausted: {tbe}")
-                break  # Return what we have so far
-
-            try:
-                json_match = re.search(r"\{[\s\S]*\}|\[[\s\S]*\]", llm_extractor._clean_json(llm_response))
-                if not json_match:
-                    raise ValueError("No JSON found in LLM extraction response")
-                page_data = json.loads(json_match.group())
-            except Exception as parse_err:
-                logger.error(f"[{job_id}] Phase 2 parse error (page {page_num}): {parse_err} | Raw: {llm_response[:200]}")
-                if page_num == 1:
-                    return {"status": "failed", "reason": "extraction_parse_failure", "loops": loop_count}
                 break
+            except Exception as dom_err:
+                # DOM extraction failed entirely — fall back to full LLM extraction
+                logger.warning(
+                    f"[{job_id}] DOM extractor raised exception: {dom_err}. "
+                    "Falling back to full LLM extraction for this page."
+                )
+                # Prepare compact page text for LLM
+                try:
+                    await page.evaluate("""
+                        () => {
+                            document.querySelectorAll(
+                                'script, style, svg, nav, footer, header, aside, path, '
+                                + 'noscript, iframe, link[rel=stylesheet], meta, '
+                                + '[role=banner], [role=navigation], [role=contentinfo], '
+                                + '[aria-hidden=true], .cookie-banner, .modal-backdrop, .ads'
+                            ).forEach(el => el.remove());
+                        }
+                    """)
+                    dom_html = await page.evaluate("() => ({ html: document.body.innerHTML })")
+                    markdown_content = markdownify.markdownify(dom_html["html"], heading_style="ATX")
+                    plain_text = re.sub(r"[#*`\[\]_>|\\]", "", markdown_content)
+                    plain_text = re.sub(r"\n{2,}", "\n", plain_text).strip()[:4000]
+                    page_data = await _llm_field_fallback(extraction_schema, plain_text)
+                except Exception as fallback_err:
+                    logger.error(f"[{job_id}] Full LLM fallback also failed: {fallback_err}")
+                    if page_num == 1:
+                        return {
+                            "status": "failed",
+                            "reason": "extraction_failure",
+                            "loops": loop_count,
+                        }
+                    break
 
             # Flatten and deduplicate
             rows: list = []

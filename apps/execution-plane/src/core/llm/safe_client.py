@@ -79,24 +79,31 @@ class SafeLLMClient:
     def __init__(self, api_key: str = None, base_url: str = None, use_extraction_model: bool = False):
         self.provider = os.getenv("LLM_PROVIDER", "nvidia").strip().lower()
 
-        if self.provider == "gemini":
-            self.api_key  = api_key  or os.getenv("GOOGLE_API_KEY")
-            self.base_url = base_url or "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-            self.model    = os.getenv("LLM_MODEL", "gemini-2.0-flash")
-        else:
-            self.provider = "nvidia"
-            self.api_key  = api_key  or os.getenv("NVIDIA_API_KEY")
-            self.base_url = base_url or "https://integrate.api.nvidia.com/v1/chat/completions"
-            if use_extraction_model:
-                # Phase 2: 8B model — fast, cheap, sufficient for schema-mapping a 4K markdown payload
-                self.model = os.getenv("LLM_EXTRACTION_MODEL", "meta/llama-3.1-8b-instruct")
-            else:
-                # Phase 1: 8B — fast (~3s), handles navigation prompts well at 1200 tokens
-                self.model = os.getenv("LLM_MODEL", "meta/llama-3.1-8b-instruct")
+        # ---- Primary provider config ----------------------------------------
+        self._primary_cfg   = self._build_provider_cfg(
+            self.provider, api_key, base_url, use_extraction_model
+        )
+        # ---- Fallback provider config (secondary, used only when primary fails) -
+        _fallback_provider  = os.getenv("LLM_FALLBACK_PROVIDER", "").strip().lower()
+        self._fallback_cfg  = (
+            self._build_provider_cfg(_fallback_provider, None, None, use_extraction_model)
+            if _fallback_provider and _fallback_provider != self.provider
+            else None
+        )
+
+        # Expose primary values for backward-compat (model name used in call() timeout)
+        self.api_key  = self._primary_cfg["api_key"]
+        self.base_url = self._primary_cfg["base_url"]
+        self.model    = self._primary_cfg["model"]
 
         if not self.api_key:
             logger.warning(
                 f"No API key configured for SafeLLMClient (provider: {self.provider})"
+            )
+        if self._fallback_cfg:
+            logger.info(
+                f"[SafeLLMClient] Fallback provider configured: {_fallback_provider} "
+                f"(model: {self._fallback_cfg['model']})"
             )
 
         # Per-instance cumulative counters — shared across all calls on same client
@@ -104,6 +111,30 @@ class SafeLLMClient:
         self.total_prompt_tokens      = 0
         self.total_completion_tokens  = 0
         self.token_budget             = TOKEN_BUDGET_PER_JOB
+
+    @staticmethod
+    def _build_provider_cfg(
+        provider: str,
+        api_key: str | None,
+        base_url: str | None,
+        use_extraction_model: bool,
+    ) -> dict:
+        """Return a dict with api_key, base_url, model for the given provider name."""
+        if provider == "gemini":
+            return {
+                "provider": "gemini",
+                "api_key":  api_key  or os.getenv("GOOGLE_API_KEY", ""),
+                "base_url": base_url or "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                "model":    os.getenv("LLM_MODEL", "gemini-2.0-flash"),
+            }
+        else:
+            model_env = "LLM_EXTRACTION_MODEL" if use_extraction_model else "LLM_MODEL"
+            return {
+                "provider": "nvidia",
+                "api_key":  api_key  or os.getenv("NVIDIA_API_KEY", ""),
+                "base_url": base_url or "https://integrate.api.nvidia.com/v1/chat/completions",
+                "model":    os.getenv(model_env, "meta/llama-3.1-8b-instruct"),
+            }
 
     # -----------------------------------------------------------------------
     # INTERNAL: JSON Repair
@@ -186,30 +217,31 @@ class SafeLLMClient:
             )
 
     # -----------------------------------------------------------------------
-    # INTERNAL: Shared HTTP post + telemetry
+    # INTERNAL: HTTP post against a specific provider config
     # -----------------------------------------------------------------------
-    async def _post(self, system_prompt: str, user_prompt: str, temperature: float, max_tokens: int) -> str:
+    async def _post_to(
+        self,
+        cfg: dict,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        max_tokens: int,
+        timeout: float,
+    ) -> str:
         """
-        Makes a single HTTP call to the configured LLM endpoint.
-        Returns raw response content string.
-        Raises httpx.RequestError on non-200 status.
+        Low-level HTTP call to a specific provider config dict.
+        Tracks token telemetry against the instance counters.
+        Raises httpx.RequestError on non-200 / rate-limit.
         """
-        system_prompt = sanitize_payload(system_prompt)
-        user_prompt   = sanitize_payload(user_prompt)
-
-        # Pre-flight: check budget before spending more tokens
-        self._check_budget(self.total_tokens_used)
-
-        _llm_timeout = float(os.getenv("TIMEOUT_LLM_SEC", "40"))
-        async with httpx.AsyncClient(timeout=_llm_timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
-                self.base_url,
+                cfg["base_url"],
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self.api_key}",
+                    "Authorization": f"Bearer {cfg['api_key']}",
                 },
                 json={
-                    "model": self.model,
+                    "model": cfg["model"],
                     "temperature": temperature,
                     "max_tokens": max_tokens,
                     "messages": [
@@ -220,9 +252,11 @@ class SafeLLMClient:
             )
 
         if response.status_code == 429:
-            raise httpx.RequestError(f"Rate limited (429). Backing off.")
+            raise httpx.RequestError(f"Rate limited (429) on {cfg['provider']}. Backing off.")
         if response.status_code != 200:
-            raise httpx.RequestError(f"API Error {response.status_code}: {response.text[:200]}")
+            raise httpx.RequestError(
+                f"API Error {response.status_code} on {cfg['provider']}: {response.text[:200]}"
+            )
 
         data    = response.json()
         content = data["choices"][0]["message"]["content"]
@@ -236,12 +270,74 @@ class SafeLLMClient:
 
         remaining = max(0, self.token_budget - self.total_tokens_used)
         logger.info(
-            f"[Tokens] call={token_info['total_tokens']} "
+            f"[Tokens] provider={cfg['provider']} call={token_info['total_tokens']} "
             f"({'heuristic' if token_info['is_heuristic'] else 'api'}) | "
             f"cumulative={self.total_tokens_used} | budget_remaining={remaining}"
         )
-
         return content
+
+    # -----------------------------------------------------------------------
+    # INTERNAL: Shared HTTP post + telemetry (with provider fallback)
+    # -----------------------------------------------------------------------
+    async def _post(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        temperature: float,
+        max_tokens: int,
+        timeout_override: float = None,
+    ) -> str:
+        """
+        Tries the primary provider. If all retries on the primary fail and a
+        fallback provider is configured, makes a single attempt on the fallback.
+        Raises the last exception if both providers fail.
+        """
+        system_prompt = sanitize_payload(system_prompt)
+        user_prompt   = sanitize_payload(user_prompt)
+
+        # Pre-flight: check budget before spending more tokens
+        self._check_budget(self.total_tokens_used)
+
+        _timeout = timeout_override or float(os.getenv("TIMEOUT_LLM_SEC", "40"))
+
+        # --- Primary provider attempt ---
+        primary_error: Exception | None = None
+        try:
+            return await self._post_to(
+                self._primary_cfg, system_prompt, user_prompt, temperature, max_tokens, _timeout
+            )
+        except (httpx.RequestError, httpx.TimeoutException) as exc:
+            primary_error = exc
+            logger.warning(
+                f"[SafeLLMClient] Primary provider '{self._primary_cfg['provider']}' failed: {exc}. "
+                f"{'Attempting fallback.' if self._fallback_cfg else 'No fallback configured.'}"
+            )
+
+        # --- Fallback provider attempt (single attempt, no extra retry) ---
+        if self._fallback_cfg:
+            if not self._fallback_cfg.get("api_key"):
+                logger.error(
+                    f"[SafeLLMClient] Fallback provider '{self._fallback_cfg['provider']}' "
+                    "has no API key — skipping fallback."
+                )
+            else:
+                try:
+                    content = await self._post_to(
+                        self._fallback_cfg,
+                        system_prompt, user_prompt, temperature, max_tokens, _timeout
+                    )
+                    logger.info(
+                        f"[SafeLLMClient] Fallback to '{self._fallback_cfg['provider']}' succeeded."
+                    )
+                    return content
+                except Exception as fb_exc:
+                    logger.error(
+                        f"[SafeLLMClient] Fallback provider '{self._fallback_cfg['provider']}' "
+                        f"also failed: {fb_exc}"
+                    )
+
+        # Both providers failed — re-raise the primary error for tenacity retry
+        raise primary_error
 
     # -----------------------------------------------------------------------
     # PUBLIC: Raw string call (used by Universal Agent Phase 1 & 2)
@@ -259,7 +355,8 @@ class SafeLLMClient:
         """
         if not self.api_key:
             raise ValueError("API key missing")
-        result = await self._post(system_prompt, user_prompt, temperature, max_tokens=800)
+        result = await self._post(system_prompt, user_prompt, temperature, max_tokens=800,
+                                  timeout_override=90.0 if self.model == os.getenv("LLM_EXTRACTION_MODEL", "meta/llama-3.1-8b-instruct") else None)
         # Log truncation warning if response doesn't look complete
         stripped = result.strip()
         if stripped and stripped[-1] not in ('}', ']', '"'):

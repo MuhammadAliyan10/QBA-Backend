@@ -21,6 +21,7 @@
 *.out
 # Specific Binaries (Targeted to avoid ignoring source folders)
 apps/control-plane/control-plane
+apps/control-plane/server
 apps/execution-plane/execution-plane
 **/bin/
 **/tmp/
