@@ -245,3 +245,52 @@ async def upload_vault_session(target_url: str, session_state: Dict[str, Any], a
             
         data = response.json()
         return data.get("vault_id") or data.get("id", "UNKNOWN_ID")
+
+
+async def list_jobs(limit: int = 50, status: str = None) -> list:
+    """Fetch the most recent jobs for the authenticated user."""
+    api_url = os.getenv("QUANTA_API_URL", "http://localhost:8080").rstrip("/")
+    api_key = get_api_key()
+    if not api_key:
+        raise ValueError("QUANTA_API_KEY not found. Run 'quanta config set-key' first.")
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    dev_user_id = os.getenv("QUANTA_DEV_USER_ID", "")
+    if dev_user_id:
+        headers["X-Dev-User-ID"] = dev_user_id
+
+    params: dict = {}
+    if status:
+        params["status"] = status.upper()
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.get(f"{api_url}/v1/jobs", headers=headers, params=params)
+        if response.status_code == 401:
+            raise Exception("Unauthorized: Invalid API Key.")
+        elif response.status_code >= 400:
+            raise Exception(f"API error ({response.status_code}): {response.text}")
+        body = response.json()
+        return body.get("data", body) if isinstance(body, dict) else body
+
+
+async def get_job(job_id: str) -> dict:
+    """Fetch a single job by ID."""
+    api_url = os.getenv("QUANTA_API_URL", "http://localhost:8080").rstrip("/")
+    api_key = get_api_key()
+    if not api_key:
+        raise ValueError("QUANTA_API_KEY not found. Run 'quanta config set-key' first.")
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    dev_user_id = os.getenv("QUANTA_DEV_USER_ID", "")
+    if dev_user_id:
+        headers["X-Dev-User-ID"] = dev_user_id
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        response = await client.get(f"{api_url}/v1/jobs/{job_id}", headers=headers)
+        if response.status_code == 401:
+            raise Exception("Unauthorized: Invalid API Key.")
+        elif response.status_code == 404:
+            raise Exception(f"Job '{job_id}' not found.")
+        elif response.status_code >= 400:
+            raise Exception(f"API error ({response.status_code}): {response.text}")
+        return response.json()

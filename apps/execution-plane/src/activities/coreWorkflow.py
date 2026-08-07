@@ -61,6 +61,43 @@ from .actions import registry
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", tempfile.gettempdir())
 
 
+def _sanitize_error(raw_exc: Exception) -> str:
+    """
+    Map raw Python exceptions to safe, user-facing error codes.
+    NEVER expose internal stack traces, file paths, or hostnames to API consumers.
+    """
+    msg = str(raw_exc)
+    mapping = [
+        ("ssl",                    "network_error: SSL certificate verification failed"),
+        ("certificate",            "network_error: SSL certificate error"),
+        ("connecterror",           "network_error: Could not connect to target site"),
+        ("connectionrefused",      "network_error: Connection refused by target"),
+        ("timeout",                "timeout: Operation exceeded time limit"),
+        ("proxierror",             "proxy_error: Proxy connection failed"),
+        ("ratelimited",            "rate_limited: Target site returned 429"),
+        ("403",                    "blocked: Target site returned 403 Forbidden"),
+        ("401",                    "auth_error: Target site requires authentication"),
+        ("captcha",                "blocked: CAPTCHA detected — configure proxy"),
+        ("webdriver",              "blocked: Automation detected by target site"),
+        ("sessionexpired",         "session_expired: Stored session is no longer valid"),
+        ("tokenbудgetexhausted",   "llm_budget_exceeded: Job exceeded token limit"),
+        ("tokenbudgetexhausted",   "llm_budget_exceeded: Job exceeded token limit"),
+        ("page closed",            "browser_crash: Page closed unexpectedly"),
+        ("target closed",          "browser_crash: Browser target closed unexpectedly"),
+        ("crash",                  "browser_crash: Renderer process crashed"),
+    ]
+    msg_lower = msg.lower().replace(" ", "")
+    for pattern, friendly in mapping:
+        if pattern.replace(" ", "") in msg_lower:
+            return friendly
+    # Fallback: return only first 120 chars, no file paths
+    safe = msg[:120]
+    # Strip any file path segments (anything starting with /)
+    import re as _re
+    safe = _re.sub(r"/[^\s,;)]+", "<path>", safe)
+    return f"execution_error: {safe}"
+
+
 def validate_step_params(step_params: Dict[str, Any], available_params: Dict[str, Any], step_index: int) -> Dict[str, Any]:
     """
     Validates and substitutes variables in step parameters.
@@ -139,7 +176,7 @@ async def browser_automation_activity(payload: dict) -> dict:
 
     
     # 1.5 Materialize attachments to disk
-    materialized_files = []
+    materialized_files: list[str] = []
     if attachments:
         import base64
         import tempfile
@@ -157,6 +194,7 @@ async def browser_automation_activity(payload: dict) -> dict:
                 logger.info(f"[{job_id}] Materialized attachment to {file_path}")
             except Exception as e:
                 logger.error(f"[{job_id}] Failed to materialize attachment {filename}: {e}")
+
 
     # DIAGNOSTIC TELEMETRY
     payload_keys = list(payload.keys())
@@ -1243,4 +1281,12 @@ async def browser_automation_activity(payload: dict) -> dict:
                         target_domain,
                     )
     
-
+                # --- CLEANUP: Delete materialized /tmp attachment files ---
+                # Always runs — prevents disk space leaks on the container.
+                for tmp_file in materialized_files:
+                    try:
+                        if os.path.exists(tmp_file):
+                            os.unlink(tmp_file)
+                            logger.debug(f"[{job_id}] Cleaned up temp file: {tmp_file}")
+                    except Exception as cleanup_err:
+                        logger.warning(f"[{job_id}] Failed to delete temp file {tmp_file}: {cleanup_err}")

@@ -552,6 +552,7 @@ func main() {
 	protected.GET("/v1/api-keys", apiKeyCtrl.HandleList)
 	protected.POST("/v1/api-keys", apiKeyCtrl.HandleCreate)
 	protected.DELETE("/v1/api-keys/:id", apiKeyCtrl.HandleRevoke)
+	protected.POST("/v1/api-keys/:id/rotate", apiKeyCtrl.HandleRotate)
 
 	// User Stats & Webhooks
 	protected.GET("/v1/user/stats", userCtrl.HandleGetStats)

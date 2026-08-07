@@ -189,3 +189,79 @@ func (c *ApiKeyController) HandleRevoke(ctx *gin.Context) {
 
 	ctx.JSON(http.StatusOK, gin.H{"status": "revoked"})
 }
+
+// HandleRotate atomically revokes the current key and issues a new one with the
+// same name. The new raw key is returned exactly once — it cannot be retrieved again.
+func (c *ApiKeyController) HandleRotate(ctx *gin.Context) {
+	clerkID, exists := middleware.GetUserID(ctx)
+	if !exists {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+		return
+	}
+
+	keyID := ctx.Param("id")
+	if keyID == "" {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Missing key ID"})
+		return
+	}
+
+	// Fetch the existing key to get its name
+	var existingKey models.ApiKey
+	if err := c.db.Where("id = ? AND user_id = ? AND is_active = ?", keyID, tenantID, true).
+		First(&existingKey).Error; err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "API key not found or already revoked"})
+		return
+	}
+
+	// Generate new key material
+	rawBytes := make([]byte, 16)
+	if _, err := rand.Read(rawBytes); err != nil {
+		log.Printf("[ApiKeyController] Rotate rand error: %v", err)
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate new key"})
+		return
+	}
+
+	rawKey := fmt.Sprintf("sk_live_%s", hex.EncodeToString(rawBytes))
+	keyPrefix := rawKey[:20]
+	hash := sha256.Sum256([]byte(rawKey))
+	keyHash := hex.EncodeToString(hash[:])
+
+	// Atomic rotation: revoke old + create new in a single transaction
+	newKey := models.ApiKey{
+		UserID:    tenantID,
+		Name:      existingKey.Name,
+		KeyPrefix: keyPrefix,
+		KeyHash:   keyHash,
+		IsActive:  true,
+	}
+
+	txErr := c.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.ApiKey{}).
+			Where("id = ?", existingKey.ID).
+			Update("is_active", false).Error; err != nil {
+			return err
+		}
+		return tx.Create(&newKey).Error
+	})
+
+	if txErr != nil {
+		log.Printf("[ApiKeyController] Rotate transaction error: %v", txErr)
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to rotate API key"})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{
+		"data": CreateApiKeyResponse{
+			ID:   newKey.ID,
+			Key:  rawKey,
+			Name: newKey.Name,
+		},
+		"revoked_id": existingKey.ID,
+	})
+}
+

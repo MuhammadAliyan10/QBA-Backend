@@ -67,6 +67,23 @@ async def safe_browser_context(playwright_instance, launch_args, storage_state=N
     page = await context.new_page()
     await stealth_async(page)
 
+    # Suppress navigator.webdriver — the primary signal used by Cloudflare, DataDome,
+    # and PerimeterX to identify headless Chrome. Must be injected before any navigation.
+    await page.add_init_script("""
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => undefined,
+            configurable: true
+        });
+        // Suppress automation-related properties
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => [1, 2, 3, 4, 5],
+        });
+        Object.defineProperty(navigator, 'languages', {
+            get: () => ['en-US', 'en'],
+        });
+        window.chrome = { runtime: {} };
+    """)
+
     try:
         # We yield browser, context, and page to allow explicit closure in exception handlers
         yield browser, context, page
