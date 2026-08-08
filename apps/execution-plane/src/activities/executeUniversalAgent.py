@@ -914,7 +914,7 @@ async def execute_universal_agent(
         async def _llm_field_fallback(partial_schema: dict, page_text: str) -> dict:
             extraction_prompt = (
                 f"Extract data matching the Target Schema from the Page Content.\n\n"
-                f"Page Content:\n{page_text[:3000]}\n\n"
+                f"Page Content:\n{page_text[:4000]}\n\n"
                 f"Target Schema:\n{json.dumps(partial_schema, indent=2)}\n\n"
                 "RULES: Map visible text to exact schema fields. Missing = null. "
                 "Return ONLY valid JSON. No explanation."

@@ -11,7 +11,7 @@ from activities.discovery_activities import BrowserPool, ENABLE_ELEMENT_LLM
 from core.browser.dom_harvester import DOMHarvester
 from core.planning.intent_parser import Intent
 from core.planning.element_matcher import ElementMatcher
-from activities.activities import dismiss_overlays
+from activities.navigation import dismiss_overlays
 
 logger = logging.getLogger("hybridActivities")
 

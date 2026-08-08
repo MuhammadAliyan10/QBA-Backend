@@ -7,3 +7,12 @@ registry = ActionRegistry()
 registry.register("CLICK", ClickAction())
 registry.register("EXTRACT", ExtractAction())
 registry.register("LOGIN_AND_SNIFF", LoginAndSniffAction())
+
+__all__ = [
+    "ActionRegistry",
+    "ClickAction",
+    "ExtractAction",
+    "LoginAndSniffAction",
+    "registry",
+]
+

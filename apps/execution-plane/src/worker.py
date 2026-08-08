@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 # Import Business Logic
 from workflows import BrowserWorkflow, GenerateWorkflowRecipe
-from activities.coreWorkflow import browser_automation_activity
+from activities.core_workflow import browser_automation_activity
 from activities.discovery_activities import (
     harvest_and_plan_activity,
     execute_action_activity,
