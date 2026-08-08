@@ -29,6 +29,7 @@ from core.storage import get_storage, is_storage_available, StorageUploadError
 from core.nervous_system import NervousSystem
 from core.utils.params import substitute_variables, validate_and_substitute
 from activities.executeUniversalAgent import execute_universal_agent
+from core.db_telemetry import record_job_token_usage
 
 # 2. The Glass Box Engine (Camel Case - Logic)
 from core.selector.smart_finder import SmartFinder
@@ -124,6 +125,11 @@ async def browser_automation_activity(payload: dict) -> dict:
     """
     # 1. Unpack Payload (From Go)
     job_id = payload.get("job_id")
+    
+    # Token Tracking Initialization
+    job_total_tokens = 0
+    job_total_llm_calls = 0
+
     workflow_id = payload.get("workflow_id")
     target_url = payload.get("target_url")
     target_urls = payload.get("target_urls", [])
@@ -632,48 +638,98 @@ async def browser_automation_activity(payload: dict) -> dict:
 
                 # --- 5.5: UNIVERSAL AGENT FALLBACK / SEMANTIC SCHEMA EXTRACTION ---
                 if use_universal_agent:
-                    
-                    aggregated_results = []
+
                     urls_to_process = target_urls if target_urls else ([target_url] if target_url else [])
-                    
-                    for url_index, current_url in enumerate(urls_to_process):
-                        logger.info(f"[{job_id}] Processing URL {url_index + 1}/{len(urls_to_process)}: {current_url}")
-                        await user_logger.progress(f"Processing URL {url_index + 1} of {len(urls_to_process)}...")
-                        
-                        # Navigate to this URL (skip for first if already there)
-                        if url_index > 0 or page.url != current_url:
+                    # Max concurrent browser contexts per job — each context is ~200MB RAM.
+                    # Increase WORKER_MAX_PARALLEL_URLS env var to trade RAM for speed.
+                    url_semaphore = asyncio.Semaphore(
+                        int(os.getenv("WORKER_MAX_PARALLEL_URLS", "5"))
+                    )
+
+                    async def _process_single_url(url_index: int, current_url: str) -> dict:
+                        """
+                        Processes one URL in its own isolated BrowserContext.
+                        Returns a dict with keys: url_index, status, data (optional), tokens (optional).
+                        Non-fatal errors are captured and returned as failed entries rather than
+                        propagating — the caller aggregates across all URLs.
+                        """
+                        async with url_semaphore:
+                            logger.info(f"[{job_id}] [parallel] Starting URL {url_index + 1}/{len(urls_to_process)}: {current_url}")
+                            await user_logger.progress(f"Starting URL {url_index + 1} of {len(urls_to_process)}...")
+
+                            # Isolate each URL in its own context (separate cookies, cache, JS heap)
+                            url_context = await browser.new_context()
+                            url_page = await url_context.new_page()
                             try:
-                                await page.goto(current_url, timeout=NAVIGATION_TIMEOUT, wait_until="networkidle")
+                                # Fingerprint suppression for this sub-context
+                                await url_page.add_init_script("""
+                                    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+                                    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+                                    window.chrome = { runtime: {} };
+                                """)
+
+                                # Navigate to target URL
                                 try:
-                                    await page.wait_for_load_state("networkidle", timeout=10000)
-                                except PlaywrightTimeout:
+                                    await url_page.goto(current_url, timeout=NAVIGATION_TIMEOUT, wait_until="networkidle")
+                                    try:
+                                        await url_page.wait_for_load_state("networkidle", timeout=10000)
+                                    except PlaywrightTimeout:
+                                        pass
+                                except Exception as nav_err:
+                                    logger.warning(f"[{job_id}] [parallel] URL {url_index + 1} navigation error (non-fatal): {nav_err}")
+
+                                ua_result = await execute_universal_agent(
+                                    page=url_page,
+                                    job_id=job_id,
+                                    user_logger=user_logger,
+                                    nervous_system=NervousSystem,
+                                    target_url=current_url,
+                                    # Only pass navigation objective and plan to the first URL
+                                    # so the agent doesn't re-plan for every page.
+                                    navigation_objective=navigation_objective if url_index == 0 else None,
+                                    extraction_schema=extraction_schema,
+                                    materialized_files=materialized_files,
+                                    plan_steps=plan_steps if url_index == 0 else [],
+                                )
+                                return {"url_index": url_index, "url": current_url, **ua_result}
+
+                            except Exception as url_err:
+                                logger.error(f"[{job_id}] [parallel] URL {url_index + 1} unhandled error: {url_err}")
+                                return {"url_index": url_index, "url": current_url, "status": "failed", "reason": str(url_err)}
+                            finally:
+                                # Always close the sub-context to release browser memory
+                                try:
+                                    await url_context.close()
+                                except Exception:
                                     pass
-                            except Exception as nav_err:
-                                logger.warning(f"[{job_id}] URL navigation error (non-fatal): {nav_err}")
-                        
-                        ua_result = await execute_universal_agent(
-                            page=page,
-                            job_id=job_id,
-                            user_logger=user_logger,
-                            nervous_system=NervousSystem,
-                            target_url=current_url,
-                            navigation_objective=navigation_objective if url_index == 0 else None,
-                            extraction_schema=extraction_schema,
-                            materialized_files=materialized_files,
-                            plan_steps=plan_steps if url_index == 0 else [],
-                        )
-                        
+
+                    # Dispatch all URLs concurrently; asyncio.gather preserves insertion order
+                    all_ua_results: list[dict] = await asyncio.gather(
+                        *[_process_single_url(i, url) for i, url in enumerate(urls_to_process)],
+                        return_exceptions=False,
+                    )
+
+                    # --- Process results — check for hard failures ---
+                    aggregated_results = []
+                    for ua_result in all_ua_results:
                         ua_status = ua_result.get("status")
+                        url_index = ua_result.get("url_index", 0)
+
+                        # Accumulate Tokens
+                        tokens = ua_result.get("tokens", 0)
+                        job_total_tokens += tokens
+                        if tokens > 0:
+                            job_total_llm_calls += 1
 
                         if ua_status in ("stopped", "failed"):
                             reason = ua_result.get("reason", "Unknown reason")
                             tokens = ua_result.get("tokens", 0)
-                            logger.error(f"[{job_id}] Universal Agent stopped/failed: {reason} | tokens_used={tokens}")
-                            await NervousSystem.publish_update(job_id, "FAILED", f"Agent stopped: {reason}", "error")
+                            logger.error(f"[{job_id}] Universal Agent stopped/failed on URL {url_index + 1}: {reason} | tokens_used={tokens}")
+                            await NervousSystem.publish_update(job_id, "FAILED", f"Agent stopped on URL {url_index + 1}: {reason}", "error")
                             return {
                                 "status": "FAILED",
                                 "job_id": job_id,
-                                "error": f"Agent stopped: {reason}",
+                                "error": f"Agent stopped on URL {url_index + 1}: {reason}",
                                 "tokens_used": tokens,
                             }
 
@@ -698,7 +754,7 @@ async def browser_automation_activity(payload: dict) -> dict:
                                         steps=[{
                                             "action": "UNIVERSAL_AGENT",
                                             "params": {
-                                                "target_url": current_url,
+                                                "target_url": ua_result.get("url", ""),
                                                 "navigation_objective": navigation_objective,
                                                 "extraction_schema": extraction_schema,
                                             }
@@ -708,12 +764,12 @@ async def browser_automation_activity(payload: dict) -> dict:
                                     logger.info(f"[{job_id}] Auto-saved recipe '{recipe_name}' for objective: {navigation_objective[:80]}")
                                 except Exception as recipe_err:
                                     logger.warning(f"[{job_id}] Recipe auto-save failed (non-fatal): {recipe_err}")
-                    
+
                     # --- DATA_TRANSFORM: CSV Aggregation + Cloud Upload ---
                     if extraction_schema and aggregated_results:
                         import csv
                         import io
-                        
+
                         # Flatten nested lists (e.g., {"products": [...]}) into a single row list
                         flat_rows = []
                         for result in aggregated_results:
@@ -726,7 +782,7 @@ async def browser_automation_activity(payload: dict) -> dict:
                                         break
                             elif isinstance(result, list):
                                 flat_rows.extend(result)
-                        
+
                         artifact_url = None
 
                         if flat_rows and isinstance(flat_rows[0], dict):
@@ -763,7 +819,7 @@ async def browser_automation_activity(payload: dict) -> dict:
                                     "rows_extracted": len(flat_rows),
                                     "data": aggregated_results
                                 }
-                            
+
                             logger.info(f"[{job_id}] CSV Generated ({len(flat_rows)} rows, {len(csv_output)} bytes)")
                             await user_logger.progress(f"Extraction complete. {len(flat_rows)} rows extracted.")
 
@@ -789,7 +845,7 @@ async def browser_automation_activity(payload: dict) -> dict:
                                 f"quanta.telemetry.{job_id}",
                                 json.dumps({"type": "DATA_TRANSFORM", "format": "csv", "data": csv_output})
                             )
-                        
+
                         await NervousSystem.publish_update(
                             job_id, "RUNNING", "Extracted semantic schema", "ua_node",
                             data=json.dumps(aggregated_results)
@@ -809,8 +865,10 @@ async def browser_automation_activity(payload: dict) -> dict:
                         return response_payload
 
                     steps = []  # Skip the regular execution loop
-                
+
+
                 # --- 6. EXECUTION LOOP ---
+
                 active_vault = None
                 for i, step in enumerate(steps):
                     # Use real node ID from graph converter for frontend event correlation
@@ -1290,3 +1348,10 @@ async def browser_automation_activity(payload: dict) -> dict:
                             logger.debug(f"[{job_id}] Cleaned up temp file: {tmp_file}")
                     except Exception as cleanup_err:
                         logger.warning(f"[{job_id}] Failed to delete temp file {tmp_file}: {cleanup_err}")
+
+                # 4. Record Token Telemetry
+                if job_total_tokens > 0:
+                    try:
+                        await record_job_token_usage(job_id, 0, job_total_tokens, job_total_llm_calls, "gpt-4o")
+                    except Exception as metric_err:
+                        logger.error(f"[{job_id}] Failed to write DB telemetry: {metric_err}")

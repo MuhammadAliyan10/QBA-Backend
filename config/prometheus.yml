@@ -1,0 +1,28 @@
+# config/prometheus.yml
+# Prometheus scrape configuration for the Quanta platform.
+# Mount path in docker-compose: ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+global:
+  scrape_interval: 15s       # How often to scrape targets
+  evaluation_interval: 15s   # How often to evaluate alerting rules
+  scrape_timeout: 10s
+
+scrape_configs:
+  # Control Plane (Go API) — /metrics endpoint served by the prometheus middleware
+  - job_name: 'quanta_control_plane'
+    static_configs:
+      - targets: ['control-plane:8080']
+    metrics_path: '/metrics'
+    scheme: http
+
+  # NATS JetStream — native Prometheus exporter on the monitoring port
+  - job_name: 'quanta_nats'
+    static_configs:
+      - targets: ['nats:8222']
+    metrics_path: '/metrics'
+    scheme: http
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

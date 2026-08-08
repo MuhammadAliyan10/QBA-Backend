@@ -102,9 +102,15 @@ async def main():
                 # Two-Phase Cognitive Orchestration
                 execute_universal_agent,
             ],
+            # Concurrency limits — each browser activity consumes ~200MB RAM + 1 CPU core.
+            # 10 concurrent activities matches the container's 2GB shm_size budget.
+            # Scale horizontally (more replicas) rather than increasing this.
+            max_concurrent_activities=int(os.getenv("WORKER_MAX_CONCURRENT_ACTIVITIES", "10")),
+            max_concurrent_workflow_tasks=int(os.getenv("WORKER_MAX_CONCURRENT_WORKFLOWS", "20")),
             # CRITICAL: Allow enough time for Browser to close gracefully
             graceful_shutdown_timeout=timedelta(seconds=15)
         )
+
 
         logger.info(f"[Worker] Listening on queue: '{task_queue}'")
         logger.info("[Worker] Press Ctrl+C to stop.")
