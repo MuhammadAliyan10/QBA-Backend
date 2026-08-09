@@ -500,6 +500,11 @@ func main() {
 	r.POST("/v1/webhooks/clerk", clerkWebhookCtrl.HandleWebhook)
 
 	protected := r.Group("/")
+	// IP-level brute-force guard must run FIRST — before AuthMiddleware —
+	// so that IPs with repeated failures are blocked before any DB lookups.
+	if redisClient != nil {
+		protected.Use(middleware.NewIPAuthGuard(redisClient).Middleware())
+	}
 	protected.Use(middleware.AuthMiddleware())
 
 	if redisClient != nil {

@@ -107,6 +107,37 @@ def validate_step_params(step_params: Dict[str, Any], available_params: Dict[str
     return validate_and_substitute(step_params, available_params)
 
 
+async def _dom_fingerprint(page) -> str:
+    """
+    Computes a lightweight structural fingerprint of the visible DOM.
+    Used to detect SPA navigations where the URL does NOT change.
+
+    Fingerprint components:
+      - Count of interactive elements (links, buttons, inputs)
+      - Approximate visible text length (body.innerText)
+      - Number of unique anchor hrefs
+
+    Intentionally coarse: we want to detect meaningful page transitions,
+    not every micro-mutation (tooltips, animations, etc.).
+    """
+    try:
+        result: dict = await page.evaluate("""
+            () => {
+                const interactive = document.querySelectorAll('a, button, input, select, textarea').length;
+                const textLen = (document.body && document.body.innerText || '').length;
+                const uniqueLinks = new Set(
+                    Array.from(document.querySelectorAll('a[href]'))
+                        .map(a => a.getAttribute('href'))
+                        .filter(h => h && !h.startsWith('#'))
+                ).size;
+                return { interactive, textLen, uniqueLinks };
+            }
+        """)
+        return f"{result['interactive']}:{result['textLen']}:{result['uniqueLinks']}"
+    except Exception:
+        return ""
+
+
 _recipe_manager_instance = None
 
 def get_recipe_manager() -> RecipeManager:
@@ -893,7 +924,40 @@ async def browser_automation_activity(payload: dict) -> dict:
                         step_params["_node_id"] = node_id
                         try:
                             action_handler = registry.get(action)
+
+                            # SPA DOM diff: capture DOM fingerprint BEFORE click
+                            pre_click_url = page.url
+                            pre_click_dom = ""
+                            if action == "CLICK":
+                                pre_click_dom = await _dom_fingerprint(page)
+
                             result = await action_handler.execute(ctx, step_params)
+
+                            # SPA DOM diff: check for DOM mutation after click
+                            if action == "CLICK" and pre_click_dom:
+                                # Give the SPA up to 1.5s to respond (fast enough for most frameworks)
+                                await asyncio.sleep(0.3)
+                                try:
+                                    await page.wait_for_load_state("networkidle", timeout=1200)
+                                except PlaywrightTimeout:
+                                    pass
+                                post_click_url = page.url
+                                post_click_dom = await _dom_fingerprint(page)
+
+                                url_changed = post_click_url != pre_click_url
+                                dom_changed = post_click_dom != pre_click_dom
+
+                                if url_changed:
+                                    logger.info(f"[{job_id}] Step {i+1} CLICK: URL navigation detected {pre_click_url} → {post_click_url}")
+                                elif dom_changed:
+                                    logger.info(f"[{job_id}] Step {i+1} CLICK: SPA DOM mutation detected (no URL change) | before={pre_click_dom} after={post_click_dom}")
+                                    await NervousSystem.publish(
+                                        f"quanta.telemetry.{job_id}",
+                                        json.dumps({"type": "log", "message": f"[SPA] DOM changed after click on step {i+1} — SPA navigation detected"})
+                                    )
+                                else:
+                                    logger.debug(f"[{job_id}] Step {i+1} CLICK: No navigation detected (static DOM)")
+
                         except KeyError:
                             raise NotImplementedError(f"Action {action} not supported")
                     elif action == "GOTO":
