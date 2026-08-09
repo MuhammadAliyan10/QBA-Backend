@@ -542,6 +542,7 @@ func main() {
 	protected.GET("/v1/jobs", workflowCtrl.HandleListJobs)
 	protected.GET("/v1/jobs/:id", workflowCtrl.HandleGetJob)
 	protected.POST("/v1/jobs/:id/cancel", workflowCtrl.HandleCancelJob)
+	protected.DELETE("/v1/jobs/:id", workflowCtrl.HandleDeleteJob)
 	protected.GET("/v1/jobs/:id/logs", workflowCtrl.HandleGetJobLogs)
 	protected.POST("/v1/jobs/:id/resume", workflowCtrl.HandleResumeJob)
 

@@ -498,6 +498,31 @@ func (c *WorkflowController) HandleCancelJob(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"status": "CANCELLED"})
 }
 
+func (c *WorkflowController) HandleDeleteJob(ctx *gin.Context) {
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
+		return
+	}
+
+	jobID := ctx.Param("id")
+
+	// First verify the job exists and belongs to the user
+	var job models.Job
+	if err := c.db.Where("id = ? AND user_id = ?", jobID, tenantID).First(&job).Error; err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+		return
+	}
+
+	// Delete the job from the database
+	res := c.db.Delete(&job)
+	if res.Error != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete job"})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+
 func (c *WorkflowController) HandleResumeJob(ctx *gin.Context) {
 	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
 	if !ok {

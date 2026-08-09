@@ -208,6 +208,10 @@ services:
       # Generate: openssl rand -hex 16
       # Never commit a real value here. Always inject via .env or secrets manager.
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      # Clerk Authentication Keys
+      - CLERK_PUBLISHABLE_KEY=${CLERK_PUBLISHABLE_KEY}
+      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
+      - CLERK_WEBHOOK_SECRET=${CLERK_WEBHOOK_SECRET}
       # Local dev DB
       - DATABASE_URL=postgresql://postgres:postgres@app_postgres:5432/quanta
       - ALLOW_LOCAL_TARGETS=${ALLOW_LOCAL_TARGETS:-false}
