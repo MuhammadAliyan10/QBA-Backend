@@ -71,14 +71,8 @@ type RecentJobResponse struct {
 // ─── HANDLERS ───────────────────────────────────────────────────────────────
 
 func (c *DashboardController) HandleGetStats(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -179,14 +173,8 @@ func (c *DashboardController) HandleGetStats(ctx *gin.Context) {
 }
 
 func (c *DashboardController) HandleGetRecentJobs(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 

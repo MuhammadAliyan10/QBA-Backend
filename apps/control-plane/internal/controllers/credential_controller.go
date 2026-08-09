@@ -103,15 +103,8 @@ func NewCredentialController(db *gorm.DB, identity *services.IdentityService) *C
 // HandleCreate handles POST /v1/credentials.
 // Accepts { "name": "...", "session_data": { ... } }, encrypts, and persists.
 func (cc *CredentialController) HandleCreate(c *gin.Context) {
-	clerkID, exists := middleware.GetUserID(c)
-	if !exists || clerkID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated", "message": "Authentication required"})
-		return
-	}
-
-	tenantID, err := cc.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(c, cc.identity)
+	if !ok {
 		return
 	}
 
@@ -180,15 +173,8 @@ func (cc *CredentialController) HandleCreate(c *gin.Context) {
 // HandleList handles GET /v1/credentials.
 // Returns id, name, created_at for all credentials belonging to the authenticated client.
 func (cc *CredentialController) HandleList(c *gin.Context) {
-	clerkID, exists := middleware.GetUserID(c)
-	if !exists || clerkID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated", "message": "Authentication required"})
-		return
-	}
-
-	tenantID, err := cc.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(c, cc.identity)
+	if !ok {
 		return
 	}
 
@@ -218,15 +204,8 @@ func (cc *CredentialController) HandleList(c *gin.Context) {
 // HandleDelete handles DELETE /v1/credentials/:id.
 // Hard-deletes the credential after verifying ownership.
 func (cc *CredentialController) HandleDelete(c *gin.Context) {
-	clerkID, exists := middleware.GetUserID(c)
-	if !exists || clerkID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated", "message": "Authentication required"})
-		return
-	}
-
-	tenantID, err := cc.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(c, cc.identity)
+	if !ok {
 		return
 	}
 

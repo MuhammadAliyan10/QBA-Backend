@@ -62,14 +62,8 @@ type WorkflowResponse struct {
 // ─── WORKFLOW CRUD ──────────────────────────────────────────────────────────
 
 func (c *WorkflowController) HandleListWorkflows(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -113,14 +107,8 @@ func (c *WorkflowController) HandleListWorkflows(ctx *gin.Context) {
 }
 
 func (c *WorkflowController) HandleGetWorkflow(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -157,14 +145,8 @@ func (c *WorkflowController) HandleGetWorkflow(ctx *gin.Context) {
 }
 
 func (c *WorkflowController) HandleCreateWorkflow(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -194,14 +176,8 @@ func (c *WorkflowController) HandleCreateWorkflow(ctx *gin.Context) {
 }
 
 func (c *WorkflowController) HandleUpdateWorkflow(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -246,14 +222,8 @@ func (c *WorkflowController) HandleUpdateWorkflow(ctx *gin.Context) {
 }
 
 func (c *WorkflowController) HandleDeleteWorkflow(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -279,14 +249,8 @@ type ExecuteWorkflowRequest struct {
 }
 
 func (c *WorkflowController) HandleExecute(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -372,14 +336,8 @@ func (c *WorkflowController) HandleExecute(ctx *gin.Context) {
 // ─── JOB HANDLERS ───────────────────────────────────────────────────────────
 
 func (c *WorkflowController) HandleListJobs(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -426,14 +384,8 @@ func (c *WorkflowController) HandleListJobs(ctx *gin.Context) {
 }
 
 func (c *WorkflowController) HandleGetJob(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -479,14 +431,8 @@ func (c *WorkflowController) HandleGetJob(ctx *gin.Context) {
 }
 
 func (c *WorkflowController) HandleGetJobLogs(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -522,14 +468,8 @@ func (c *WorkflowController) HandleGetJobLogs(ctx *gin.Context) {
 }
 
 func (c *WorkflowController) HandleCancelJob(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -559,14 +499,8 @@ func (c *WorkflowController) HandleCancelJob(ctx *gin.Context) {
 }
 
 func (c *WorkflowController) HandleResumeJob(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 

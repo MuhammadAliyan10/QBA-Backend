@@ -57,15 +57,8 @@ type GenerateSyncData struct {
 }
 
 func (ctrl *GeneratorController) HandleGenerate(c *gin.Context) {
-	clerkID, exists := middleware.GetUserID(c)
-	if !exists || clerkID == "" {
-		c.JSON(http.StatusUnauthorized, GenerateAsyncResponse{Status: "error", Error: "Authentication required"})
-		return
-	}
-
-	tenantID, err := ctrl.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, GenerateAsyncResponse{Status: "error", Error: "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(c, ctrl.identity)
+	if !ok {
 		return
 	}
 
@@ -200,15 +193,8 @@ func (ctrl *GeneratorController) HandleGenerate(c *gin.Context) {
 // HandleGenerateSync - Blocking version that waits for workflow completion
 // Use this for simpler integration or testing
 func (ctrl *GeneratorController) HandleGenerateSync(c *gin.Context) {
-	clerkID, exists := middleware.GetUserID(c)
-	if !exists || clerkID == "" {
-		c.JSON(http.StatusUnauthorized, GenerateSyncResponse{Status: "error", Error: "Authentication required"})
-		return
-	}
-
-	tenantID, err := ctrl.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, GenerateSyncResponse{Status: "error", Error: "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(c, ctrl.identity)
+	if !ok {
 		return
 	}
 

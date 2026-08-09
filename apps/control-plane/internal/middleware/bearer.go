@@ -113,5 +113,19 @@ func lookupAPIKeyUserID(ctx context.Context, apiKey string) (string, error) {
 		return "", fmt.Errorf("api key expired")
 	}
 
+	// Async last_used_at tracking — fire-and-forget, never blocks the auth path.
+	// Uses a detached context so a slow DB write cannot cancel the ongoing request.
+	go func(keyHash string) {
+		updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		now := time.Now()
+		if err := db.DB.WithContext(updateCtx).
+			Model(&models.ApiKey{}).
+			Where("key_hash = ?", keyHash).
+			Update("last_used_at", now).Error; err != nil {
+			log.Printf("[AUTH] Failed to update last_used_at for key: %v", err)
+		}
+	}(keyHash)
+
 	return apiKeyRecord.UserID, nil
 }

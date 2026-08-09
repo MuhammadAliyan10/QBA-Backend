@@ -56,14 +56,8 @@ type BillingDataResponse struct {
 // ─── HANDLERS ───────────────────────────────────────────────────────────────
 
 func (c *BillingController) HandleGetBilling(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -143,14 +137,8 @@ func (c *BillingController) HandleGetBilling(ctx *gin.Context) {
 }
 
 func (c *BillingController) HandleGetTransactions(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 

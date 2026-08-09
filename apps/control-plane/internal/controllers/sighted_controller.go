@@ -72,18 +72,8 @@ func NewSightedController(db *gorm.DB, tm *temporal.TemporalManager, identity *s
 // Returns HTTP 202 with a job_id. The client polls /v1/jobs/:id or subscribes
 // to the SSE stream at /v1/execute/:job_id/stream for real-time updates.
 func (sc *SightedController) HandleSightedAsync(c *gin.Context) {
-	clerkID, exists := middleware.GetUserID(c)
-	if !exists || clerkID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error":   "unauthenticated",
-			"message": "Authentication required",
-		})
-		return
-	}
-
-	tenantID, err := sc.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(c, sc.identity)
+	if !ok {
 		return
 	}
 
@@ -231,18 +221,8 @@ func (sc *SightedController) HandleSightedAsync(c *gin.Context) {
 // Executes the sighted pipeline synchronously and returns the result directly.
 // Useful for testing, small tasks, and real-time API consumers.
 func (sc *SightedController) HandleSightedSync(c *gin.Context) {
-	clerkID, exists := middleware.GetUserID(c)
-	if !exists || clerkID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error":   "unauthenticated",
-			"message": "Authentication required",
-		})
-		return
-	}
-
-	tenantID, err := sc.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(c, sc.identity)
+	if !ok {
 		return
 	}
 

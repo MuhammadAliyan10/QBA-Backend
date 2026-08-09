@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
+	"time"
 
 	"e2e-platform/apps/control-plane/internal/middleware"
 	"e2e-platform/apps/control-plane/internal/models"
@@ -17,16 +19,22 @@ import (
 	"gorm.io/gorm"
 )
 
+// ─── CONSTANTS ───────────────────────────────────────────────────────────────
+
+const (
+	apiKeyNameMaxLen = 100
+	apiKeyNameMinLen = 3
+)
+
+// ─── TYPES ───────────────────────────────────────────────────────────────────
+
 type ApiKeyController struct {
 	db       *gorm.DB
 	identity *services.IdentityService
 }
 
 func NewApiKeyController(db *gorm.DB, identity *services.IdentityService) *ApiKeyController {
-	return &ApiKeyController{
-		db:       db,
-		identity: identity,
-	}
+	return &ApiKeyController{db: db, identity: identity}
 }
 
 // ─── DTOS ───────────────────────────────────────────────────────────────────
@@ -36,99 +44,145 @@ type CreateApiKeyRequest struct {
 }
 
 type ApiKeyResponse struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	KeyPrefix  string `json:"key_prefix"`
-	Status     string `json:"status"`
-	CreatedAt  string `json:"created_at"`
-	LastUsedAt string `json:"last_used_at,omitempty"`
+	ID         string  `json:"id"`
+	Name       string  `json:"name"`
+	KeyPrefix  string  `json:"key_prefix"`
+	Status     string  `json:"status"` // "active" | "revoked" | "expired"
+	CreatedAt  string  `json:"created_at"`
+	LastUsedAt *string `json:"last_used_at,omitempty"`
+	ExpiresAt  *string `json:"expires_at,omitempty"`
 }
 
 type CreateApiKeyResponse struct {
-	ID      string `json:"id"`
-	Key     string `json:"key"` // Raw key returned exactly once
-	Name    string `json:"name"`
+	ID   string `json:"id"`
+	Key  string `json:"key"` // Raw key — returned EXACTLY ONCE, never stored
+	Name string `json:"name"`
+}
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+
+// resolveKeyStatus returns the display status for an API key.
+// Priority: revoked → expired → active.
+func resolveKeyStatus(k models.ApiKey) string {
+	if !k.IsActive {
+		return "revoked"
+	}
+	if k.ExpiresAt != nil && k.ExpiresAt.Before(time.Now()) {
+		return "expired"
+	}
+	return "active"
+}
+
+// generateAPIKeyMaterial creates a new sk_live_ key and returns (rawKey, keyPrefix, keyHash, error).
+// Uses crypto/rand for CSPRNG-backed entropy.
+func generateAPIKeyMaterial() (rawKey, keyPrefix, keyHash string, err error) {
+	rawBytes := make([]byte, 24) // 192 bits of entropy (24 bytes raw → 48 hex chars)
+	if _, err = rand.Read(rawBytes); err != nil {
+		return
+	}
+	rawKey = fmt.Sprintf("sk_live_%s", hex.EncodeToString(rawBytes))
+	keyPrefix = rawKey[:20] // "sk_live_" (8) + 12 hex chars
+	hash := sha256.Sum256([]byte(rawKey))
+	keyHash = hex.EncodeToString(hash[:])
+	return
 }
 
 // ─── HANDLERS ───────────────────────────────────────────────────────────────
 
-func (c *ApiKeyController) HandleList(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+// HandleList returns all API keys for the authenticated user.
+// GET /v1/api-keys
+func (ctrl *ApiKeyController) HandleList(c *gin.Context) {
+	tenantID, ok := middleware.ResolveTenantID(c, ctrl.identity)
+	if !ok {
 		return
 	}
 
 	var keys []models.ApiKey
-	if err := c.db.Where("user_id = ?", tenantID).Order("created_at DESC").Find(&keys).Error; err != nil {
-		log.Printf("[ApiKeyController] HandleList error: %v", err)
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch API keys"})
+	if err := ctrl.db.
+		Where("user_id = ?", tenantID).
+		Order("created_at DESC").
+		Find(&keys).Error; err != nil {
+		log.Printf("[ApiKeyController] HandleList DB error | TenantID=%s | Err=%v", tenantID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "database_error",
+			"message":    "Failed to retrieve API keys",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
-	var response []ApiKeyResponse
+	response := make([]ApiKeyResponse, 0, len(keys))
 	for _, k := range keys {
-		status := "revoked"
-		if k.IsActive {
-			status = "active"
+		r := ApiKeyResponse{
+			ID:        k.ID,
+			Name:      k.Name,
+			KeyPrefix: k.KeyPrefix,
+			Status:    resolveKeyStatus(k),
+			CreatedAt: k.CreatedAt.UTC().Format(time.RFC3339),
 		}
-		var lastUsed string
 		if k.LastUsedAt != nil {
-			lastUsed = k.LastUsedAt.Format("2006-01-02T15:04:05Z07:00")
+			s := k.LastUsedAt.UTC().Format(time.RFC3339)
+			r.LastUsedAt = &s
 		}
-		response = append(response, ApiKeyResponse{
-			ID:         k.ID,
-			Name:       k.Name,
-			KeyPrefix:  k.KeyPrefix,
-			Status:     status,
-			CreatedAt:  k.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
-			LastUsedAt: lastUsed,
-		})
+		if k.ExpiresAt != nil {
+			s := k.ExpiresAt.UTC().Format(time.RFC3339)
+			r.ExpiresAt = &s
+		}
+		response = append(response, r)
 	}
 
-	if response == nil {
-		response = make([]ApiKeyResponse, 0)
-	}
-
-	ctx.JSON(http.StatusOK, gin.H{"data": response})
+	c.JSON(http.StatusOK, gin.H{"data": response})
 }
 
-func (c *ApiKeyController) HandleCreate(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+// HandleCreate creates a new API key for the authenticated user.
+// POST /v1/api-keys → 201 Created
+func (ctrl *ApiKeyController) HandleCreate(c *gin.Context) {
+	tenantID, ok := middleware.ResolveTenantID(c, ctrl.identity)
+	if !ok {
 		return
 	}
 
 	var req CreateApiKeyRequest
-	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":      "invalid_request",
+			"message":    "Request body is required and must contain a 'name' field",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
-	// Cryptographic Chokepoint: One-way hash for API keys
-	rawBytes := make([]byte, 16) // 16 bytes = 32 hex chars
-	if _, err := rand.Read(rawBytes); err != nil {
-		log.Printf("[ApiKeyController] Rand read error: %v", err)
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate key"})
+	// Sanitize and validate name
+	req.Name = strings.TrimSpace(req.Name)
+	if len(req.Name) < apiKeyNameMinLen {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error":      "validation_error",
+			"message":    fmt.Sprintf("Key name must be at least %d characters", apiKeyNameMinLen),
+			"field":      "name",
+			"request_id": middleware.GetRequestID(c),
+		})
+		return
+	}
+	if len(req.Name) > apiKeyNameMaxLen {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error":      "validation_error",
+			"message":    fmt.Sprintf("Key name must not exceed %d characters", apiKeyNameMaxLen),
+			"field":      "name",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
-	rawKey := fmt.Sprintf("sk_live_%s", hex.EncodeToString(rawBytes))
-	keyPrefix := rawKey[:20] // "sk_live_" + 12 chars
-
-	hash := sha256.Sum256([]byte(rawKey))
-	keyHash := hex.EncodeToString(hash[:])
+	rawKey, keyPrefix, keyHash, err := generateAPIKeyMaterial()
+	if err != nil {
+		log.Printf("[ApiKeyController] CSPRNG failure: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "key_generation_failed",
+			"message":    "Failed to generate cryptographic key material",
+			"request_id": middleware.GetRequestID(c),
+		})
+		return
+	}
 
 	apiKey := models.ApiKey{
 		UserID:    tenantID,
@@ -138,14 +192,21 @@ func (c *ApiKeyController) HandleCreate(ctx *gin.Context) {
 		IsActive:  true,
 	}
 
-	if err := c.db.Create(&apiKey).Error; err != nil {
-		log.Printf("[ApiKeyController] Create error: %v", err)
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save API key"})
+	if err := ctrl.db.Create(&apiKey).Error; err != nil {
+		log.Printf("[ApiKeyController] Create DB error | TenantID=%s | Err=%v", tenantID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "database_error",
+			"message":    "Failed to persist API key",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
-	// Return raw key EXACTLY ONCE
-	ctx.JSON(http.StatusOK, gin.H{
+	log.Printf("[ApiKeyController] Created API key | ID=%s | TenantID=%s | Prefix=%s", apiKey.ID, tenantID, keyPrefix)
+
+	// Return raw key EXACTLY ONCE — it is NOT stored and CANNOT be recovered.
+	// HTTP 201 Created is the correct status code for a successful resource creation.
+	c.JSON(http.StatusCreated, gin.H{
 		"data": CreateApiKeyResponse{
 			ID:   apiKey.ID,
 			Key:  rawKey,
@@ -154,84 +215,126 @@ func (c *ApiKeyController) HandleCreate(ctx *gin.Context) {
 	})
 }
 
-func (c *ApiKeyController) HandleRevoke(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+// HandleRevoke permanently revokes an active API key.
+// DELETE /v1/api-keys/:id
+func (ctrl *ApiKeyController) HandleRevoke(c *gin.Context) {
+	tenantID, ok := middleware.ResolveTenantID(c, ctrl.identity)
+	if !ok {
 		return
 	}
 
-	keyID := ctx.Param("id")
+	keyID := strings.TrimSpace(c.Param("id"))
 	if keyID == "" {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Missing key ID"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":      "missing_parameter",
+			"message":    "API key ID is required in the URL path",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
-	result := c.db.Model(&models.ApiKey{}).
+	// Fetch first so we can differentiate "not found" from "already revoked"
+	var existing models.ApiKey
+	if err := ctrl.db.
 		Where("id = ? AND user_id = ?", keyID, tenantID).
-		Update("is_active", false)
-
-	if result.Error != nil {
-		log.Printf("[ApiKeyController] Revoke error: %v", result.Error)
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke API key"})
+		First(&existing).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error":      "api_key_not_found",
+				"message":    "No API key found with the given ID for your account",
+				"request_id": middleware.GetRequestID(c),
+			})
+			return
+		}
+		log.Printf("[ApiKeyController] HandleRevoke DB fetch error | KeyID=%s | Err=%v", keyID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "database_error",
+			"message":    "Failed to look up API key",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
-	if result.RowsAffected == 0 {
-		ctx.JSON(http.StatusNotFound, gin.H{"error": "API key not found"})
+	if !existing.IsActive {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":      "api_key_already_revoked",
+			"message":    "This API key has already been revoked",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"status": "revoked"})
+	if err := ctrl.db.Model(&models.ApiKey{}).
+		Where("id = ?", keyID).
+		Update("is_active", false).Error; err != nil {
+		log.Printf("[ApiKeyController] HandleRevoke update error | KeyID=%s | Err=%v", keyID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "database_error",
+			"message":    "Failed to revoke API key",
+			"request_id": middleware.GetRequestID(c),
+		})
+		return
+	}
+
+	log.Printf("[ApiKeyController] Revoked API key | ID=%s | TenantID=%s", keyID, tenantID)
+	c.JSON(http.StatusOK, gin.H{
+		"status":     "revoked",
+		"id":         keyID,
+		"request_id": middleware.GetRequestID(c),
+	})
 }
 
-// HandleRotate atomically revokes the current key and issues a new one with the
-// same name. The new raw key is returned exactly once — it cannot be retrieved again.
-func (c *ApiKeyController) HandleRotate(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+// HandleRotate atomically revokes the current key and issues a new one.
+// The new raw key is returned exactly once — it cannot be retrieved again.
+// POST /v1/api-keys/:id/rotate
+func (ctrl *ApiKeyController) HandleRotate(c *gin.Context) {
+	tenantID, ok := middleware.ResolveTenantID(c, ctrl.identity)
+	if !ok {
 		return
 	}
 
-	keyID := ctx.Param("id")
+	keyID := strings.TrimSpace(c.Param("id"))
 	if keyID == "" {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Missing key ID"})
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":      "missing_parameter",
+			"message":    "API key ID is required in the URL path",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
-	// Fetch the existing key to get its name
 	var existingKey models.ApiKey
-	if err := c.db.Where("id = ? AND user_id = ? AND is_active = ?", keyID, tenantID, true).
+	if err := ctrl.db.
+		Where("id = ? AND user_id = ? AND is_active = ?", keyID, tenantID, true).
 		First(&existingKey).Error; err != nil {
-		ctx.JSON(http.StatusNotFound, gin.H{"error": "API key not found or already revoked"})
+		if err == gorm.ErrRecordNotFound {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error":      "api_key_not_found",
+				"message":    "No active API key found with the given ID for your account",
+				"request_id": middleware.GetRequestID(c),
+			})
+			return
+		}
+		log.Printf("[ApiKeyController] HandleRotate DB fetch error | KeyID=%s | Err=%v", keyID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "database_error",
+			"message":    "Failed to look up API key for rotation",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
-	// Generate new key material
-	rawBytes := make([]byte, 16)
-	if _, err := rand.Read(rawBytes); err != nil {
-		log.Printf("[ApiKeyController] Rotate rand error: %v", err)
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate new key"})
+	rawKey, keyPrefix, keyHash, err := generateAPIKeyMaterial()
+	if err != nil {
+		log.Printf("[ApiKeyController] Rotate CSPRNG failure: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "key_generation_failed",
+			"message":    "Failed to generate new cryptographic key material",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
-	rawKey := fmt.Sprintf("sk_live_%s", hex.EncodeToString(rawBytes))
-	keyPrefix := rawKey[:20]
-	hash := sha256.Sum256([]byte(rawKey))
-	keyHash := hex.EncodeToString(hash[:])
-
-	// Atomic rotation: revoke old + create new in a single transaction
 	newKey := models.ApiKey{
 		UserID:    tenantID,
 		Name:      existingKey.Name,
@@ -240,28 +343,36 @@ func (c *ApiKeyController) HandleRotate(ctx *gin.Context) {
 		IsActive:  true,
 	}
 
-	txErr := c.db.Transaction(func(tx *gorm.DB) error {
+	// Atomic rotation: revoke old + insert new in a single DB transaction.
+	// If either operation fails, both are rolled back — no key is lost or double-created.
+	txErr := ctrl.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&models.ApiKey{}).
 			Where("id = ?", existingKey.ID).
 			Update("is_active", false).Error; err != nil {
-			return err
+			return fmt.Errorf("revoke old key: %w", err)
 		}
 		return tx.Create(&newKey).Error
 	})
 
 	if txErr != nil {
-		log.Printf("[ApiKeyController] Rotate transaction error: %v", txErr)
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to rotate API key"})
+		log.Printf("[ApiKeyController] Rotate transaction error | OldKeyID=%s | Err=%v", keyID, txErr)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "rotation_failed",
+			"message":    "Failed to rotate API key. The old key remains active. Please try again.",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{
+	log.Printf("[ApiKeyController] Rotated API key | OldID=%s | NewID=%s | TenantID=%s", existingKey.ID, newKey.ID, tenantID)
+
+	c.JSON(http.StatusOK, gin.H{
 		"data": CreateApiKeyResponse{
 			ID:   newKey.ID,
 			Key:  rawKey,
 			Name: newKey.Name,
 		},
 		"revoked_id": existingKey.ID,
+		"request_id": middleware.GetRequestID(c),
 	})
 }
-

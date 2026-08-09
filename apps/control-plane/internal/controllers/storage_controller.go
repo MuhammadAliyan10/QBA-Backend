@@ -51,14 +51,8 @@ type StorageAssetResponse struct {
 // ─── HANDLERS ───────────────────────────────────────────────────────────────
 
 func (c *StorageController) HandleList(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -95,14 +89,8 @@ func (c *StorageController) HandleList(ctx *gin.Context) {
 }
 
 func (c *StorageController) HandleRecord(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -159,14 +147,8 @@ func (c *StorageController) HandleRecord(ctx *gin.Context) {
 }
 
 func (c *StorageController) HandleDelete(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 

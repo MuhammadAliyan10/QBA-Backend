@@ -10,10 +10,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,16 +27,22 @@ import (
 	"gorm.io/gorm"
 )
 
+// ─── CONSTANTS ───────────────────────────────────────────────────────────────
+
+const (
+	logsDefaultLimit = 50
+	logsMaxLimit     = 200
+)
+
+// ─── CONTROLLER ──────────────────────────────────────────────────────────────
+
 type UserController struct {
 	db       *gorm.DB
 	identity *services.IdentityService
 }
 
 func NewUserController(db *gorm.DB, identity *services.IdentityService) *UserController {
-	return &UserController{
-		db:       db,
-		identity: identity,
-	}
+	return &UserController{db: db, identity: identity}
 }
 
 // ─── DTOS ───────────────────────────────────────────────────────────────────
@@ -47,6 +55,7 @@ type TestWebhookRequest struct {
 	WebhookUrl string `json:"webhook_url" binding:"required"`
 }
 
+// DeveloperStatsResponse aggregates user usage data in one response.
 type DeveloperStatsResponse struct {
 	TotalApiKeys   int64 `json:"total_api_keys"`
 	ActiveApiKeys  int64 `json:"active_api_keys"`
@@ -56,6 +65,7 @@ type DeveloperStatsResponse struct {
 	CreditsBalance int64 `json:"credits_balance"`
 }
 
+// ApiLogResponse is a single log entry enriched with workflow metadata.
 type ApiLogResponse struct {
 	ID        string `json:"id"`
 	JobID     string `json:"job_id"`
@@ -65,51 +75,110 @@ type ApiLogResponse struct {
 	Timestamp string `json:"timestamp"`
 }
 
-// ─── STATS HANDLERS ─────────────────────────────────────────────────────────
+// ─── STATS HANDLER ──────────────────────────────────────────────────────────
 
-func (c *UserController) HandleGetStats(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+// HandleGetStats returns aggregated account stats for the authenticated user.
+// GET /v1/user/stats
+//
+// All counts are derived from a single SQL query with sub-selects to avoid
+// N+1 query patterns and connection pool churn.
+func (ctrl *UserController) HandleGetStats(c *gin.Context) {
+	tenantID, ok := middleware.ResolveTenantID(c, ctrl.identity)
+	if !ok {
 		return
 	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
-		return
+
+	type statsRow struct {
+		TotalApiKeys  int64
+		ActiveApiKeys int64
+		TotalJobs     int64
+		FailedJobs    int64
 	}
 
-	var stats DeveloperStatsResponse
-
-	c.db.Model(&models.ApiKey{}).Where("user_id = ?", tenantID).Count(&stats.TotalApiKeys)
-	c.db.Model(&models.ApiKey{}).Where("user_id = ? AND is_active = ?", tenantID, true).Count(&stats.ActiveApiKeys)
-	c.db.Model(&models.Job{}).Where("user_id = ?", tenantID).Count(&stats.TotalJobs)
-	c.db.Model(&models.Job{}).Where("user_id = ? AND status = ?", tenantID, "FAILED").Count(&stats.FailedJobs)
+	var row statsRow
+	query := `
+		SELECT
+			(SELECT COUNT(*) FROM api_keys   WHERE user_id = ?)                        AS total_api_keys,
+			(SELECT COUNT(*) FROM api_keys   WHERE user_id = ? AND is_active = true)   AS active_api_keys,
+			(SELECT COUNT(*) FROM jobs       WHERE user_id = ?)                        AS total_jobs,
+			(SELECT COUNT(*) FROM jobs       WHERE user_id = ? AND status = 'FAILED')  AS failed_jobs
+	`
+	if err := ctrl.db.Raw(query, tenantID, tenantID, tenantID, tenantID).Scan(&row).Error; err != nil {
+		log.Printf("[UserController] HandleGetStats DB error | TenantID=%s | Err=%v", tenantID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "database_error",
+			"message":    "Failed to retrieve account statistics",
+			"request_id": middleware.GetRequestID(c),
+		})
+		return
+	}
 
 	var usage models.UserUsage
-	if err := c.db.Where("user_id = ?", tenantID).First(&usage).Error; err == nil {
-		stats.CreditsUsed = int64(usage.TotalCreditsUsed)
-		stats.CreditsBalance = int64(usage.CreditsBalance)
+	var creditsUsed, creditsBalance int64
+	if err := ctrl.db.Where("user_id = ?", tenantID).First(&usage).Error; err == nil {
+		creditsUsed = int64(usage.TotalCreditsUsed)
+		creditsBalance = int64(usage.CreditsBalance)
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"data": stats})
+	c.JSON(http.StatusOK, gin.H{
+		"data": DeveloperStatsResponse{
+			TotalApiKeys:   row.TotalApiKeys,
+			ActiveApiKeys:  row.ActiveApiKeys,
+			TotalJobs:      row.TotalJobs,
+			FailedJobs:     row.FailedJobs,
+			CreditsUsed:    creditsUsed,
+			CreditsBalance: creditsBalance,
+		},
+	})
 }
 
-func (c *UserController) HandleGetLogs(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+// ─── LOGS HANDLER ───────────────────────────────────────────────────────────
+
+// HandleGetLogs returns paginated job logs for the authenticated user.
+// GET /v1/user/logs?limit=50&before=<RFC3339 timestamp>
+//
+// Pagination uses a cursor (timestamp of the oldest record in the previous page)
+// rather than OFFSET to avoid O(n) scans on large datasets.
+func (ctrl *UserController) HandleGetLogs(c *gin.Context) {
+	tenantID, ok := middleware.ResolveTenantID(c, ctrl.identity)
+	if !ok {
 		return
 	}
 
-	// Fetch logs joined with jobs to get workflow name, filtered by tenantID
-	// GORM raw query to easily join and map to DTO
-	var logs []struct {
+	// Parse and clamp limit
+	limit := logsDefaultLimit
+	if s := strings.TrimSpace(c.Query("limit")); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			limit = n
+		} else if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":      "invalid_parameter",
+				"message":    "'limit' must be a positive integer",
+				"request_id": middleware.GetRequestID(c),
+			})
+			return
+		}
+	}
+	if limit > logsMaxLimit {
+		limit = logsMaxLimit
+	}
+
+	// Optional cursor: fetch logs BEFORE this timestamp (exclusive)
+	var beforeTime *time.Time
+	if s := strings.TrimSpace(c.Query("before")); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":      "invalid_parameter",
+				"message":    "'before' must be an RFC3339 timestamp (e.g. 2026-08-09T10:00:00Z)",
+				"request_id": middleware.GetRequestID(c),
+			})
+			return
+		}
+		beforeTime = &t
+	}
+
+	type logRow struct {
 		ID           string
 		JobID        string
 		WorkflowName string
@@ -118,23 +187,35 @@ func (c *UserController) HandleGetLogs(ctx *gin.Context) {
 		Timestamp    time.Time
 	}
 
-	query := `
-		SELECT l.id, l.job_id, w.name as workflow_name, l.level, l.message, l.timestamp
+	baseQuery := `
+		SELECT l.id, l.job_id, w.name AS workflow_name, l.level, l.message, l.timestamp
 		FROM job_logs l
 		JOIN jobs j ON l.job_id = j.id
 		JOIN workflows w ON j.workflow_id = w.id
 		WHERE j.user_id = ?
-		ORDER BY l.timestamp DESC
-		LIMIT 50
 	`
+	args := []interface{}{tenantID}
 
-	if err := c.db.Raw(query, tenantID).Scan(&logs).Error; err != nil {
-		log.Printf("[UserController] HandleGetLogs error: %v", err)
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch logs"})
+	if beforeTime != nil {
+		baseQuery += " AND l.timestamp < ?"
+		args = append(args, *beforeTime)
+	}
+
+	baseQuery += " ORDER BY l.timestamp DESC LIMIT ?"
+	args = append(args, limit)
+
+	var logs []logRow
+	if err := ctrl.db.Raw(baseQuery, args...).Scan(&logs).Error; err != nil {
+		log.Printf("[UserController] HandleGetLogs DB error | TenantID=%s | Err=%v", tenantID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "database_error",
+			"message":    "Failed to retrieve logs",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
-	var response []ApiLogResponse
+	response := make([]ApiLogResponse, 0, len(logs))
 	for _, l := range logs {
 		response = append(response, ApiLogResponse{
 			ID:        l.ID,
@@ -142,34 +223,46 @@ func (c *UserController) HandleGetLogs(ctx *gin.Context) {
 			Workflow:  l.WorkflowName,
 			Level:     l.Level,
 			Message:   l.Message,
-			Timestamp: l.Timestamp.Format("2006-01-02T15:04:05Z07:00"),
+			Timestamp: l.Timestamp.UTC().Format(time.RFC3339),
 		})
 	}
 
-	if response == nil {
-		response = make([]ApiLogResponse, 0)
+	// Provide next cursor for the client if there are more records
+	var nextCursor *string
+	if len(logs) == limit {
+		cursor := logs[len(logs)-1].Timestamp.UTC().Format(time.RFC3339)
+		nextCursor = &cursor
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"data": response})
+	c.JSON(http.StatusOK, gin.H{
+		"data": response,
+		"pagination": gin.H{
+			"limit":       limit,
+			"next_cursor": nextCursor,
+			"has_more":    nextCursor != nil,
+		},
+	})
 }
 
 // ─── WEBHOOK HANDLERS ───────────────────────────────────────────────────────
 
-func (c *UserController) HandleGetWebhook(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+// HandleGetWebhook returns the current webhook URL and signing secret.
+// GET /v1/user/webhook
+func (ctrl *UserController) HandleGetWebhook(c *gin.Context) {
+	tenantID, ok := middleware.ResolveTenantID(c, ctrl.identity)
+	if !ok {
 		return
 	}
 
 	var profile models.UserProfile
-	if err := c.db.Select("webhook_url", "webhook_secret").Where("id = ?", tenantID).First(&profile).Error; err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch webhook settings"})
+	if err := ctrl.db.Select("webhook_url", "webhook_secret").
+		Where("id = ?", tenantID).First(&profile).Error; err != nil {
+		log.Printf("[UserController] HandleGetWebhook DB error | TenantID=%s | Err=%v", tenantID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "database_error",
+			"message":    "Failed to retrieve webhook settings",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
@@ -177,9 +270,13 @@ func (c *UserController) HandleGetWebhook(ctx *gin.Context) {
 	if profile.WebhookSecret != nil {
 		webhookSecret = *profile.WebhookSecret
 	} else {
-		// Auto-generate if missing
+		// Auto-generate and persist a signing secret on first fetch
 		webhookSecret = generateWebhookSecret()
-		c.db.Model(&profile).Where("id = ?", tenantID).Update("webhook_secret", webhookSecret)
+		if err := ctrl.db.Model(&profile).
+			Where("id = ?", tenantID).
+			Update("webhook_secret", webhookSecret).Error; err != nil {
+			log.Printf("[UserController] HandleGetWebhook secret generation error | TenantID=%s | Err=%v", tenantID, err)
+		}
 	}
 
 	webhookUrl := ""
@@ -187,7 +284,7 @@ func (c *UserController) HandleGetWebhook(ctx *gin.Context) {
 		webhookUrl = *profile.WebhookURL
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"data": map[string]string{
 			"webhook_url":    webhookUrl,
 			"webhook_secret": webhookSecret,
@@ -195,31 +292,41 @@ func (c *UserController) HandleGetWebhook(ctx *gin.Context) {
 	})
 }
 
-func (c *UserController) HandleUpdateWebhookUrl(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+// HandleUpdateWebhookUrl sets or clears the user's webhook delivery URL.
+// POST /v1/user/webhook/url
+func (ctrl *UserController) HandleUpdateWebhookUrl(c *gin.Context) {
+	tenantID, ok := middleware.ResolveTenantID(c, ctrl.identity)
+	if !ok {
 		return
 	}
 
 	var req UpdateWebhookRequest
-	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":      "invalid_request",
+			"message":    "Invalid request body",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
 	if req.WebhookUrl != "" {
 		if !strings.HasPrefix(req.WebhookUrl, "https://") {
-			ctx.JSON(http.StatusBadRequest, gin.H{"error": "Webhook URL must use HTTPS"})
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error":      "validation_error",
+				"message":    "Webhook URL must use HTTPS",
+				"field":      "webhook_url",
+				"request_id": middleware.GetRequestID(c),
+			})
 			return
 		}
 		if _, err := url.ParseRequestURI(req.WebhookUrl); err != nil {
-			ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid URL format"})
+			c.JSON(http.StatusUnprocessableEntity, gin.H{
+				"error":      "validation_error",
+				"message":    "Webhook URL is not a valid URL",
+				"field":      "webhook_url",
+				"request_id": middleware.GetRequestID(c),
+			})
 			return
 		}
 	}
@@ -229,123 +336,146 @@ func (c *UserController) HandleUpdateWebhookUrl(ctx *gin.Context) {
 		val = nil
 	}
 
-	if err := c.db.Model(&models.UserProfile{}).Where("id = ?", tenantID).Update("webhook_url", val).Error; err != nil {
-		log.Printf("[UserController] Update webhook url error: %v", err)
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update webhook URL"})
+	if err := ctrl.db.Model(&models.UserProfile{}).
+		Where("id = ?", tenantID).
+		Update("webhook_url", val).Error; err != nil {
+		log.Printf("[UserController] HandleUpdateWebhookUrl DB error | TenantID=%s | Err=%v", tenantID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "database_error",
+			"message":    "Failed to update webhook URL",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"status": "updated"})
+	c.JSON(http.StatusOK, gin.H{
+		"status":     "updated",
+		"request_id": middleware.GetRequestID(c),
+	})
 }
 
-func (c *UserController) HandleRegenerateWebhookSecret(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+// HandleRegenerateWebhookSecret issues a new HMAC signing secret for the user's webhook.
+// POST /v1/user/webhook/regenerate
+func (ctrl *UserController) HandleRegenerateWebhookSecret(c *gin.Context) {
+	tenantID, ok := middleware.ResolveTenantID(c, ctrl.identity)
+	if !ok {
 		return
 	}
 
 	newSecret := generateWebhookSecret()
 
-	if err := c.db.Model(&models.UserProfile{}).Where("id = ?", tenantID).Update("webhook_secret", newSecret).Error; err != nil {
-		log.Printf("[UserController] Regenerate secret error: %v", err)
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to regenerate secret"})
+	if err := ctrl.db.Model(&models.UserProfile{}).
+		Where("id = ?", tenantID).
+		Update("webhook_secret", newSecret).Error; err != nil {
+		log.Printf("[UserController] HandleRegenerateWebhookSecret DB error | TenantID=%s | Err=%v", tenantID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "database_error",
+			"message":    "Failed to regenerate webhook secret",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"data": map[string]string{
 			"webhook_secret": newSecret,
 		},
 	})
 }
 
-// HandleTestWebhook endpoint fires the HTTP request from the Go process,
-// ensuring IP consistency with production Temporal activity workers.
-func (c *UserController) HandleTestWebhook(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+// HandleTestWebhook fires a signed test event to the caller's endpoint.
+// POST /v1/user/webhook/test
+//
+// The request is fired from the server (not the browser) to ensure IP consistency
+// with production Temporal workers, which is what customers whitelist.
+func (ctrl *UserController) HandleTestWebhook(c *gin.Context) {
+	tenantID, ok := middleware.ResolveTenantID(c, ctrl.identity)
+	if !ok {
 		return
 	}
 
 	var req TestWebhookRequest
-	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload"})
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":      "invalid_request",
+			"message":    "Request body must contain 'webhook_url'",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
 	if !strings.HasPrefix(req.WebhookUrl, "https://") {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Webhook URL must use HTTPS"})
+		c.JSON(http.StatusUnprocessableEntity, gin.H{
+			"error":      "validation_error",
+			"message":    "Webhook URL must use HTTPS",
+			"field":      "webhook_url",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
-	// Fetch secret to sign the request
 	var profile models.UserProfile
-	if err := c.db.Select("webhook_secret").Where("id = ?", tenantID).First(&profile).Error; err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch profile for signing"})
+	if err := ctrl.db.Select("webhook_secret").
+		Where("id = ?", tenantID).First(&profile).Error; err != nil {
+		log.Printf("[UserController] HandleTestWebhook profile fetch error | TenantID=%s | Err=%v", tenantID, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "database_error",
+			"message":    "Failed to fetch profile for webhook signing",
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
 	testPayload := map[string]interface{}{
-		"event":     "ping",
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"event":      "ping",
+		"request_id": middleware.GetRequestID(c),
+		"timestamp":  time.Now().UTC().Format(time.RFC3339),
 		"data": map[string]interface{}{
-			"source":  "quanta",
+			"source":  "quanta-control-plane",
 			"user_id": tenantID,
-			"message": "This is a test webhook event from the Go control plane.",
+			"message": "This is a test webhook event from the Quanta control plane.",
 		},
 	}
 
 	payloadBytes, _ := json.Marshal(testPayload)
 
-	// Strict Outbound Network Client
-	// Mitigates hanging servers / tarpits that would exhaust goroutines
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-	}
+	// Strict outbound HTTP client — mitigates tarpit servers that would exhaust goroutines
+	client := &http.Client{Timeout: 5 * time.Second}
 
 	reqHttp, err := http.NewRequest("POST", req.WebhookUrl, bytes.NewBuffer(payloadBytes))
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create HTTP request"})
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":      "request_creation_failed",
+			"message":    fmt.Sprintf("Failed to build HTTP request: %v", err),
+			"request_id": middleware.GetRequestID(c),
+		})
 		return
 	}
 
 	reqHttp.Header.Set("Content-Type", "application/json")
 	reqHttp.Header.Set("User-Agent", "Quanta-Webhook/1.0")
+	reqHttp.Header.Set("X-Quanta-Delivery", middleware.GetRequestID(c))
 
-	// Sign payload if secret exists
 	if profile.WebhookSecret != nil && *profile.WebhookSecret != "" {
 		mac := hmac.New(sha256.New, []byte(*profile.WebhookSecret))
 		mac.Write(payloadBytes)
-		signature := hex.EncodeToString(mac.Sum(nil))
-		reqHttp.Header.Set("X-Quanta-Signature", signature)
+		reqHttp.Header.Set("X-Quanta-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	}
 
 	start := time.Now()
 	resp, err := client.Do(reqHttp)
-	duration := time.Since(start).Milliseconds()
+	durationMs := time.Since(start).Milliseconds()
 
 	if err != nil {
 		errMsg := err.Error()
 		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(errMsg, "Client.Timeout") {
-			errMsg = "Connection timed out (5s)"
+			errMsg = "Connection timed out (5s limit)"
 		}
-		ctx.JSON(http.StatusOK, gin.H{
+		c.JSON(http.StatusOK, gin.H{
 			"data": map[string]interface{}{
 				"success":     false,
 				"status_code": nil,
-				"duration":    duration,
+				"duration_ms": durationMs,
 				"body":        "",
 				"error":       errMsg,
 			},
@@ -354,17 +484,14 @@ func (c *UserController) HandleTestWebhook(ctx *gin.Context) {
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096)) // Hard cap at 4KB
 	bodyStr := string(bodyBytes)
-	if len(bodyStr) > 1000 {
-		bodyStr = bodyStr[:1000] // Truncate long bodies
-	}
 
-	ctx.JSON(http.StatusOK, gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"data": map[string]interface{}{
 			"success":     resp.StatusCode >= 200 && resp.StatusCode < 300,
 			"status_code": resp.StatusCode,
-			"duration":    duration,
+			"duration_ms": durationMs,
 			"body":        bodyStr,
 		},
 	})
@@ -372,8 +499,12 @@ func (c *UserController) HandleTestWebhook(ctx *gin.Context) {
 
 // ─── UTILS ──────────────────────────────────────────────────────────────────
 
+// generateWebhookSecret generates a 256-bit (32 bytes) CSPRNG webhook signing secret.
+// Format: "whsec_<64 hex chars>"
 func generateWebhookSecret() string {
-	b := make([]byte, 16)
-	rand.Read(b)
+	b := make([]byte, 32) // 256-bit secret — minimum for HMAC-SHA256 security margin
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("FATAL: crypto/rand failure: %v", err))
+	}
 	return "whsec_" + hex.EncodeToString(b)
 }

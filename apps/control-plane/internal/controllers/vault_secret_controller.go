@@ -54,14 +54,8 @@ type VaultSecretMetadata struct {
 
 // HandleList returns metadata for all vault secrets owned by the tenant.
 func (c *VaultSecretController) HandleList(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -103,14 +97,8 @@ func (c *VaultSecretController) HandleList(ctx *gin.Context) {
 
 // HandleCreate encrypts and stores a new vault secret.
 func (c *VaultSecretController) HandleCreate(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 
@@ -183,14 +171,8 @@ func (c *VaultSecretController) HandleCreate(ctx *gin.Context) {
 
 // HandleDelete removes a vault secret.
 func (c *VaultSecretController) HandleDelete(ctx *gin.Context) {
-	clerkID, exists := middleware.GetUserID(ctx)
-	if !exists {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
-		return
-	}
-	tenantID, err := c.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(ctx, c.identity)
+	if !ok {
 		return
 	}
 

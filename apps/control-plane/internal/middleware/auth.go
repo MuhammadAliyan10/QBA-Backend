@@ -106,10 +106,30 @@ func AuthMiddleware() gin.HandlerFunc {
 
 		userID, err := resolveAuthorizationHeader(c.Request.Context(), authHeader)
 		if err != nil {
-			log.Printf("[AUTH] REJECT: %v | IP=%s | Path=%s", err, c.ClientIP(), c.Request.URL.Path)
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Authentication required. Provide an API key (Bearer sk_live_xxx) or valid JWT.",
-			})
+			requestID := GetRequestID(c)
+			log.Printf("[AUTH] REJECT: %v | IP=%s | Path=%s | ReqID=%s", err, c.ClientIP(), c.Request.URL.Path, requestID)
+
+			// Differentiate expired keys (403) from invalid/missing credentials (401).
+			// 401 = identity not established; 403 = identity known but access denied.
+			if strings.Contains(err.Error(), "expired") {
+				c.JSON(http.StatusForbidden, gin.H{
+					"error":      "api_key_expired",
+					"message":    "The API key provided has expired. Please rotate your key in the Developer Portal.",
+					"request_id": requestID,
+				})
+			} else if strings.Contains(err.Error(), "not configured") {
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"error":      "auth_not_configured",
+					"message":    "JWT authentication is not configured on the server. Contact the platform administrator.",
+					"request_id": requestID,
+				})
+			} else {
+				c.JSON(http.StatusUnauthorized, gin.H{
+					"error":      "authentication_required",
+					"message":    "Authentication required. Provide a valid API key (Authorization: Bearer sk_live_xxx) or a Clerk session JWT.",
+					"request_id": requestID,
+				})
+			}
 			c.Abort()
 			return
 		}

@@ -38,15 +38,8 @@ func NewVaultController(db *gorm.DB, identity *services.IdentityService) *VaultC
 // HandleUploadSession handles POST /v1/vault/sessions.
 // It encrypts the browser session state and stores it in the multi-tenant vault.
 func (vc *VaultController) HandleUploadSession(c *gin.Context) {
-	clerkID, exists := middleware.GetUserID(c)
-	if !exists || clerkID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
-		return
-	}
-
-	tenantID, err := vc.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(c, vc.identity)
+	if !ok {
 		return
 	}
 
@@ -104,15 +97,8 @@ func (vc *VaultController) HandleUploadSession(c *gin.Context) {
 // HandleListSessions handles GET /v1/vault/sessions.
 // It returns all encrypted session metadata for the current user.
 func (vc *VaultController) HandleListSessions(c *gin.Context) {
-	clerkID, exists := middleware.GetUserID(c)
-	if !exists || clerkID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
-		return
-	}
-
-	tenantID, err := vc.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(c, vc.identity)
+	if !ok {
 		return
 	}
 
@@ -149,15 +135,8 @@ func (vc *VaultController) HandleListSessions(c *gin.Context) {
 // HandleDeleteSession handles DELETE /v1/vault/sessions/:id.
 // It removes the encrypted session from the vault after verifying ownership.
 func (vc *VaultController) HandleDeleteSession(c *gin.Context) {
-	clerkID, exists := middleware.GetUserID(c)
-	if !exists || clerkID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthenticated"})
-		return
-	}
-
-	tenantID, err := vc.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(c, vc.identity)
+	if !ok {
 		return
 	}
 

@@ -249,8 +249,15 @@ func (cwc *ClerkWebhookController) extractPrimaryEmail(emails []clerkEmailEntry)
 func (cwc *ClerkWebhookController) verifySignature(headers http.Header, body []byte) bool {
 	webhookSecret := os.Getenv("CLERK_WEBHOOK_SECRET")
 	if webhookSecret == "" {
-		log.Println("[ClerkWebhook] WARNING: CLERK_WEBHOOK_SECRET not set — skipping signature verification in development")
-		return true // Allow in dev; MUST be set in production
+		// In production (GIN_MODE=release), a missing secret is a critical misconfiguration.
+		// All webhook deliveries are rejected to prevent unauthenticated user provisioning.
+		// In development/staging, we warn but allow through for local testing convenience.
+		if os.Getenv("GIN_MODE") == "release" {
+			log.Println("[ClerkWebhook] CRITICAL: CLERK_WEBHOOK_SECRET not set in production — rejecting all webhook deliveries")
+			return false
+		}
+		log.Println("[ClerkWebhook] WARNING: CLERK_WEBHOOK_SECRET not set — skipping signature verification (development mode only)")
+		return true
 	}
 
 	// Clerk uses Svix for webhook delivery

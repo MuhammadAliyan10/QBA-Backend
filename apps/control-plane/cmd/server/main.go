@@ -485,6 +485,13 @@ func main() {
 		metrics.APIRequestDuration.WithLabelValues(c.Request.Method, c.Request.URL.Path).Observe(duration.Seconds())
 	})
 
+	// X-Request-ID: generate or validate an idempotent request identifier for every request.
+	// Must come before AuthMiddleware so auth error responses also carry the request ID.
+	r.Use(middleware.RequestIDMiddleware())
+
+	// Security headers: OWASP-recommended HTTP response hardening on every response.
+	r.Use(middleware.SecurityHeadersMiddleware())
+
 	// Health Check Endpoints (For Azure Container Apps, Kubernetes, etc.)
 	healthHandler := health.NewHealthHandler(redisClient, nc)
 	r.Match([]string{"GET", "HEAD"}, "/health", healthHandler.HandleHealth)           // Full health check (DB, Redis, NATS)

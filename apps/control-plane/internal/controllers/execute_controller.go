@@ -81,18 +81,8 @@ func NewExecuteController(db *gorm.DB, tm *temporal.TemporalManager, lv *service
 
 // HandleExecuteAsync handles POST /v1/execute.
 func (ec *ExecuteController) HandleExecuteAsync(c *gin.Context) {
-	clerkID, exists := middleware.GetUserID(c)
-	if !exists || clerkID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error":   "unauthenticated",
-			"message": "Authentication required",
-		})
-		return
-	}
-
-	tenantID, err := ec.identity.ResolveUserProfileID(clerkID)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid tenant context"})
+	tenantID, ok := middleware.ResolveTenantID(c, ec.identity)
+	if !ok {
 		return
 	}
 
