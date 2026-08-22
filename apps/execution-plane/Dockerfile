@@ -1,50 +1,50 @@
 # =============================================================================
 # QUANTA EXECUTION PLANE - Production Dockerfile
-# Python Worker with Playwright for Azure Container Apps
-# =============================================================================
-#
-# CRITICAL BUILD NOTES:
-# - Build context must be ./backend (not ./backend/apps/execution-plane)
-# - This allows copying schema.prisma from frontend directory
-# - Example: docker build -f apps/execution-plane/Dockerfile -t execution-plane:latest .
-#
+# Build context: ./backend (NOT ./backend/apps/execution-plane)
+# Command: docker build -f apps/execution-plane/Dockerfile -t quanta-execution-plane:latest .
 # =============================================================================
 
+# syntax=docker/dockerfile:1.5
+# Enables BuildKit cache mounts — eliminates re-downloading apt/pip on rebuild.
+
 # ==================================================
-# Stage 1: Builder - Install Dependencies
+# Stage 1: Builder — Install Python deps + browsers
 # ==================================================
 FROM python:3.10-slim AS builder
 
 WORKDIR /build
 
-# Install system dependencies for building Python packages
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    wget \
-    gnupg \
-    ca-certificates \
-    curl \
-    git \
+# apt cache mount: packages cached between builds, never re-downloaded
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        wget \
+        gnupg \
+        ca-certificates \
+        curl \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements from execution-plane directory
-# Build context is ./backend, so path is relative to that
+# Copy requirements first (separate layer — only rebuilt if requirements.txt changes)
 COPY apps/execution-plane/requirements.txt .
 
-# Install Python dependencies to user site-packages
-RUN pip install --user --no-cache-dir -r requirements.txt
+# pip cache mount: wheels cached between builds
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --user --no-cache-dir -r requirements.txt
 
-# Install Playwright browsers (Chromium only, skip deps - they're already in runtime stage)
-RUN python -m playwright install chromium
+# Install Playwright Chromium browser binary
+# PLAYWRIGHT_BROWSERS_PATH is read by playwright install at runtime too
+ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+RUN --mount=type=cache,target=/root/.cache/ms-playwright \
+    python -m playwright install chromium
 
-# ==================================================
-# Pre-cache HuggingFace Sentence Transformer Model
-# ==================================================
-# CRITICAL: This MUST be its own layer AFTER pip install and BEFORE COPY . .
-# This ensures the ~90MB model is cached in a Docker layer and never
-# redownloads on code changes or HuggingFace 429 rate limits at runtime.
+# Pre-cache HuggingFace model — cached in a separate layer so code changes
+# don't trigger a re-download of the 90MB model.
 ENV HF_HOME=/root/.cache/huggingface
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')" || echo "[WARN] HuggingFace rate-limited. Model will be downloaded at first runtime."
+RUN --mount=type=cache,target=/root/.cache/huggingface \
+    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')" \
+    || echo "[WARN] HuggingFace rate-limited — model will be downloaded at first runtime."
 
 # ==================================================
 # Stage 2: Production Runtime
@@ -53,129 +53,95 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Labels for traceability
 LABEL org.opencontainers.image.title="Quanta Execution Plane"
-LABEL org.opencontainers.image.description="Python worker for browser automation with Playwright"
+LABEL org.opencontainers.image.description="Python Temporal worker with Playwright for web automation"
 LABEL org.opencontainers.image.vendor="Quanta"
 
-# Install runtime dependencies for Playwright + tini for process management
-# tini is CRITICAL to prevent zombie processes from orphaned Playwright children
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    curl \
-    # Playwright browser dependencies
-    libglib2.0-0 \
-    libnss3 \
-    libnspr4 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libdbus-1-3 \
-    libxcb1 \
-    libxkbcommon0 \
-    libx11-6 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxext6 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libpango-1.0-0 \
-    libcairo2 \
-    libasound2 \
-    fonts-liberation \
-    libappindicator3-1 \
-    xdg-utils \
-    # CRITICAL: tini for zombie process reaping
-    tini \
+# Runtime system deps — only what Chromium and tini actually need at runtime
+# (no build tools, no git, no compilers)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        # Process management — reaps orphaned Chromium children
+        tini \
+        # TLS
+        ca-certificates \
+        curl \
+        # Chromium runtime shared libraries
+        libglib2.0-0 \
+        libnss3 \
+        libnspr4 \
+        libatk1.0-0 \
+        libatk-bridge2.0-0 \
+        libcups2 \
+        libdrm2 \
+        libdbus-1-3 \
+        libxcb1 \
+        libxkbcommon0 \
+        libx11-6 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxrandr2 \
+        libgbm1 \
+        libpango-1.0-0 \
+        libcairo2 \
+        libasound2 \
+        # Font rendering
+        fonts-liberation \
+        libappindicator3-1 \
+        xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Python dependencies from builder
+# Copy Python packages from builder
 COPY --from=builder /root/.local /root/.local
 
-# Copy Playwright browsers from builder
+# Copy Playwright Chromium binary from builder
 COPY --from=builder /root/.cache/ms-playwright /root/.cache/ms-playwright
 
-# Copy pre-cached HuggingFace model from builder (eliminates runtime downloads)
+# Copy pre-baked HuggingFace model from builder
 COPY --from=builder /root/.cache/huggingface /root/.cache/huggingface
 
 # ==================================================
-# CRITICAL: Copy Prisma Schema and Generate Client
+# Application Code
 # ==================================================
-# Build context is ./backend, so we can access frontend/prisma/schema.prisma
-# via a relative path from the build context (need to copy from parent during CI)
-
-# Create prisma directory
+# Prisma schema (needed by some activity imports)
 RUN mkdir -p /app/prisma
-
-# Copy schema from frontend (assumes build context is ./backend and frontend is sibling)
-# In CI/CD, the schema should be in: ../../frontend/prisma/schema.prisma
-# We handle this by copying during build with proper context
 COPY apps/execution-plane/prisma/schema.prisma ./prisma/schema.prisma
 
-# Removed Prisma from execution-plane: worker doesn't use it.
-# ==================================================
-# Copy Application Code
-# ==================================================
-
-# Copy application source code
+# Source code
 COPY apps/execution-plane/src/ ./src/
 
-# Create directories for optional files
-RUN mkdir -p ./scripts
-
-# Copy config.py if it exists (use a RUN command with shell for optional copy)
-# Note: If config.py doesn't exist in the build context, this will be skipped
-RUN if [ -f ./apps/execution-plane/config.py ]; then cp ./apps/execution-plane/config.py ./config.py; fi || true
-
-# Copy the entire api folder to ensure __init__.py files are included
+# Shared API definitions (gRPC stubs etc.)
 COPY api/ ./api/
 
-# Copy sync script for debugging (optional)
+# Helper scripts (optional — used for debugging inside container)
 COPY scripts/ ./scripts/
 
 # ==================================================
-# Environment Configuration
+# Environment
 # ==================================================
-
-# Add local bin to PATH and set PYTHONPATH so 'api' and 'src' can be found
 ENV PATH=/root/.local/bin:$PATH
 ENV PYTHONPATH=/app:/app/src
-
-# Python optimizations
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONFAULTHANDLER=1
-
-# Playwright configuration
 ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
-
-# HuggingFace model cache (pre-baked at build time)
 ENV HF_HOME=/root/.cache/huggingface
 
-# Application defaults (override in deployment)
+# Runtime defaults (all overridable via docker-compose / env injection)
 ENV TEMPORAL_HOST=localhost:7233
 ENV NATS_URL=nats://localhost:4222
 ENV REDIS_URL=redis://localhost:6379
 ENV ENABLE_S3_UPLOAD=false
 
 # ==================================================
-# Health Check
+# Health + Entrypoint
 # ==================================================
-
-# Verify Python can import main modules
 HEALTHCHECK --interval=30s --timeout=30s --start-period=45s --retries=3 \
-  CMD python3 -c "print('OK')" || exit 1
+    CMD python3 -c "import sys; sys.exit(0)" || exit 1
 
-# ==================================================
-# Entrypoint - Use tini as PID 1
-# ==================================================
-
-# CRITICAL: Use tini as init process
-# This properly reaps zombie processes from Playwright browser children
-# Without this, orphaned Chrome processes will cause PID exhaustion
+# tini as PID 1: properly reaps zombie processes from Playwright child browsers
 ENTRYPOINT ["/usr/bin/tini", "--"]
-
-# Run the Temporal worker
 CMD ["python3", "src/worker.py"]

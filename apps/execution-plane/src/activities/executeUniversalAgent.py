@@ -13,6 +13,11 @@ from core.browser.dom_harvester import DOMHarvester
 from core.llm.safe_client import SafeLLMClient, TokenBudgetExhausted
 from core.user_facing_logger import UserFriendlyLogger
 from core.extraction.dom_extractor import extract_with_dom
+from core.extraction.pagination_engine import PaginationEngine, PaginationStrategy
+from core.extraction.schema_inferencer import infer_schema
+from core.extraction.output_formatter import get_output_formatter
+from core.checkpoint import CheckpointManager
+from core.extraction.selector_synthesizer import synthesize_selectors
 
 logger = logging.getLogger("activity")
 
@@ -126,6 +131,7 @@ async def execute_universal_agent(
     target_url: str = None,
     navigation_objective: str = None,
     extraction_schema: dict = None,
+    output_format: str = "json",       # "csv" | "json" | "jsonl" | "tsv" | "excel"
     materialized_files: list[str] = None,
     plan_steps: list[dict] = None,
 ):
@@ -153,6 +159,9 @@ async def execute_universal_agent(
         # INITIAL NAVIGATION
         # ----------------------------------------------------------------
         page.on("console", lambda msg: logger.info(f"[{job_id}] BROWSER CONSOLE: {msg.type} - {msg.text}"))
+
+        # Instantiate once per job execution
+        checkpoint_mgr = CheckpointManager(job_id=job_id)
         if target_url:
             from core.url_utils import resolve_final_url
             target_url = await resolve_final_url(target_url)
@@ -541,6 +550,56 @@ async def execute_universal_agent(
                             message=f"Step {step_idx + 1} timeout — advancing to next step"
                         )
 
+                    # --------------------------------------------------------
+                    # CHECKPOINT VALIDATION: detect DOM divergence after step
+                    # --------------------------------------------------------
+                    # Record the fingerprint of the landing page as the baseline
+                    # for the NEXT step's expected starting state.
+                    if step_idx + 1 < total_steps:
+                        await checkpoint_mgr.record_entry(
+                            page=page,
+                            step_index=step_idx + 1,
+                            step_intent=active_plan[step_idx + 1].get("intent_type", "unknown"),
+                        )
+
+                    # Compare with the previously recorded expected fingerprint
+                    # (only relevant from step 2 onwards)
+                    if step_idx >= 1:
+                        diverged, divergence_score = await checkpoint_mgr.validate_landing(
+                            page=page,
+                            step_index=step_idx,
+                        )
+
+                        if diverged:
+                            await user_logger.info(
+                                "THINK",
+                                message=(
+                                    f"Page structure changed ({divergence_score:.0%} divergence) — "
+                                    f"adapting remaining plan"
+                                ),
+                            )
+                            logger.warning(
+                                f"[{job_id}] Checkpoint divergence {divergence_score:.2%} at step "
+                                f"{step_idx + 1} — triggering surgical re-plan"
+                            )
+
+                            remaining = active_plan[step_idx + 1:]
+                            if remaining:
+                                patched = await checkpoint_mgr.patch_plan(
+                                    page=page,
+                                    current_step_index=step_idx + 1,
+                                    remaining_steps=remaining,
+                                    objective=navigation_objective,
+                                    job_id=job_id,
+                                )
+                                # Splice patched steps back into the running plan
+                                active_plan = active_plan[: step_idx + 1] + patched
+                                total_steps = len(active_plan)
+                                logger.info(
+                                    f"[{job_id}] Plan updated: now {total_steps} total steps "
+                                    f"after re-plan"
+                                )
+
                 # End of plan step loop
                 if not ui_ready:
                     # All steps executed — mark as done (plan is the oracle, not the LLM status)
@@ -869,6 +928,31 @@ async def execute_universal_agent(
         # ----------------------------------------------------------------
         # PHASE 2: SCHEMA-DRIVEN EXTRACTION
         # ----------------------------------------------------------------
+        # ----------------------------------------------------------------
+        # PHASE 2: SCHEMA-DRIVEN EXTRACTION
+        # ----------------------------------------------------------------
+        # Schema inference: if user provided no schema, infer one from the
+        # objective (heuristic) or from the live page DOM (LLM fallback).
+        # This enables "get products from amazon" with no explicit schema.
+        # ----------------------------------------------------------------
+        if not extraction_schema and navigation_objective:
+            await user_logger.info("THINK", message="No schema provided — inferring fields from objective...")
+            try:
+                inferred = await infer_schema(
+                    objective=navigation_objective,
+                    page=page,
+                    job_id=job_id,
+                )
+                if inferred:
+                    extraction_schema = inferred
+                    await user_logger.info(
+                        "THINK",
+                        message=f"Schema inferred: {list(inferred[0].keys()) if inferred else []}",
+                    )
+                    logger.info(f"[{job_id}] Schema inferred: {extraction_schema}")
+            except Exception as infer_err:
+                logger.warning(f"[{job_id}] Schema inference failed (non-fatal): {infer_err}")
+
         if not (extraction_schema and ui_ready):
             return {"status": "success", "loops": loop_count, "tokens": llm.total_tokens_used}
 
@@ -905,7 +989,45 @@ async def execute_universal_agent(
 
         all_extracted_rows: list = []
         seen_hashes: set = set()
+        # Instantiate extraction LLM client once — reused for synthesis and field fallback
         llm_extractor = SafeLLMClient(use_extraction_model=True)
+
+        # ----------------------------------------------------------------
+        # SELECTOR SYNTHESIS: Build a validated CSS selector map ONCE,
+        # before any per-page extraction begins.
+        # This converts arbitrary schema fields into working CSS selectors
+        # so the DOM walker can find them without LLM calls per field.
+        # ----------------------------------------------------------------
+        synthesized_selectors: dict = {}
+        if extraction_schema:
+            await user_logger.info("THINK", message="Synthesizing extraction selectors...")
+            try:
+                synthesized_selectors = await synthesize_selectors(
+                    page=page,
+                    extraction_schema=extraction_schema,
+                    job_id=job_id,
+                    llm_client=llm_extractor,  # Reuse — avoids double LLM instantiation
+                )
+                if synthesized_selectors:
+                    hits = sum(1 for v in synthesized_selectors.values() if v)
+                    total_fields = len(synthesized_selectors)
+                    await user_logger.info(
+                        "THINK",
+                        message=f"Selectors synthesized: {hits}/{total_fields} fields mapped",
+                    )
+            except Exception as synth_err:
+                logger.warning(
+                    f"[{job_id}] Selector synthesis failed (non-fatal): {synth_err}"
+                )
+                synthesized_selectors = {}
+
+        # Emit checkpoint adaptation stats for observability
+        cp_stats = checkpoint_mgr.get_stats()
+        if cp_stats["total_replans"] > 0:
+            await user_logger.info(
+                "THINK",
+                message=f"Checkpoint manager: {cp_stats['total_replans']} plan adaptations made",
+            )
 
         # ------------------------------------------------------------------
         # LLM fallback callable — used only when DOM extractor returns null
@@ -930,18 +1052,40 @@ async def execute_universal_agent(
                 logger.warning(f"[{job_id}] LLM fallback failed: {exc}")
                 return {}
 
+        # ------------------------------------------------------------------
+        # Parse quantity target from objective (e.g., "get 500 products")
+        # Stops pagination once we have enough rows regardless of page count.
+        # Default: no limit (MAX_PAGES is the only cap).
+        # ------------------------------------------------------------------
+        max_items: int = 0  # 0 = no item limit
+        if navigation_objective:
+            qty_match = re.search(r"\b(\d+)\b", navigation_objective)
+            if qty_match:
+                candidate = int(qty_match.group(1))
+                # Sanity-check: only treat numbers 10-100000 as quantity targets
+                if 10 <= candidate <= 100_000:
+                    max_items = candidate
+                    logger.info(f"[{job_id}] Quantity target from objective: {max_items} items")
+
+        paginator = PaginationEngine(page, job_id=job_id)
+        page_num: int = 0
+
         for page_num in range(1, MAX_PAGES + 1):
             if page_num > 1:
-                await user_logger.progress(f"Extracting page {page_num}/{MAX_PAGES}...")
+                await user_logger.progress(
+                    f"Extracting page {page_num} ({len(all_extracted_rows)} rows so far)..."
+                )
 
             # ------------------------------------------------------------------
             # Phase 2 — Primary: schema-driven DOM extraction (deterministic)
+            # Synthesized selectors take priority over heuristic library.
             # ------------------------------------------------------------------
             try:
                 page_data = await extract_with_dom(
                     page,
                     extraction_schema,
                     llm_fallback_fn=_llm_field_fallback,
+                    synthesized_selectors=synthesized_selectors,
                 )
                 logger.info(f"[{job_id}] Page {page_num} DOM extraction complete.")
             except TokenBudgetExhausted as tbe:
@@ -1002,55 +1146,69 @@ async def execute_universal_agent(
 
             logger.info(f"[{job_id}] Page {page_num}: {new_rows} new rows (total: {len(all_extracted_rows)})")
 
-            if new_rows == 0:
-                logger.info(f"[{job_id}] Pagination exhausted at page {page_num}.")
+            # Quantity gate — stop if we have enough rows
+            if max_items > 0 and len(all_extracted_rows) >= max_items:
+                logger.info(
+                    f"[{job_id}] Quantity target reached: "
+                    f"{len(all_extracted_rows)}/{max_items} items. Stopping pagination."
+                )
+                await user_logger.info(
+                    "COMPLETE",
+                    message=f"Collected {len(all_extracted_rows)} items (target: {max_items})",
+                )
                 break
 
-            # Attempt next page if below cap
+            if new_rows == 0 and page_num > 1:
+                logger.info(f"[{job_id}] No new rows on page {page_num} — pagination exhausted.")
+                break
+
+            # Advance to next page using the multi-strategy engine
             if page_num < MAX_PAGES:
-                next_clicked = False
-                try:
-                    next_selector = await page.evaluate("""
-                        () => {
-                            const candidates = [
-                                'a[aria-label*="next" i]', 'button[aria-label*="next" i]',
-                                '[class*="next"]:not([disabled])', '[class*="pagination"] a:last-child'
-                            ];
-                            for (const sel of candidates) {
-                                try {
-                                    const el = document.querySelector(sel);
-                                    if (el && el.offsetParent !== null) return sel;
-                                } catch (_) {}
-                            }
-                            return null;
-                        }
-                    """)
-                    if next_selector:
-                        await page.click(next_selector, timeout=5000)
-                        try:
-                            await page.wait_for_load_state("networkidle", timeout=8000)
-                        except PlaywrightTimeout:
-                            pass
-                        await asyncio.sleep(2)
-                        next_clicked = True
-                except Exception as nav_err:
-                    logger.info(f"[{job_id}] Next page click failed: {nav_err}")
+                strategy = await paginator.advance(current_row_count=len(all_extracted_rows))
 
-                if not next_clicked:
-                    # Infinite scroll fallback
-                    prev_h = await page.evaluate("document.body.scrollHeight")
-                    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                    await asyncio.sleep(3)
-                    new_h = await page.evaluate("document.body.scrollHeight")
-                    if new_h == prev_h:
-                        logger.info(f"[{job_id}] No more scroll content at page {page_num}.")
-                        break
+                if strategy == PaginationStrategy.EXHAUSTED:
+                    logger.info(f"[{job_id}] Paginator: all strategies exhausted after {page_num} pages.")
+                    break
 
-        final_data = (
-            all_extracted_rows
-            if len(all_extracted_rows) > 1
-            else (all_extracted_rows[0] if all_extracted_rows else {})
+                await user_logger.info(
+                    "THINK",
+                    message=f"Page {page_num} → {page_num + 1} via {strategy.value}",
+                )
+
+        # ----------------------------------------------------------------
+        # FORMAT + RETURN
+        # Apply OutputFormatter to enforce column order, format, and
+        # validate required fields before returning to the caller.
+        # ----------------------------------------------------------------
+        final_rows = all_extracted_rows
+        final_data: object = (
+            final_rows if len(final_rows) > 1
+            else (final_rows[0] if final_rows else {})
         )
+
+        # Only invoke formatter when there are multiple rows (list extraction mode)
+        if final_rows and isinstance(final_rows[0], dict):
+            formatter = get_output_formatter()
+            payload_bytes, mime_type, validation_report = formatter.format(
+                final_rows,
+                output_format=output_format,
+                strip_null_fields=False,
+            )
+            logger.info(
+                f"[{job_id}] Output: {len(final_rows)} rows, format={output_format}, "
+                f"completeness={validation_report.completeness_pct}%"
+            )
+            return {
+                "status": "success",
+                "loops": loop_count,
+                "tokens": llm.total_tokens_used + llm_extractor.total_tokens_used,
+                "data": final_data,
+                "formatted_bytes": payload_bytes,
+                "mime_type": mime_type,
+                "pages_scraped": page_num,
+                "total_rows": len(final_rows),
+                "validation": validation_report.to_dict(),
+            }
 
         return {
             "status": "success",

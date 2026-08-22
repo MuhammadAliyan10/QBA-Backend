@@ -139,21 +139,81 @@ class PreflightPipeline:
     ) -> PreflightResult:
         """
         Execute the full preflight pipeline.
-        Includes Phase 1: HTTP Verification, Intent Feasibility, Session Check.
+
+        Stage 0:  Static domain heuristics (zero LLM, zero latency)
+        Phase 1a: HTTP reachability verification
+        Phase 1b: Preflight Oracle (LLM — only when Stage 0 returns UNKNOWN)
+        Layer 1:  RAG memory check (pgvector)
+        Layer 2:  Recipe generation (planner)
+        Layer 3:  Static validation
+        Layer 4:  Dynamic justification (browser)
         """
         start_time = time.time()
         layer_ms = {}
         warnings = []
 
-        if is_byos_session:
-            logger.info(f"[{job_id}] BYOS session detected. Bypassing Oracle feasibility gate.")
+        # ----------------------------------------------------------------
+        # STAGE 0: Static Domain Heuristics (Math-First, Zero LLM)
+        # ----------------------------------------------------------------
+        from core.rag.domain_heuristics import evaluate_feasibility, FeasibilityVerdict
+
+        stage0_start = time.time()
+        static_result = evaluate_feasibility(url, prompt)
+        layer_ms["static_heuristic_ms"] = int((time.time() - stage0_start) * 1000)
+
+        logger.info(
+            f"[{job_id}] Stage 0 heuristic: verdict={static_result.verdict.value}, "
+            f"category={static_result.category}, reason={static_result.reason[:80]}"
+        )
+
+        if static_result.verdict == FeasibilityVerdict.BLOCKED:
+            # Hard block — no LLM override, no BYOS bypass
+            return PreflightResult(
+                success=False,
+                recipe=None,
+                source="static_heuristic",
+                warnings=[f"Blocked by static policy: {static_result.reason}"],
+                total_ms=int((time.time() - start_time) * 1000),
+                layer_ms=layer_ms
+            )
+
+        if static_result.verdict == FeasibilityVerdict.BYOS_REQUIRED and not is_byos_session:
+            # BYOS needed but no session provided
+            return PreflightResult(
+                success=False,
+                recipe=None,
+                source="static_heuristic",
+                warnings=[f"Authentication required: {static_result.reason}"],
+                total_ms=int((time.time() - start_time) * 1000),
+                layer_ms=layer_ms
+            )
+
+        # ALLOWED or BYOS_REQUIRED+is_byos_session — propagate metadata as warnings/hints
+        if static_result.is_api_friendly:
+            warnings.append(f"Site is API-friendly — Network Sniffer may capture direct data.")
+        if static_result.requires_auth and is_byos_session:
+            warnings.append(f"Auth-gated domain {static_result.category} — BYOS session active.")
+
+        if is_byos_session and static_result.verdict == FeasibilityVerdict.ALLOWED:
+            logger.info(f"[{job_id}] BYOS session + ALLOWED domain — fast path, skip Oracle.")
             return PreflightResult(
                 success=True,
                 recipe=None,
                 source="byos_bypass",
-                warnings=["BYOS Session override: Oracle feasibility check bypassed."],
-                total_ms=0,
-                layer_ms={}
+                warnings=warnings + ["BYOS Session: Oracle feasibility check skipped (static allowed)."],
+                total_ms=int((time.time() - start_time) * 1000),
+                layer_ms=layer_ms
+            )
+
+        if is_byos_session and static_result.verdict == FeasibilityVerdict.BYOS_REQUIRED:
+            logger.info(f"[{job_id}] BYOS session satisfies auth requirement — fast path.")
+            return PreflightResult(
+                success=True,
+                recipe=None,
+                source="byos_bypass",
+                warnings=warnings + ["BYOS Session override: Oracle feasibility check bypassed."],
+                total_ms=int((time.time() - start_time) * 1000),
+                layer_ms=layer_ms
             )
 
         # ---------------------------------------------------------------------
@@ -206,28 +266,55 @@ class PreflightPipeline:
 
         # ---------------------------------------------------------------------
         # PHASE 1: Preflight Oracle (Latency Optimized 3-in-1)
+        # Cache: domain + intent_category key, 24h TTL (1h for BLOCKED).
+        # BYOS sessions always bypass cache — their auth state can change.
         # ---------------------------------------------------------------------
         logger.info(f"[{job_id}] Phase 1: Preflight Oracle Validation")
         oracle_start = time.time()
         classification = None
+
+        # Determine intent category for cache key (use first word of prompt)
+        _intent_cat = (prompt.split()[0] if prompt else "general").lower()[:32]
+        _cache_domain = url.split("//")[-1].split("/")[0].replace("www.", "").split("?")[0]
+
+        # Cache lookup (skip if BYOS — session state changes)
+        from core.rag.preflight_cache import get_preflight_cache
+        _pcache = get_preflight_cache()
+        _cached_oracle = None if is_byos_session else _pcache.get(_cache_domain, _intent_cat)
+
+        if _cached_oracle is not None:
+            oracle_data = _cached_oracle
+            layer_ms["oracle_ms"] = 0  # Cache hit — zero LLM cost
+            logger.info(f"[{job_id}] Oracle CACHE HIT for ({_cache_domain}, {_intent_cat})")
+        else:
+            oracle_data = {"is_possible": True}  # Default: allow
+
         try:
             from core.llm.safe_client import SafeLLMClient
             from core.rag.prompts import PREFLIGHT_ORACLE_PROMPT
             import json
 
-            llm = SafeLLMClient()
-            oracle_raw = await llm.call(PREFLIGHT_ORACLE_PROMPT, f"URL: {url}\nIntent: {prompt}", temperature=0.0)
+            if _cached_oracle is None:
+                llm = SafeLLMClient()
+                oracle_raw = await llm.call(PREFLIGHT_ORACLE_PROMPT, f"URL: {url}\nIntent: {prompt}", temperature=0.0)
 
-            # Extract and parse JSON
-            start_idx = oracle_raw.find('{')
-            end_idx = oracle_raw.rfind('}')
-            oracle_data = json.loads(oracle_raw[start_idx:end_idx+1])
+                # Extract and parse JSON
+                start_idx = oracle_raw.find('{')
+                end_idx = oracle_raw.rfind('}')
+                oracle_data = json.loads(oracle_raw[start_idx:end_idx+1])
+
+                # Store result in cache (unconditionally — BLOCKED entries have shorter TTL)
+                _pcache.set(_cache_domain, _intent_cat, oracle_data)
+                layer_ms["oracle_ms"] = int((time.time() - oracle_start) * 1000)
 
             is_possible = oracle_data.get("is_possible", True)
             if not is_possible:
-                if byos_active:
+                # is_byos_session is the correct parameter name — was previously
+                # referenced as the undefined `byos_active` which caused a NameError.
+                if is_byos_session:
                     logger.warning(
-                        f"[{job_id}] Oracle rejected intent but BYOS session is active — overriding feasibility gate"
+                        f"[{job_id}] Oracle rejected intent but BYOS session is active "
+                        "— overriding feasibility gate"
                     )
                     warnings.append("Oracle feasibility overridden by BYOS session")
                 else:

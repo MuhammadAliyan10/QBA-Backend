@@ -513,6 +513,12 @@ async def browser_automation_activity(payload: dict) -> dict:
         async with safe_browser_context(p, launch_args, storage_state=session_data) as (browser, context, page):
             try:
 
+                # Apply full fingerprint suppression to the main browser context.
+                # This propagates to every page opened from this context,
+                # including popups and iframes.
+                from core.browser.stealth import apply_stealth_to_context
+                await apply_stealth_to_context(context)
+
                 # Initialize Account Manager for just-in-time leasing if needed
                 account_mgr = AccountManager()
                 leased_account = None
@@ -561,7 +567,7 @@ async def browser_automation_activity(payload: dict) -> dict:
                                 # FOLLOWER: Polling finished, fresh cookies should be in DB
                                 logger.info(f"[Auth] Follower resumed. Re-fetching fresh session.")
                                 # Re-lease to get the fresh cookies (already happens in lease_account)
-                                fresh_account = account_mgr.lease_account(target_domain)
+                                fresh_account = await account_mgr.lease_account(target_domain)
                                 if fresh_account and fresh_account['cookies']:
                                     await context.add_cookies(fresh_account['cookies'])
                                     await page.reload()
@@ -688,51 +694,55 @@ async def browser_automation_activity(payload: dict) -> dict:
                             logger.info(f"[{job_id}] [parallel] Starting URL {url_index + 1}/{len(urls_to_process)}: {current_url}")
                             await user_logger.progress(f"Starting URL {url_index + 1} of {len(urls_to_process)}...")
 
-                            # Isolate each URL in its own context (separate cookies, cache, JS heap)
-                            url_context = await browser.new_context()
-                            url_page = await url_context.new_page()
-                            try:
-                                # Fingerprint suppression for this sub-context
-                                await url_page.add_init_script("""
-                                    Object.defineProperty(navigator, 'webdriver', { get: () => false });
-                                    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
-                                    window.chrome = { runtime: {} };
-                                """)
-
-                                # Navigate to target URL
+                            # Per-domain concurrency guard: block if this domain is
+                            # already at its configured concurrency limit across workers.
+                            from core.browser.domain_semaphore import domain_slot
+                            async with domain_slot(current_url, job_id=job_id):
+                                # Isolate each URL in its own context (separate cookies, cache, JS heap)
+                                url_context = await browser.new_context()
+                                url_page = await url_context.new_page()
                                 try:
-                                    await url_page.goto(current_url, timeout=NAVIGATION_TIMEOUT, wait_until="networkidle")
+                                    # Full fingerprint suppression — replaces the old 3-line shim.
+                                    # apply_stealth_to_context covers all pages in this sub-context
+                                    # (including any popups the site may open).
+                                    from core.browser.stealth import apply_stealth_to_context
+                                    await apply_stealth_to_context(url_context)
+
+                                    # Navigate to target URL
                                     try:
-                                        await url_page.wait_for_load_state("networkidle", timeout=10000)
-                                    except PlaywrightTimeout:
+                                        await url_page.goto(current_url, timeout=NAVIGATION_TIMEOUT, wait_until="networkidle")
+                                        try:
+                                            await url_page.wait_for_load_state("networkidle", timeout=10000)
+                                        except PlaywrightTimeout:
+                                            pass
+                                    except Exception as nav_err:
+                                        logger.warning(f"[{job_id}] [parallel] URL {url_index + 1} navigation error (non-fatal): {nav_err}")
+
+                                    ua_result = await execute_universal_agent(
+                                        page=url_page,
+                                        job_id=job_id,
+                                        user_logger=user_logger,
+                                        nervous_system=NervousSystem,
+                                        target_url=current_url,
+                                        # Only pass navigation objective and plan to the first URL
+                                        # so the agent doesn't re-plan for every page.
+                                        navigation_objective=navigation_objective if url_index == 0 else None,
+                                        extraction_schema=extraction_schema,
+                                        materialized_files=materialized_files,
+                                        plan_steps=plan_steps if url_index == 0 else [],
+                                    )
+                                    return {"url_index": url_index, "url": current_url, **ua_result}
+
+                                except Exception as url_err:
+                                    logger.error(f"[{job_id}] [parallel] URL {url_index + 1} unhandled error: {url_err}")
+                                    return {"url_index": url_index, "url": current_url, "status": "failed", "reason": str(url_err)}
+                                finally:
+                                    # Always close the sub-context to release browser memory
+                                    try:
+                                        await url_context.close()
+                                    except Exception:
                                         pass
-                                except Exception as nav_err:
-                                    logger.warning(f"[{job_id}] [parallel] URL {url_index + 1} navigation error (non-fatal): {nav_err}")
 
-                                ua_result = await execute_universal_agent(
-                                    page=url_page,
-                                    job_id=job_id,
-                                    user_logger=user_logger,
-                                    nervous_system=NervousSystem,
-                                    target_url=current_url,
-                                    # Only pass navigation objective and plan to the first URL
-                                    # so the agent doesn't re-plan for every page.
-                                    navigation_objective=navigation_objective if url_index == 0 else None,
-                                    extraction_schema=extraction_schema,
-                                    materialized_files=materialized_files,
-                                    plan_steps=plan_steps if url_index == 0 else [],
-                                )
-                                return {"url_index": url_index, "url": current_url, **ua_result}
-
-                            except Exception as url_err:
-                                logger.error(f"[{job_id}] [parallel] URL {url_index + 1} unhandled error: {url_err}")
-                                return {"url_index": url_index, "url": current_url, "status": "failed", "reason": str(url_err)}
-                            finally:
-                                # Always close the sub-context to release browser memory
-                                try:
-                                    await url_context.close()
-                                except Exception:
-                                    pass
 
                     # Dispatch all URLs concurrently; asyncio.gather preserves insertion order
                     all_ua_results: list[dict] = await asyncio.gather(
@@ -776,10 +786,11 @@ async def browser_automation_activity(payload: dict) -> dict:
                             # requests with the same objective skip the agent entirely.
                             if navigation_objective and url_index == 0:
                                 try:
-                                    recipe_mgr = get_recipe_manager()
+                                    from core.rag.unified_recipe_store import get_unified_store
                                     import hashlib as _hl
                                     recipe_name = "ua_" + _hl.md5(navigation_objective.encode()).hexdigest()[:12]
-                                    recipe_mgr.save_recipe(
+                                    unified_store = await get_unified_store()
+                                    await unified_store.save(
                                         name=recipe_name,
                                         description=navigation_objective,
                                         steps=[{
@@ -790,9 +801,13 @@ async def browser_automation_activity(payload: dict) -> dict:
                                                 "extraction_schema": extraction_schema,
                                             }
                                         }],
-                                        user_id=user_id
+                                        url=ua_result.get("url", ""),
+                                        user_id=user_id,
                                     )
-                                    logger.info(f"[{job_id}] Auto-saved recipe '{recipe_name}' for objective: {navigation_objective[:80]}")
+                                    logger.info(
+                                        f"[{job_id}] Auto-saved recipe '{recipe_name}' to unified store "
+                                        f"(Qdrant + pgvector) for objective: {navigation_objective[:80]}"
+                                    )
                                 except Exception as recipe_err:
                                     logger.warning(f"[{job_id}] Recipe auto-save failed (non-fatal): {recipe_err}")
 

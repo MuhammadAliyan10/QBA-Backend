@@ -24,8 +24,7 @@ from playwright.async_api import Page
 
 logger = logging.getLogger("dom_extractor")
 
-# ---------------------------------------------------------------------------
-# Heuristic field → CSS selector pattern library
+# Heuristic field → CSS selector pattern library (fallback when no synthesized selectors)
 # ---------------------------------------------------------------------------
 _FIELD_SELECTORS: dict[str, list[str]] = {
     # Generic identity patterns
@@ -198,6 +197,7 @@ async def extract_with_dom(
     extraction_schema: dict | list | None,
     *,
     llm_fallback_fn=None,
+    synthesized_selectors: dict[str, list[str]] | None = None,
 ) -> dict | list:
     """
     Primary Phase 2 extraction entrypoint.
@@ -207,9 +207,14 @@ async def extract_with_dom(
         extraction_schema: The user-provided JSON schema.
                            - dict → single-item extraction
                            - list with one dict element → multi-item list extraction
-                           - None → returns raw page text summary
+                           - None → returns raw page title
         llm_fallback_fn:  Optional async callable(field_name, page_text) → str.
-                          Called for individual fields that the DOM walker returns null.
+                           Called for individual fields that the DOM walker returns null.
+        synthesized_selectors:
+                           Optional pre-synthesized selector map from SelectorSynthesizer.
+                           Format: { field_name: ["css-selector-1", "css-selector-2"] }
+                           These are merged BEFORE the heuristic library, giving them
+                           highest priority. The heuristic library is the fallback.
 
     Returns:
         dict or list matching the schema structure.
@@ -222,10 +227,25 @@ async def extract_with_dom(
     schema = extraction_schema
     is_list_mode = isinstance(schema, list) and len(schema) > 0
 
+    # -----------------------------------------------------------------------
+    # Merge synthesized selectors with heuristic library.
+    # Synthesized selectors take priority; heuristic library fills the gaps.
+    # For unknown fields not in either source, the JS walker auto-generates
+    # a generic fallback: ['.field_name', '[data-field_name]']
+    # -----------------------------------------------------------------------
+    effective_selectors = dict(_FIELD_SELECTORS)  # Start with heuristic defaults
+    if synthesized_selectors:
+        for field_name, selectors in synthesized_selectors.items():
+            if selectors:  # Only override if synthesis produced real selectors
+                effective_selectors[field_name] = selectors
+                logger.debug(
+                    f"[DOMExtractor] Using synthesized selectors for '{field_name}': {selectors[:2]}"
+                )
+
     try:
         result: dict = await page.evaluate(
             _JS_DOM_EXTRACTOR,
-            [schema, _FIELD_SELECTORS, _LIST_CONTAINERS],
+            [schema, effective_selectors, _LIST_CONTAINERS],
         )
     except Exception as exc:
         logger.warning(f"[DOMExtractor] JS eval failed: {exc}. Falling back to LLM extraction.")

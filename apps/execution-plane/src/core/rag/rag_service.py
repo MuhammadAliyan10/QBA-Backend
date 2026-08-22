@@ -104,30 +104,26 @@ class RAGService:
     async def embed(self, text: str) -> list[float]:
         """
         Generate embedding vector for text.
-
         Uses OpenAI text-embedding-3-small (1536 dimensions).
-
-        Args:
-            text: Text to embed
-
-        Returns:
-            List of floats (embedding vector)
+        Wrapped in asyncio.to_thread — the openai sync client blocks otherwise.
         """
         if not self.openai_client:
             raise RuntimeError("OpenAI client not initialized")
 
-        # Normalize text
-        clean_text = " ".join(text.lower().split())[:8000]  # Truncate if too long
+        clean_text = " ".join(text.lower().split())[:8000]
 
-        try:
+        def _blocking_embed() -> list[float]:
             response = self.openai_client.embeddings.create(
                 model=EMBEDDING_MODEL,
-                input=clean_text
+                input=clean_text,
             )
-            embedding = response.data[0].embedding
+            return response.data[0].embedding
+
+        try:
+            import asyncio
+            embedding = await asyncio.to_thread(_blocking_embed)
             logger.debug(f"[RAG] Generated embedding (dim: {len(embedding)})")
             return embedding
-
         except Exception as e:
             logger.error(f"[RAG] Embedding failed: {e}")
             raise
@@ -163,57 +159,56 @@ class RAGService:
             return None
 
         try:
-            # 1. Generate embedding for query
             query_embedding = await self.embed(f"{prompt} {url}")
 
-            # 2. Extract domain from URL
             from urllib.parse import urlparse
             domain = urlparse(url).netloc.replace("www.", "")
 
-            # 3. Query pgvector for nearest neighbors
-            # Using cosine similarity: 1 - (embedding <=> query_embedding)
-            with self.engine.connect() as conn:
-                result = conn.execute(text("""
-                    SELECT
-                        id::text,
-                        category,
-                        domain,
-                        task_type,
-                        recipe_json,
-                        1 - (embedding <=> :query_embedding::vector) AS similarity
-                    FROM recipe_templates
-                    WHERE
-                        domain = :domain
-                        OR 1 - (embedding <=> :query_embedding::vector) > 0.80
-                    ORDER BY embedding <=> :query_embedding::vector
-                    LIMIT :limit
-                """), {
-                    "query_embedding": str(query_embedding),
-                    "domain": domain,
-                    "limit": limit
-                })
+            import asyncio
 
-                rows = result.fetchall()
+            def _query_db() -> list:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text("""
+                        SELECT
+                            id::text,
+                            category,
+                            domain,
+                            task_type,
+                            recipe_json,
+                            1 - (embedding <=> :query_embedding::vector) AS similarity
+                        FROM recipe_templates
+                        WHERE
+                            domain = :domain
+                            OR 1 - (embedding <=> :query_embedding::vector) > 0.80
+                        ORDER BY embedding <=> :query_embedding::vector
+                        LIMIT :limit
+                    """), {
+                        "query_embedding": str(query_embedding),
+                        "domain": domain,
+                        "limit": limit,
+                    })
+                    return result.fetchall()
 
-                if not rows:
-                    logger.info(f"[RAG] No templates found for domain: {domain}")
-                    return None
+            rows = await asyncio.to_thread(_query_db)
 
-                # Return best match
-                top = rows[0]
-                match = TemplateMatch(
-                    id=top[0],
-                    category=top[1],
-                    domain=top[2],
-                    task_type=top[3],
-                    recipe_json=top[4] if isinstance(top[4], dict) else json.loads(top[4]),
-                    similarity=float(top[5])
-                )
+            if not rows:
+                logger.info(f"[RAG] No templates found for domain: {domain}")
+                return None
 
-                logger.info(f"[RAG] Found template: {match.task_type}@{match.domain} "
-                           f"(similarity: {match.similarity:.2%})")
-
-                return match
+            top = rows[0]
+            match = TemplateMatch(
+                id=top[0],
+                category=top[1],
+                domain=top[2],
+                task_type=top[3],
+                recipe_json=top[4] if isinstance(top[4], dict) else json.loads(top[4]),
+                similarity=float(top[5]),
+            )
+            logger.info(
+                f"[RAG] Found template: {match.task_type}@{match.domain} "
+                f"(similarity: {match.similarity:.2%})"
+            )
+            return match
 
         except Exception as e:
             logger.error(f"[RAG] Template search failed: {e}")
@@ -225,68 +220,67 @@ class RAGService:
 
     async def save_template(
         self,
-        recipe_json: Dict,
-        category: str,
-        domain: str,
-        task_type: str,
-        description: str = ""
+        prompt: str = "",
+        url: str = "",
+        category: str = "scraping",
+        task_type: str = "",
+        recipe_json: Optional[Dict] = None,
+        # Legacy positional params kept for backward compat
+        domain: str = "",
+        description: str = "",
     ) -> Optional[str]:
         """
         Save a successful recipe as a template.
-
-        Called when a job completes successfully.
-        This is how the system "learns" from experience.
-
-        Args:
-            recipe_json: The successful recipe JSON
-            category: Website category (ecommerce, social, etc.)
-            domain: Target domain (amazon.com, etc.)
-            task_type: Task type (login, scrape, checkout, etc.)
-            description: Human-readable description
-
-        Returns:
-            Template ID if saved, None otherwise
+        Accepts both the new call signature (prompt, url, category, task_type, recipe_json)
+        and the legacy signature (recipe_json, category, domain, task_type, description).
+        The sync SQLAlchemy write is wrapped in asyncio.to_thread.
         """
         if not self.openai_client:
             logger.warning("[RAG] Embeddings disabled, cannot save template")
             return None
 
-        try:
-            # 1. Generate embedding from description + task
-            embed_text = f"{task_type} on {domain}: {description}"
-            embedding = await self.embed(embed_text)
+        # Normalise parameters — support both call conventions
+        effective_domain = domain or (url.split("//")[-1].split("/")[0].replace("www.", "") if url else "unknown")
+        effective_desc   = description or prompt or f"{task_type} on {effective_domain}"
+        effective_recipe = recipe_json or {}
 
-            # 2. Create fingerprint for deduplication
+        try:
+            import asyncio
+            embed_text = f"{task_type} on {effective_domain}: {effective_desc}"
+            embedding  = await self.embed(embed_text)
+
             recipe_hash = hashlib.sha256(
-                json.dumps(recipe_json, sort_keys=True).encode()
+                json.dumps(effective_recipe, sort_keys=True).encode()
             ).hexdigest()[:16]
 
-            # 3. Upsert into database
-            with self.engine.begin() as conn:
-                result = conn.execute(text("""
-                    INSERT INTO recipe_templates
-                        (category, domain, task_type, description, recipe_json, embedding)
-                    VALUES
-                        (:category, :domain, :task_type, :description, :recipe_json::jsonb, :embedding::vector)
-                    ON CONFLICT (domain, task_type) WHERE description = :description
-                    DO UPDATE SET
-                        recipe_json = EXCLUDED.recipe_json,
-                        embedding = EXCLUDED.embedding,
-                        success_count = recipe_templates.success_count + 1,
-                        updated_at = NOW()
-                    RETURNING id::text
-                """), {
-                    "category": category,
-                    "domain": domain,
-                    "task_type": task_type,
-                    "description": description or f"{task_type} automation",
-                    "recipe_json": json.dumps(recipe_json),
-                    "embedding": str(embedding)
-                })
+            def _write_db() -> Optional[str]:
+                with self.engine.begin() as conn:
+                    result = conn.execute(text("""
+                        INSERT INTO recipe_templates
+                            (category, domain, task_type, description, recipe_json, embedding)
+                        VALUES
+                            (:category, :domain, :task_type, :description,
+                             :recipe_json::jsonb, :embedding::vector)
+                        ON CONFLICT (domain, task_type)
+                        DO UPDATE SET
+                            recipe_json   = EXCLUDED.recipe_json,
+                            embedding     = EXCLUDED.embedding,
+                            success_count = recipe_templates.success_count + 1,
+                            updated_at    = NOW()
+                        RETURNING id::text
+                    """), {
+                        "category":    category,
+                        "domain":      effective_domain,
+                        "task_type":   task_type or "auto",
+                        "description": effective_desc,
+                        "recipe_json": json.dumps(effective_recipe),
+                        "embedding":   str(embedding),
+                    })
+                    row = result.fetchone()
+                    return row[0] if row else None
 
-                template_id = result.fetchone()[0]
-
-            logger.info(f"[RAG] Saved template: {task_type}@{domain} (ID: {template_id})")
+            template_id = await asyncio.to_thread(_write_db)
+            logger.info(f"[RAG] Saved template: {task_type}@{effective_domain} (ID: {template_id})")
             return template_id
 
         except Exception as e:
